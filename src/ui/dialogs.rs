@@ -55,6 +55,7 @@ pub fn show_set_passphrase_dialog() -> Option<String> {
 }
 
 /// Show settings dialog
+#[allow(dead_code)]
 pub fn show_settings_dialog() {
     unsafe {
         let alert: id = msg_send![class!(NSAlert), alloc];

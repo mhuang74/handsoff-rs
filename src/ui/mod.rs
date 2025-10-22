@@ -6,6 +6,7 @@ use cocoa::base::{id, nil};
 use cocoa::foundation::NSString;
 
 /// Show a simple alert dialog
+#[allow(dead_code)]
 pub fn show_alert(title: &str, message: &str) {
     unsafe {
         let ns_title = NSString::alloc(nil).init_str(title);

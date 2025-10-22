@@ -153,6 +153,7 @@ pub fn enable_event_tap(tap: CGEventTapRef) {
 }
 
 /// Disable the event tap
+#[allow(dead_code)]
 pub fn disable_event_tap(tap: CGEventTapRef) {
     unsafe {
         CGEventTapEnable(tap, false);

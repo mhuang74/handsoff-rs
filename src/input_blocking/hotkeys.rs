@@ -58,15 +58,16 @@ impl HotkeyManager {
 
     /// Check if a hotkey event is the lock hotkey
     pub fn is_lock_hotkey(&self, event_id: u32) -> bool {
-        self.lock_hotkey.map_or(false, |hk| hk.id() == event_id)
+        self.lock_hotkey.is_some_and(|hk| hk.id() == event_id)
     }
 
     /// Check if a hotkey event is the talk hotkey
     pub fn is_talk_hotkey(&self, event_id: u32) -> bool {
-        self.talk_hotkey.map_or(false, |hk| hk.id() == event_id)
+        self.talk_hotkey.is_some_and(|hk| hk.id() == event_id)
     }
 
     /// Unregister all hotkeys
+    #[allow(dead_code)]
     pub fn unregister_all(&mut self) -> Result<()> {
         if let Some(hotkey) = self.lock_hotkey.take() {
             self.manager.unregister(hotkey)?;

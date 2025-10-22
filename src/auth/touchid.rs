@@ -26,6 +26,7 @@ pub fn authenticate() -> Result<bool> {
 }
 
 /// Check if Touch ID is available on this system
+#[allow(dead_code)]
 pub fn is_available() -> bool {
     // Check if biometric authentication is available
     // This is a simplified check - in production, you'd want to use

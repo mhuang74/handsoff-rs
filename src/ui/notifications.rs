@@ -39,6 +39,7 @@ pub fn show_lock_notification() {
 }
 
 /// Show a full-screen overlay notification (more prominent)
+#[allow(dead_code)]
 pub fn show_unlock_overlay() {
     // This would create a brief full-screen or large overlay window
     // showing that input is unlocked. For now, we'll use a regular notification.

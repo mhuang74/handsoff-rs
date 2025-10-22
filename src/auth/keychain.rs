@@ -3,7 +3,9 @@ use keyring::Entry;
 
 const SERVICE_NAME: &str = "com.handsoff.inputlock";
 const PASSPHRASE_KEY: &str = "passphrase_hash";
+#[allow(dead_code)]
 const LOCK_HOTKEY_KEY: &str = "lock_hotkey";
+#[allow(dead_code)]
 const TALK_HOTKEY_KEY: &str = "talk_hotkey";
 const AUTO_LOCK_TIMEOUT_KEY: &str = "auto_lock_timeout";
 
@@ -29,6 +31,7 @@ pub fn retrieve_passphrase_hash() -> Result<Option<String>> {
 }
 
 /// Store lock hotkey configuration
+#[allow(dead_code)]
 pub fn store_lock_hotkey(hotkey: &str) -> Result<()> {
     let entry = Entry::new(SERVICE_NAME, LOCK_HOTKEY_KEY)
         .context("Failed to create keychain entry")?;
@@ -38,6 +41,7 @@ pub fn store_lock_hotkey(hotkey: &str) -> Result<()> {
 }
 
 /// Retrieve lock hotkey configuration
+#[allow(dead_code)]
 pub fn retrieve_lock_hotkey() -> Result<Option<String>> {
     let entry = Entry::new(SERVICE_NAME, LOCK_HOTKEY_KEY)
         .context("Failed to create keychain entry")?;
@@ -50,6 +54,7 @@ pub fn retrieve_lock_hotkey() -> Result<Option<String>> {
 }
 
 /// Store talk hotkey configuration
+#[allow(dead_code)]
 pub fn store_talk_hotkey(hotkey: &str) -> Result<()> {
     let entry = Entry::new(SERVICE_NAME, TALK_HOTKEY_KEY)
         .context("Failed to create keychain entry")?;
@@ -59,6 +64,7 @@ pub fn store_talk_hotkey(hotkey: &str) -> Result<()> {
 }
 
 /// Retrieve talk hotkey configuration
+#[allow(dead_code)]
 pub fn retrieve_talk_hotkey() -> Result<Option<String>> {
     let entry = Entry::new(SERVICE_NAME, TALK_HOTKEY_KEY)
         .context("Failed to create keychain entry")?;
@@ -71,6 +77,7 @@ pub fn retrieve_talk_hotkey() -> Result<Option<String>> {
 }
 
 /// Store auto-lock timeout
+#[allow(dead_code)]
 pub fn store_auto_lock_timeout(timeout: u64) -> Result<()> {
     let entry = Entry::new(SERVICE_NAME, AUTO_LOCK_TIMEOUT_KEY)
         .context("Failed to create keychain entry")?;

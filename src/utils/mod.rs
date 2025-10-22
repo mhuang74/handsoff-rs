@@ -1,7 +1,6 @@
 pub mod keycode;
 
 use ring::digest;
-use hex;
 
 /// Hash a passphrase using SHA-256
 pub fn hash_passphrase(passphrase: &str) -> String {

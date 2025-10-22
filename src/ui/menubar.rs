@@ -34,7 +34,9 @@ pub fn update_menu_bar_icon(is_locked: bool) {
 }
 
 pub struct MenuBar {
+    #[allow(dead_code)]
     status_item: id,
+    #[allow(dead_code)]
     state: Arc<AppState>,
 }
 
@@ -90,6 +92,7 @@ impl MenuBar {
     }
 
     /// Update the menu bar icon based on lock state
+    #[allow(dead_code)]
     pub fn update_icon(&self) {
         unsafe {
             let icon = if self.state.is_locked() {
@@ -103,6 +106,7 @@ impl MenuBar {
     }
 
     /// Enable menu items based on lock state
+    #[allow(dead_code)]
     pub fn update_menu_items(&self) {
         unsafe {
             let menu: id = msg_send![self.status_item, menu];
@@ -133,11 +137,11 @@ impl MenuBar {
 unsafe fn create_menu_item(title: &str, action: Sel) -> id {
     let title_str = NSString::alloc(nil).init_str(title);
     let item = NSMenuItem::alloc(nil);
-    let item = item.initWithTitle_action_keyEquivalent_(title_str, action, NSString::alloc(nil));
-    item
+    item.initWithTitle_action_keyEquivalent_(title_str, action, NSString::alloc(nil))
 }
 
 /// Register menu item action handlers
+#[allow(dead_code)]
 pub fn register_menu_handlers() {
     // Note: In a full implementation, you would create an NSObject subclass
     // to handle menu item actions. For now, this is a placeholder.

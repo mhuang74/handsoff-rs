@@ -43,7 +43,7 @@ impl AppState {
         }
     }
 
-    pub fn lock(&self) -> parking_lot::MutexGuard<AppStateInner> {
+    pub fn lock(&self) -> parking_lot::MutexGuard<'_, AppStateInner> {
         self.inner.lock()
     }
 
