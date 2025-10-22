@@ -35,3 +35,21 @@ path = "src/main.rs"
 [package.metadata.bundle]
 name = "HandsOff"
 identifier = "com.handsoff.inputlock"
+version = "0.1.0"
+copyright = "Copyright © 2024 Michael S. Huang"
+category = "public.app-category.utilities"
+short_description = "Prevent accidental input during video calls"
+long_description = """
+A macOS menu bar application that prevents accidental or unsolicited input from
+keyboard, trackpad, and mouse devices during video conferencing, presentations,
+or when leaving your laptop unattended.
+"""
+
+# macOS-specific bundle configuration
+osx_minimum_system_version = "10.11"
+osx_frameworks = []
+osx_url_schemes = []
+osx_info_plist_template = "Info.plist.template"
+
+# Resources to include in the bundle
+resources = []

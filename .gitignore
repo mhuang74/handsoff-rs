@@ -24,3 +24,10 @@ target
 # Added by cargo
 
 /target
+
+# macOS app bundle build artifacts
+dist/
+dmg-contents/
+
+# macOS specific
+.DS_Store

@@ -1,4 +1,3 @@
-#[macro_use]
 extern crate objc;
 
 mod app_state;
