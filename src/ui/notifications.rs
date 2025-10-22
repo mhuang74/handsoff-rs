@@ -9,6 +9,15 @@ pub fn show_unlock_notification() {
         dispatch_to_main_thread(|| {
             let _pool = NSAutoreleasePool::new(nil);
 
+            // Get the notification center first to ensure it's initialized
+            let center_class = class!(NSUserNotificationCenter);
+            let center: id = msg_send![center_class, defaultUserNotificationCenter];
+
+            // Check if notification center is available
+            if center == nil {
+                return;
+            }
+
             // Create a user notification
             let notification: id = msg_send![class!(NSUserNotification), alloc];
             let notification: id = msg_send![notification, init];
@@ -20,7 +29,6 @@ pub fn show_unlock_notification() {
             let _: () = msg_send![notification, setInformativeText: message];
 
             // Deliver the notification
-            let center: id = msg_send![class!(NSUserNotificationCenter), defaultUserNotificationCenter];
             let _: () = msg_send![center, deliverNotification: notification];
         });
     }
@@ -32,6 +40,15 @@ pub fn show_lock_notification() {
         dispatch_to_main_thread(|| {
             let _pool = NSAutoreleasePool::new(nil);
 
+            // Get the notification center first to ensure it's initialized
+            let center_class = class!(NSUserNotificationCenter);
+            let center: id = msg_send![center_class, defaultUserNotificationCenter];
+
+            // Check if notification center is available
+            if center == nil {
+                return;
+            }
+
             let notification: id = msg_send![class!(NSUserNotification), alloc];
             let notification: id = msg_send![notification, init];
 
@@ -41,7 +58,6 @@ pub fn show_lock_notification() {
             let _: () = msg_send![notification, setTitle: title];
             let _: () = msg_send![notification, setInformativeText: message];
 
-            let center: id = msg_send![class!(NSUserNotificationCenter), defaultUserNotificationCenter];
             let _: () = msg_send![center, deliverNotification: notification];
         });
     }
