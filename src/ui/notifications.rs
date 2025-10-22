@@ -1,40 +1,49 @@
 use cocoa::base::{id, nil};
-use cocoa::foundation::NSString;
+use cocoa::foundation::{NSString, NSAutoreleasePool};
 use objc::{class, msg_send, sel, sel_impl};
+use super::dispatch::dispatch_to_main_thread;
 
 /// Show a notification when the input is unlocked
 pub fn show_unlock_notification() {
     unsafe {
-        // Create a user notification
-        let notification: id = msg_send![class!(NSUserNotification), alloc];
-        let notification: id = msg_send![notification, init];
+        dispatch_to_main_thread(|| {
+            let _pool = NSAutoreleasePool::new(nil);
 
-        let title = NSString::alloc(nil).init_str("Input Unlocked");
-        let message = NSString::alloc(nil).init_str("Keyboard and mouse inputs are now active");
+            // Create a user notification
+            let notification: id = msg_send![class!(NSUserNotification), alloc];
+            let notification: id = msg_send![notification, init];
 
-        let _: () = msg_send![notification, setTitle: title];
-        let _: () = msg_send![notification, setInformativeText: message];
+            let title = NSString::alloc(nil).init_str("Input Unlocked");
+            let message = NSString::alloc(nil).init_str("Keyboard and mouse inputs are now active");
 
-        // Deliver the notification
-        let center: id = msg_send![class!(NSUserNotificationCenter), defaultUserNotificationCenter];
-        let _: () = msg_send![center, deliverNotification: notification];
+            let _: () = msg_send![notification, setTitle: title];
+            let _: () = msg_send![notification, setInformativeText: message];
+
+            // Deliver the notification
+            let center: id = msg_send![class!(NSUserNotificationCenter), defaultUserNotificationCenter];
+            let _: () = msg_send![center, deliverNotification: notification];
+        });
     }
 }
 
 /// Show a notification when the input is locked
 pub fn show_lock_notification() {
     unsafe {
-        let notification: id = msg_send![class!(NSUserNotification), alloc];
-        let notification: id = msg_send![notification, init];
+        dispatch_to_main_thread(|| {
+            let _pool = NSAutoreleasePool::new(nil);
 
-        let title = NSString::alloc(nil).init_str("Input Locked");
-        let message = NSString::alloc(nil).init_str("Keyboard and mouse inputs are now blocked");
+            let notification: id = msg_send![class!(NSUserNotification), alloc];
+            let notification: id = msg_send![notification, init];
 
-        let _: () = msg_send![notification, setTitle: title];
-        let _: () = msg_send![notification, setInformativeText: message];
+            let title = NSString::alloc(nil).init_str("Input Locked");
+            let message = NSString::alloc(nil).init_str("Keyboard and mouse inputs are now blocked");
 
-        let center: id = msg_send![class!(NSUserNotificationCenter), defaultUserNotificationCenter];
-        let _: () = msg_send![center, deliverNotification: notification];
+            let _: () = msg_send![notification, setTitle: title];
+            let _: () = msg_send![notification, setInformativeText: message];
+
+            let center: id = msg_send![class!(NSUserNotificationCenter), defaultUserNotificationCenter];
+            let _: () = msg_send![center, deliverNotification: notification];
+        });
     }
 }
 

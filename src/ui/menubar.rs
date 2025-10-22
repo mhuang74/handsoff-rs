@@ -1,12 +1,13 @@
 use cocoa::appkit::{NSMenu, NSMenuItem, NSStatusBar};
 use cocoa::base::{id, nil, selector, NO, YES};
-use cocoa::foundation::NSString;
+use cocoa::foundation::{NSString, NSAutoreleasePool};
 use objc::runtime::Sel;
 use objc::{class, msg_send, sel, sel_impl};
 use std::sync::Arc;
 use parking_lot::Mutex;
 
 use crate::app_state::AppState;
+use super::dispatch::dispatch_to_main_thread;
 
 const LOCK_ICON: &str = "🔒";
 const UNLOCK_ICON: &str = "🔓";
@@ -16,19 +17,22 @@ const UNLOCK_ICON: &str = "🔓";
 static STATUS_ITEM: Mutex<Option<usize>> = Mutex::new(None);
 
 /// Update the menu bar icon based on lock state
-/// This can be called from any thread
+/// This can be called from any thread - it will dispatch to the main thread
 pub fn update_menu_bar_icon(is_locked: bool) {
-    let status_item_ptr = STATUS_ITEM.lock();
-    if let Some(ptr) = *status_item_ptr {
+    let status_item_ptr = STATUS_ITEM.lock().clone();
+    if let Some(ptr) = status_item_ptr {
         unsafe {
-            let item = ptr as id;
-            let icon = if is_locked {
-                LOCK_ICON
-            } else {
-                UNLOCK_ICON
-            };
-            let ns_icon = NSString::alloc(nil).init_str(icon);
-            let _: () = msg_send![item, setTitle: ns_icon];
+            dispatch_to_main_thread(move || {
+                let _pool = NSAutoreleasePool::new(nil);
+                let item = ptr as id;
+                let icon = if is_locked {
+                    LOCK_ICON
+                } else {
+                    UNLOCK_ICON
+                };
+                let ns_icon = NSString::alloc(nil).init_str(icon);
+                let _: () = msg_send![item, setTitle: ns_icon];
+            });
         }
     }
 }

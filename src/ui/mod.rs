@@ -1,6 +1,7 @@
 pub mod menubar;
 pub mod notifications;
 pub mod dialogs;
+mod dispatch;
 
 use cocoa::base::{id, nil};
 use cocoa::foundation::NSString;

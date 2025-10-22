@@ -5,7 +5,7 @@ use crate::app_state::AppState;
 use crate::auth;
 use crate::utils::keycode::keycode_to_char;
 use core_graphics::event::{CGEvent, CGEventFlags, CGEventType, EventField};
-use log::{debug, info};
+use log::{debug, error, info};
 
 /// Handle a keyboard event during lock
 ///
@@ -146,6 +146,11 @@ pub fn check_accessibility_permissions() -> bool {
         ) -> CGEventTapRef;
     }
 
+    #[link(name = "ApplicationServices", kind = "framework")]
+    extern "C" {
+        fn AXIsProcessTrusted() -> bool;
+    }
+
     unsafe extern "C" fn test_callback(
         _proxy: CGEventTapRef,
         _event_type: u32,
@@ -160,6 +165,11 @@ pub fn check_accessibility_permissions() -> bool {
     const K_CGEVENT_TAP_OPTION_DEFAULT: u32 = 0;
 
     unsafe {
+        // First check using AXIsProcessTrusted - more reliable for permission status
+        let ax_trusted = AXIsProcessTrusted();
+        info!("AXIsProcessTrusted check: {}", ax_trusted);
+
+        // Also test event tap creation as a secondary check
         let tap = CGEventTapCreate(
             K_CGSESSION_EVENT_TAP,
             K_CGHEAD_INSERT_EVENT_TAP,
@@ -169,6 +179,17 @@ pub fn check_accessibility_permissions() -> bool {
             std::ptr::null_mut(),
         );
 
-        !tap.is_null()
+        let tap_created = !tap.is_null();
+        info!("Event tap creation check: {}", tap_created);
+
+        if !ax_trusted || !tap_created {
+            error!("Accessibility permission check failed:");
+            error!("  - AXIsProcessTrusted: {}", ax_trusted);
+            error!("  - Event tap created: {}", tap_created);
+            error!("  - Bundle ID should be: com.handsoff.inputlock");
+            error!("  - Please check System Settings > Privacy & Security > Accessibility");
+        }
+
+        ax_trusted && tap_created
     }
 }
