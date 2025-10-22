@@ -23,6 +23,8 @@ pub struct AppStateInner {
     pub auto_lock_timeout: u64,
     /// Input buffer reset timeout in seconds (default: 5)
     pub buffer_reset_timeout: u64,
+    /// Whether the Talk hotkey is currently pressed (for passthrough)
+    pub talk_key_pressed: bool,
 }
 
 impl AppState {
@@ -36,6 +38,7 @@ impl AppState {
                 passphrase_hash: None,
                 auto_lock_timeout: 180,
                 buffer_reset_timeout: 5,
+                talk_key_pressed: false,
             })),
         }
     }
@@ -96,6 +99,14 @@ impl AppState {
     pub fn should_auto_lock(&self) -> bool {
         let state = self.inner.lock();
         !state.is_locked && state.last_input_time.elapsed().as_secs() >= state.auto_lock_timeout
+    }
+
+    pub fn set_talk_key_pressed(&self, pressed: bool) {
+        self.inner.lock().talk_key_pressed = pressed;
+    }
+
+    pub fn is_talk_key_pressed(&self) -> bool {
+        self.inner.lock().talk_key_pressed
     }
 }
 

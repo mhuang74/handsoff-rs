@@ -4,9 +4,8 @@ pub mod hotkeys;
 use crate::app_state::AppState;
 use crate::auth;
 use crate::utils::keycode::keycode_to_char;
-use core_graphics::event::{CGEvent, CGEventFlags, CGEventTapLocation, CGEventType, EventField};
+use core_graphics::event::{CGEvent, CGEventFlags, CGEventType, EventField};
 use log::{debug, info};
-use std::sync::Arc;
 
 /// Handle a keyboard event during lock
 ///
@@ -16,14 +15,39 @@ pub fn handle_keyboard_event(
     event_type: CGEventType,
     state: &AppState,
 ) -> bool {
-    // Only process KeyDown events
+    let keycode = event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE);
+    let flags = event.get_flags();
+
+    // Check for Talk hotkey (Ctrl+Cmd+Shift+T) - keycode 17 is 'T'
+    // Track press/release state for passthrough
+    if keycode == 17 &&
+        flags.contains(CGEventFlags::CGEventFlagControl) &&
+        flags.contains(CGEventFlags::CGEventFlagCommand) &&
+        flags.contains(CGEventFlags::CGEventFlagShift)
+    {
+        if (event_type as u32) == (CGEventType::KeyDown as u32) {
+            info!("Talk key pressed - enabling spacebar passthrough");
+            state.set_talk_key_pressed(true);
+        } else if (event_type as u32) == (CGEventType::KeyUp as u32) {
+            info!("Talk key released - disabling spacebar passthrough");
+            state.set_talk_key_pressed(false);
+        }
+        return true; // Block the talk hotkey itself
+    }
+
+    // Allow spacebar passthrough when talk key is pressed
+    if state.is_talk_key_pressed() && keycode == 49 {
+        // Keycode 49 is spacebar
+        info!("Spacebar passthrough active (Talk key held)");
+        return false; // Allow spacebar through
+    }
+
+    // Only process KeyDown events for passphrase entry
     // CGEventType doesn't implement PartialEq, so we compare as u32
     if (event_type as u32) != (CGEventType::KeyDown as u32) {
         return true; // Block KeyUp events too
     }
 
-    let keycode = event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE);
-    let flags = event.get_flags();
     let shift = flags.contains(CGEventFlags::CGEventFlagShift);
 
     // Check for Touch ID trigger (Ctrl+Cmd+Shift+U)
@@ -36,7 +60,8 @@ pub fn handle_keyboard_event(
                     info!("Touch ID authentication successful");
                     state.set_locked(false);
                     state.clear_buffer();
-                    // TODO: Update menu bar icon and show notification
+                    crate::ui::menubar::update_menu_bar_icon(false);
+                    crate::ui::notifications::show_unlock_notification();
                 }
             }
         });
@@ -69,7 +94,8 @@ pub fn handle_keyboard_event(
                 info!("Passphrase verified - unlocking");
                 state.set_locked(false);
                 state.clear_buffer();
-                // TODO: Update menu bar icon and show notification
+                crate::ui::menubar::update_menu_bar_icon(false);
+                crate::ui::notifications::show_unlock_notification();
                 return true; // Block the final matching event
             }
         }
@@ -129,15 +155,15 @@ pub fn check_accessibility_permissions() -> bool {
         event
     }
 
-    const kCGSessionEventTap: u32 = 1;
-    const kCGHeadInsertEventTap: u32 = 0;
-    const kCGEventTapOptionDefault: u32 = 0;
+    const K_CGSESSION_EVENT_TAP: u32 = 1;
+    const K_CGHEAD_INSERT_EVENT_TAP: u32 = 0;
+    const K_CGEVENT_TAP_OPTION_DEFAULT: u32 = 0;
 
     unsafe {
         let tap = CGEventTapCreate(
-            kCGSessionEventTap,
-            kCGHeadInsertEventTap,
-            kCGEventTapOptionDefault,
+            K_CGSESSION_EVENT_TAP,
+            K_CGHEAD_INSERT_EVENT_TAP,
+            K_CGEVENT_TAP_OPTION_DEFAULT,
             1, // Just test with one event type
             test_callback,
             std::ptr::null_mut(),

@@ -128,8 +128,8 @@ fn start_auto_lock_thread(state: Arc<AppState>) {
         if state.should_auto_lock() {
             info!("Auto-lock triggered after inactivity");
             state.set_locked(true);
+            ui::menubar::update_menu_bar_icon(true);
             ui::notifications::show_lock_notification();
-            // TODO: Update menu bar icon
         }
     });
 }

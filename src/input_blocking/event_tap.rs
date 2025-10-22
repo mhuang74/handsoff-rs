@@ -44,9 +44,9 @@ extern "C" {
     ) -> CFRunLoopSourceRef;
 }
 
-const kCGSessionEventTap: u32 = 1;
-const kCGHeadInsertEventTap: u32 = 0;
-const kCGEventTapOptionDefault: u32 = 0;
+const K_CGSESSION_EVENT_TAP: u32 = 1;
+const K_CGHEAD_INSERT_EVENT_TAP: u32 = 0;
+const K_CGEVENT_TAP_OPTION_DEFAULT: u32 = 0;
 
 /// Create and enable the event tap for input blocking
 pub fn create_event_tap(state: Arc<AppState>) -> Option<CGEventTapRef> {
@@ -67,9 +67,9 @@ pub fn create_event_tap(state: Arc<AppState>) -> Option<CGEventTapRef> {
 
     unsafe {
         let tap = CGEventTapCreate(
-            kCGSessionEventTap,
-            kCGHeadInsertEventTap,
-            kCGEventTapOptionDefault,
+            K_CGSESSION_EVENT_TAP,
+            K_CGHEAD_INSERT_EVENT_TAP,
+            K_CGEVENT_TAP_OPTION_DEFAULT,
             event_mask,
             event_tap_callback,
             state_ptr,

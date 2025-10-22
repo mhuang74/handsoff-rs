@@ -5,7 +5,6 @@ use global_hotkey::{
     GlobalHotKeyEvent, GlobalHotKeyManager,
 };
 use log::info;
-use std::sync::Arc;
 
 pub struct HotkeyManager {
     manager: GlobalHotKeyManager,
@@ -92,11 +91,11 @@ pub fn handle_hotkey_event(
         if !state.is_locked() {
             state.set_locked(true);
             info!("Input locked via hotkey");
-            // TODO: Update menu bar icon
+            crate::ui::menubar::update_menu_bar_icon(true);
         }
     } else if manager.is_talk_hotkey(event_id) {
         info!("Talk hotkey triggered");
-        // TODO: Implement spacebar passthrough
-        // This would temporarily allow a space keypress through
+        // Note: Spacebar passthrough is handled in the event tap (event_tap.rs)
+        // which detects the key combination and tracks press/release states
     }
 }

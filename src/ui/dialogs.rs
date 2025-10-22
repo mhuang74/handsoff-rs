@@ -3,8 +3,8 @@ use cocoa::foundation::{NSPoint, NSRect, NSSize, NSString};
 use objc::{class, msg_send, sel, sel_impl};
 
 // NSAlertStyle constants
-const NSAlertStyleInformational: usize = 1;
-const NSAlertStyleWarning: usize = 0;
+const NSALERT_STYLE_INFORMATIONAL: usize = 1;
+const NSALERT_STYLE_WARNING: usize = 0;
 
 /// Show a dialog to set the passphrase
 pub fn show_set_passphrase_dialog() -> Option<String> {
@@ -18,7 +18,7 @@ pub fn show_set_passphrase_dialog() -> Option<String> {
 
         let _: () = msg_send![alert, setMessageText: title];
         let _: () = msg_send![alert, setInformativeText: message];
-        let _: () = msg_send![alert, setAlertStyle: NSAlertStyleInformational];
+        let _: () = msg_send![alert, setAlertStyle: NSALERT_STYLE_INFORMATIONAL];
 
         // Add buttons
         let ok_button = NSString::alloc(nil).init_str("OK");
@@ -96,7 +96,7 @@ pub fn show_permissions_dialog() {
 
         let _: () = msg_send![alert, setMessageText: title];
         let _: () = msg_send![alert, setInformativeText: message];
-        let _: () = msg_send![alert, setAlertStyle: NSAlertStyleWarning];
+        let _: () = msg_send![alert, setAlertStyle: NSALERT_STYLE_WARNING];
         let _: () = msg_send![alert, runModal];
     }
 }

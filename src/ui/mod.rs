@@ -4,7 +4,6 @@ pub mod dialogs;
 
 use cocoa::base::{id, nil};
 use cocoa::foundation::NSString;
-use objc::runtime::Object;
 
 /// Show a simple alert dialog
 pub fn show_alert(title: &str, message: &str) {

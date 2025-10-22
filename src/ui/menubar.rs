@@ -4,11 +4,34 @@ use cocoa::foundation::NSString;
 use objc::runtime::Sel;
 use objc::{class, msg_send, sel, sel_impl};
 use std::sync::Arc;
+use parking_lot::Mutex;
 
 use crate::app_state::AppState;
 
 const LOCK_ICON: &str = "🔒";
 const UNLOCK_ICON: &str = "🔓";
+
+// Global reference to status item as usize (unsafe, but needed for Objective-C interop)
+// We store as usize to make it Send/Sync safe
+static STATUS_ITEM: Mutex<Option<usize>> = Mutex::new(None);
+
+/// Update the menu bar icon based on lock state
+/// This can be called from any thread
+pub fn update_menu_bar_icon(is_locked: bool) {
+    let status_item_ptr = STATUS_ITEM.lock();
+    if let Some(ptr) = *status_item_ptr {
+        unsafe {
+            let item = ptr as id;
+            let icon = if is_locked {
+                LOCK_ICON
+            } else {
+                UNLOCK_ICON
+            };
+            let ns_icon = NSString::alloc(nil).init_str(icon);
+            let _: () = msg_send![item, setTitle: ns_icon];
+        }
+    }
+}
 
 pub struct MenuBar {
     status_item: id,
@@ -20,6 +43,9 @@ impl MenuBar {
         unsafe {
             let status_bar = NSStatusBar::systemStatusBar(nil);
             let status_item = status_bar.statusItemWithLength_(-1.0);
+
+            // Register status_item globally for updates (store as usize for Send/Sync)
+            *STATUS_ITEM.lock() = Some(status_item as usize);
 
             // Set initial icon
             let icon = NSString::alloc(nil).init_str(UNLOCK_ICON);
