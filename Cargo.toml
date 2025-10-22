@@ -1,0 +1,34 @@
+[package]
+name = "handsoff"
+version = "0.1.0"
+edition = "2021"
+authors = ["Michael S. Huang"]
+description = "macOS menu bar app to prevent accidental input during video calls"
+
+[dependencies]
+cocoa = "0.25"
+core-graphics = "0.25"
+objc = "0.2"
+foreign-types = "0.5"
+security-framework = "2.11"
+keyring = "2.3"
+ring = "0.17"
+hex = "0.4"
+global-hotkey = "0.6"
+parking_lot = "0.12"
+anyhow = "1.0"
+log = "0.4"
+env_logger = "0.11"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.10"
+
+[build-dependencies]
+
+[[bin]]
+name = "handsoff"
+path = "src/main.rs"
+
+[package.metadata.bundle]
+name = "HandsOff"
+identifier = "com.handsoff.inputlock"
