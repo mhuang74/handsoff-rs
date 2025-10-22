@@ -4,6 +4,7 @@ pub mod dialogs;
 
 use cocoa::base::{id, nil};
 use cocoa::foundation::NSString;
+use objc::{class, msg_send, sel, sel_impl};
 
 /// Show a simple alert dialog
 #[allow(dead_code)]
