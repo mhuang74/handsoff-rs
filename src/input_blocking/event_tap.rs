@@ -96,19 +96,13 @@ unsafe extern "C" fn event_tap_callback(
     // Reconstruct the state from user_info without taking ownership
     let state = &*(user_info as *const Arc<AppState>);
 
-    // Only process events when locked
-    if !state.is_locked() {
-        // Update input time for auto-lock even when unlocked
-        state.update_input_time();
-        return event; // Pass through
-    }
-
     let cg_event = core_graphics::event::CGEvent::from_ptr(event);
     let event_type_enum = std::mem::transmute::<u32, CGEventType>(event_type);
 
     // Handle different event types
     let should_block = match event_type {
         t if t == CGEventType::KeyDown as u32 || t == CGEventType::KeyUp as u32 => {
+            // Always handle keyboard events (for hotkeys even when unlocked)
             handle_keyboard_event(&cg_event, event_type_enum, state)
         }
         t if t == CGEventType::MouseMoved as u32
@@ -118,10 +112,20 @@ unsafe extern "C" fn event_tap_callback(
             || t == CGEventType::RightMouseUp as u32
             || t == CGEventType::ScrollWheel as u32 =>
         {
-            handle_mouse_event(event_type_enum, state)
+            // Only block mouse events when locked
+            if state.is_locked() {
+                handle_mouse_event(event_type_enum, state)
+            } else {
+                state.update_input_time();
+                false // Pass through when unlocked
+            }
         }
         _ => false, // Pass through other events
     };
+
+    // CRITICAL: Prevent cg_event from being dropped/freed since we're returning the same pointer!
+    // The event is owned by the system, not by us.
+    std::mem::forget(cg_event);
 
     if should_block {
         std::ptr::null_mut() // Block the event

@@ -5,6 +5,7 @@ mod utils;
 
 use anyhow::{Context, Result};
 use app_state::AppState;
+use clap::Parser;
 use input_blocking::event_tap;
 use input_blocking::hotkeys::HotkeyManager;
 use log::{debug, error, info, warn};
@@ -13,6 +14,15 @@ use std::io::{self, Write};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
+
+/// macOS CLI tool to prevent accidental input during video calls
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+struct Args {
+    /// Start with input locked immediately
+    #[arg(short, long)]
+    locked: bool,
+}
 
 /// Prompt user for passphrase via command line
 fn prompt_for_passphrase() -> Option<String> {
@@ -60,6 +70,9 @@ fn parse_auto_unlock_timeout() -> Option<u64> {
 }
 
 fn main() -> Result<()> {
+    // Parse command-line arguments
+    let args = Args::parse();
+
     // Initialize logger
     env_logger::Builder::from_default_env()
         .filter_level(log::LevelFilter::Info)
@@ -80,6 +93,14 @@ fn main() -> Result<()> {
     // Parse and configure auto-unlock timeout
     let auto_unlock_timeout = parse_auto_unlock_timeout();
     state.set_auto_unlock_timeout(auto_unlock_timeout);
+
+    // Set initial lock state based on command-line argument
+    if args.locked {
+        state.set_locked(true);
+        info!("Starting in LOCKED mode (--locked flag)");
+    } else {
+        info!("Starting in UNLOCKED mode (use --locked to start locked, or press Ctrl+Cmd+Shift+L to lock)");
+    }
 
     // Check for passphrase from environment variable first (bypasses keychain)
     if let Ok(passphrase) = env::var("HANDS_OFF_SECRET_PHRASE") {
@@ -148,13 +169,25 @@ fn main() -> Result<()> {
         start_auto_unlock_thread(state.clone());
     }
 
+    // Display status and instructions
     info!("HandsOff is running - press Ctrl+C to quit");
-    info!("Input interception is active. Type your passphrase to unlock.");
-
-    // Keep the main thread alive
-    loop {
-        thread::sleep(Duration::from_secs(60));
+    if state.is_locked() {
+        info!("STATUS: INPUT IS LOCKED");
+        info!("- Type your passphrase to unlock (input won't be visible)");
+        info!("- Or press Ctrl+Cmd+Shift+U for Touch ID");
+    } else {
+        info!("STATUS: INPUT IS UNLOCKED");
+        info!("- Press Ctrl+Cmd+Shift+L to lock input");
     }
+
+    // Run the CFRunLoop on the main thread - this is required for event tap to work!
+    info!("Starting CFRunLoop (required for event interception)...");
+    use core_foundation::runloop::CFRunLoop;
+    CFRunLoop::run_current();
+
+    // CFRunLoop::run_current() runs indefinitely, so this is unreachable
+    #[allow(unreachable_code)]
+    Ok(())
 }
 
 /// Background thread to reset input buffer after timeout
