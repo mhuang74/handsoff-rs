@@ -81,29 +81,41 @@ fn main() -> Result<()> {
     let auto_unlock_timeout = parse_auto_unlock_timeout();
     state.set_auto_unlock_timeout(auto_unlock_timeout);
 
-    // Load passphrase hash from keychain
-    match auth::keychain::retrieve_passphrase_hash() {
-        Ok(Some(hash)) => {
-            info!("Loaded passphrase hash from keychain");
+    // Check for passphrase from environment variable first (bypasses keychain)
+    if let Ok(passphrase) = env::var("HANDS_OFF_SECRET_PHRASE") {
+        if !passphrase.is_empty() {
+            info!("Using passphrase from HANDS_OFF_SECRET_PHRASE environment variable");
+            let hash = auth::hash_passphrase(&passphrase);
             state.set_passphrase_hash(hash);
+        } else {
+            error!("HANDS_OFF_SECRET_PHRASE is set but empty");
+            std::process::exit(1);
         }
-        Ok(None) => {
-            info!("No passphrase set - prompting user");
-            if let Some(passphrase) = prompt_for_passphrase() {
-                let hash = auth::hash_passphrase(&passphrase);
-                if let Err(e) = auth::keychain::store_passphrase_hash(&hash) {
-                    error!("Failed to store passphrase: {}", e);
-                } else {
-                    state.set_passphrase_hash(hash);
-                    info!("Passphrase set successfully");
-                }
-            } else {
-                error!("No passphrase set - exiting");
-                std::process::exit(1);
+    } else {
+        // Fall back to keychain if env var not set
+        match auth::keychain::retrieve_passphrase_hash() {
+            Ok(Some(hash)) => {
+                info!("Loaded passphrase hash from keychain");
+                state.set_passphrase_hash(hash);
             }
-        }
-        Err(e) => {
-            error!("Failed to retrieve passphrase from keychain: {}", e);
+            Ok(None) => {
+                info!("No passphrase set - prompting user");
+                if let Some(passphrase) = prompt_for_passphrase() {
+                    let hash = auth::hash_passphrase(&passphrase);
+                    if let Err(e) = auth::keychain::store_passphrase_hash(&hash) {
+                        error!("Failed to store passphrase: {}", e);
+                    } else {
+                        state.set_passphrase_hash(hash);
+                        info!("Passphrase set successfully");
+                    }
+                } else {
+                    error!("No passphrase set - exiting");
+                    std::process::exit(1);
+                }
+            }
+            Err(e) => {
+                error!("Failed to retrieve passphrase from keychain: {}", e);
+            }
         }
     }
 
