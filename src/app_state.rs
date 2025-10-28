@@ -25,6 +25,10 @@ pub struct AppStateInner {
     pub buffer_reset_timeout: u64,
     /// Whether the Talk hotkey is currently pressed (for passthrough)
     pub talk_key_pressed: bool,
+    /// Timestamp when device was locked (for auto-unlock)
+    pub lock_start_time: Option<Instant>,
+    /// Auto-unlock timeout in seconds (None = disabled)
+    pub auto_unlock_timeout: Option<u64>,
 }
 
 impl AppState {
@@ -39,6 +43,8 @@ impl AppState {
                 auto_lock_timeout: 180,
                 buffer_reset_timeout: 5,
                 talk_key_pressed: false,
+                lock_start_time: None,
+                auto_unlock_timeout: None,
             })),
         }
     }
@@ -52,7 +58,18 @@ impl AppState {
     }
 
     pub fn set_locked(&self, locked: bool) {
-        self.inner.lock().is_locked = locked;
+        let mut state = self.inner.lock();
+        state.is_locked = locked;
+
+        if locked {
+            // Record when lock was engaged
+            state.lock_start_time = Some(Instant::now());
+            log::debug!("Lock engaged at {:?}", state.lock_start_time);
+        } else {
+            // Clear lock time when manually unlocked
+            state.lock_start_time = None;
+            log::debug!("Lock disengaged");
+        }
     }
 
     pub fn update_input_time(&self) {
@@ -108,10 +125,237 @@ impl AppState {
     pub fn is_talk_key_pressed(&self) -> bool {
         self.inner.lock().talk_key_pressed
     }
+
+    /// Sets the auto-unlock timeout (called at startup)
+    pub fn set_auto_unlock_timeout(&self, timeout_seconds: Option<u64>) {
+        let mut state = self.inner.lock();
+        state.auto_unlock_timeout = timeout_seconds;
+    }
+
+    /// Check if auto-unlock should trigger
+    pub fn should_auto_unlock(&self) -> bool {
+        let state = self.inner.lock();
+
+        // Must be locked and have timeout configured
+        if !state.is_locked || state.auto_unlock_timeout.is_none() {
+            return false;
+        }
+
+        // Must have recorded lock start time
+        let lock_start = match state.lock_start_time {
+            Some(time) => time,
+            None => return false,
+        };
+
+        let timeout = std::time::Duration::from_secs(state.auto_unlock_timeout.unwrap());
+        lock_start.elapsed() >= timeout
+    }
+
+    /// Trigger auto-unlock (called by background thread)
+    pub fn trigger_auto_unlock(&self) {
+        let mut state = self.inner.lock();
+
+        if state.is_locked {
+            let elapsed = state.lock_start_time
+                .map(|t| t.elapsed().as_secs())
+                .unwrap_or(0);
+
+            log::warn!("AUTO-UNLOCK TRIGGERED after {} seconds", elapsed);
+
+            state.is_locked = false;
+            state.lock_start_time = None;
+            state.input_buffer.clear();
+        }
+    }
 }
 
 impl Default for AppState {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::thread;
+    use std::time::Duration;
+
+    #[test]
+    fn test_auto_unlock_disabled_by_default() {
+        let state = AppState::new();
+        state.set_locked(true);
+        thread::sleep(Duration::from_secs(1));
+        assert!(!state.should_auto_unlock(), "Auto-unlock should be disabled by default");
+    }
+
+    #[test]
+    fn test_auto_unlock_timeout_triggers() {
+        let state = AppState::new();
+        state.set_auto_unlock_timeout(Some(2)); // 2 seconds for testing
+
+        // Lock the device
+        state.set_locked(true);
+
+        // Should not trigger immediately
+        assert!(!state.should_auto_unlock(), "Should not trigger immediately after lock");
+
+        // Wait for timeout
+        thread::sleep(Duration::from_secs(3));
+
+        // Should trigger after timeout
+        assert!(state.should_auto_unlock(), "Should trigger after timeout expires");
+    }
+
+    #[test]
+    fn test_auto_unlock_reset_on_manual_unlock() {
+        let state = AppState::new();
+        state.set_auto_unlock_timeout(Some(2)); // 2 seconds for testing
+
+        // Lock the device
+        state.set_locked(true);
+        thread::sleep(Duration::from_millis(500));
+
+        // Manual unlock before timeout
+        state.set_locked(false);
+
+        // Wait past the original timeout
+        thread::sleep(Duration::from_secs(2));
+
+        // Should not trigger after manual unlock
+        assert!(!state.should_auto_unlock(), "Should not trigger after manual unlock");
+    }
+
+    #[test]
+    fn test_auto_unlock_lock_unlock_lock_cycles() {
+        let state = AppState::new();
+        state.set_auto_unlock_timeout(Some(1)); // 1 second for testing
+
+        // First lock cycle
+        state.set_locked(true);
+        thread::sleep(Duration::from_millis(500));
+        state.set_locked(false);
+
+        // Second lock cycle (timer should start fresh)
+        state.set_locked(true);
+        thread::sleep(Duration::from_millis(500));
+
+        // Should not trigger yet (only 500ms into second cycle)
+        assert!(!state.should_auto_unlock(), "Should not trigger in middle of second cycle");
+
+        // Wait for second cycle to complete
+        thread::sleep(Duration::from_millis(600));
+
+        // Should trigger now
+        assert!(state.should_auto_unlock(), "Should trigger after second cycle timeout");
+    }
+
+    #[test]
+    fn test_trigger_auto_unlock_clears_state() {
+        let state = AppState::new();
+        state.set_auto_unlock_timeout(Some(1));
+
+        // Add some input to buffer
+        state.append_to_buffer('t');
+        state.append_to_buffer('e');
+        state.append_to_buffer('s');
+        state.append_to_buffer('t');
+
+        // Lock the device
+        state.set_locked(true);
+
+        // Trigger auto-unlock
+        state.trigger_auto_unlock();
+
+        // Verify state is cleared
+        assert!(!state.is_locked(), "Should be unlocked after trigger");
+        assert_eq!(state.get_buffer(), "", "Buffer should be cleared");
+
+        // Verify lock_start_time is cleared
+        let inner = state.lock();
+        assert!(inner.lock_start_time.is_none(), "Lock start time should be None");
+    }
+
+    #[test]
+    fn test_auto_unlock_only_when_locked() {
+        let state = AppState::new();
+        state.set_auto_unlock_timeout(Some(1));
+
+        // Device is unlocked, wait past timeout
+        thread::sleep(Duration::from_secs(2));
+
+        // Should not trigger when device is not locked
+        assert!(!state.should_auto_unlock(), "Should not trigger when device is unlocked");
+    }
+
+    #[test]
+    fn test_auto_unlock_minimum_timeout() {
+        let state = AppState::new();
+        state.set_auto_unlock_timeout(Some(1)); // 1 second (below 10s minimum in production)
+
+        state.set_locked(true);
+
+        // Should not trigger immediately
+        assert!(!state.should_auto_unlock());
+
+        // Wait for timeout
+        thread::sleep(Duration::from_millis(1100));
+
+        // Should trigger after 1 second
+        assert!(state.should_auto_unlock(), "Should work with minimum timeout");
+    }
+
+    #[test]
+    fn test_set_auto_unlock_timeout_changes_config() {
+        let state = AppState::new();
+
+        // Initially None
+        {
+            let inner = state.lock();
+            assert!(inner.auto_unlock_timeout.is_none());
+        }
+
+        // Set to 30 seconds
+        state.set_auto_unlock_timeout(Some(30));
+        {
+            let inner = state.lock();
+            assert_eq!(inner.auto_unlock_timeout, Some(30));
+        }
+
+        // Set to None (disable)
+        state.set_auto_unlock_timeout(None);
+        {
+            let inner = state.lock();
+            assert!(inner.auto_unlock_timeout.is_none());
+        }
+    }
+
+    #[test]
+    fn test_lock_start_time_recorded() {
+        let state = AppState::new();
+
+        // Initially None
+        {
+            let inner = state.lock();
+            assert!(inner.lock_start_time.is_none(), "Lock start time should be None initially");
+        }
+
+        // Lock the device
+        state.set_locked(true);
+
+        // Should have recorded start time
+        {
+            let inner = state.lock();
+            assert!(inner.lock_start_time.is_some(), "Lock start time should be recorded");
+        }
+
+        // Unlock the device
+        state.set_locked(false);
+
+        // Should clear start time
+        {
+            let inner = state.lock();
+            assert!(inner.lock_start_time.is_none(), "Lock start time should be cleared on unlock");
+        }
     }
 }

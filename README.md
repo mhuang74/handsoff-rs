@@ -7,6 +7,7 @@ A macOS menu bar application that prevents accidental or unsolicited input from 
 - **Complete Input Blocking**: Blocks all keyboard, trackpad, and mouse inputs while keeping the screen visible
 - **Secure Unlocking**: Unlock via passphrase or Touch ID
 - **Auto-Lock**: Automatically locks after 3 minutes of inactivity (configurable)
+- **Auto-Unlock Safety Feature**: Configurable timeout that automatically unlocks after a set period to prevent permanent lockouts (optional, for development/testing)
 - **Smart Buffer Reset**: 5-second input buffer reset to handle accidental input
 - **Hotkeys**:
   - `Ctrl+Cmd+Shift+L`: Enable lock
@@ -81,6 +82,109 @@ The app automatically locks after 3 minutes of no input activity. You can config
 
 When locked, press `Ctrl+Cmd+Shift+T` to temporarily pass through a spacebar keypress, allowing you to unmute in video conferencing apps like Zoom or Google Meet.
 
+### Auto-Unlock Safety Feature
+
+The auto-unlock feature provides a fail-safe mechanism that automatically disables input interception after a configurable timeout. This prevents permanent lockouts due to bugs, forgotten passphrases during development, or other unexpected issues.
+
+**⚠️ Important:** This feature is designed for **development, testing, and personal emergency use only**. It should NOT be enabled in production environments where security is critical.
+
+#### Enabling Auto-Unlock
+
+Set the `HANDS_OFF_AUTO_UNLOCK` environment variable to the desired timeout in seconds:
+
+```bash
+# Enable with 30-second timeout (for quick testing)
+HANDS_OFF_AUTO_UNLOCK=30 cargo run
+
+# Enable with 5-minute timeout (for development)
+HANDS_OFF_AUTO_UNLOCK=300 ./handsoff
+
+# Enable with 10-minute timeout (more conservative)
+HANDS_OFF_AUTO_UNLOCK=600 ./handsoff
+
+# Disabled (default behavior - no auto-unlock)
+./handsoff
+```
+
+#### Valid Configuration Values
+
+- **Minimum:** 10 seconds
+- **Maximum:** 3600 seconds (1 hour)
+- **Disabled:** 0 or unset (default)
+- **Invalid values** (below 10 or above 3600) will disable the feature with a warning
+
+#### How It Works
+
+1. When you lock the device, a timer starts counting
+2. Every 10 seconds, the app checks if the timeout has been exceeded
+3. If the timeout expires while locked:
+   - Input interception is automatically disabled
+   - A prominent notification appears: "HandsOff Auto-Unlock Activated"
+   - The menu bar icon updates to unlocked state
+   - The event is logged at WARNING level for audit purposes
+4. If you manually unlock before the timeout, the timer resets
+
+#### Use Cases
+
+**Development/Testing:**
+```bash
+# Quick testing during development
+HANDS_OFF_AUTO_UNLOCK=30 cargo run
+```
+
+**Personal Use (Emergency Failsafe):**
+```bash
+# Set a 10-minute failsafe in case you forget your passphrase
+HANDS_OFF_AUTO_UNLOCK=600 ./handsoff
+```
+
+**Launch Agent (Permanent Configuration):**
+```xml
+<!-- ~/Library/LaunchAgents/com.handsoff.plist -->
+<key>EnvironmentVariables</key>
+<dict>
+    <key>HANDS_OFF_AUTO_UNLOCK</key>
+    <string>300</string>  <!-- 5 minutes -->
+</dict>
+```
+
+#### Security Implications
+
+**Benefits:**
+- Prevents denial-of-service if bugs occur
+- Provides emergency access during development
+- Logged for audit purposes
+
+**Risks:**
+- Reduces security if timeout is too short
+- An attacker who knows the feature exists could wait for auto-unlock
+- Not suitable for public/shared computers
+
+**Recommendations:**
+- ✅ Use for development and testing
+- ✅ Use with longer timeouts (5-10 minutes) for personal devices
+- ❌ Do NOT use in production/public environments
+- ❌ Do NOT set timeouts shorter than 60 seconds for actual use
+- ❌ Do NOT enable on shared computers
+
+#### Verification
+
+When auto-unlock is enabled, check the logs at startup:
+
+```bash
+# You should see this in the logs
+INFO  Auto-unlock safety feature enabled: 30 seconds
+INFO  Auto-unlock monitoring thread started
+```
+
+When auto-unlock triggers:
+
+```bash
+WARN  Auto-unlock timeout expired - disabling input interception
+WARN  AUTO-UNLOCK TRIGGERED after 30 seconds
+INFO  Auto-unlock notification delivered
+```
+
 ## Project Structure
 
 ```
@@ -132,6 +236,76 @@ src/
 - Quit the app (when unlocked)
 - Remove the keychain entry: `security delete-generic-password -s com.handsoff.inputlock -a passphrase_hash`
 - Restart the app and set a new passphrase
+
+### Auto-unlock not triggering
+
+**Check if feature is enabled:**
+```bash
+# Verify environment variable is set
+echo $HANDS_OFF_AUTO_UNLOCK
+
+# Run with logging to see status
+RUST_LOG=info HANDS_OFF_AUTO_UNLOCK=30 ./handsoff
+```
+
+**Common issues:**
+- Environment variable not set or set to invalid value
+- Value is outside valid range (10-3600 seconds)
+- Device was not actually locked (check menu bar icon)
+- Manual unlock occurred before timeout expired
+
+**Expected behavior:**
+- Feature logs "Auto-unlock safety feature enabled: X seconds" at startup
+- Auto-unlock thread logs "Auto-unlock monitoring thread started"
+- Triggers within 10 seconds of configured timeout (thread sleeps 10s between checks)
+
+### Auto-unlock notification not appearing
+
+**Check notification permissions:**
+```bash
+# Ensure app can send notifications
+# System Settings > Notifications > HandsOff
+```
+
+**Check logs for errors:**
+```bash
+RUST_LOG=debug ./handsoff
+# Look for: "Failed to get notification center" or similar errors
+```
+
+**Try manually opening Notification Center** while the app is running to ensure notifications are enabled
+
+### Auto-unlock timer seems inaccurate
+
+This is **expected behavior**, not a bug:
+- The monitoring thread sleeps for 10 seconds between checks
+- Auto-unlock will trigger within 0-10 seconds after the configured timeout
+- Example: With `HANDS_OFF_AUTO_UNLOCK=30`, unlock will occur between 30-40 seconds after lock
+- This design balances accuracy with CPU efficiency
+
+### Locked out despite auto-unlock being enabled
+
+**Emergency recovery options:**
+
+1. **SSH from another device** (if SSH is enabled):
+   ```bash
+   ssh user@your-mac
+   pkill -f handsoff
+   ```
+
+2. **Force quit** (if you can still access menu bar):
+   - Press `Cmd+Option+Esc`
+   - Select HandsOff and click Force Quit
+
+3. **Hard reboot** (last resort):
+   - Hold power button until Mac shuts down
+   - This is why auto-unlock exists - to prevent this scenario
+
+**Prevention:**
+- Always test auto-unlock works before relying on it
+- Start with short timeout (30s) for testing
+- Increase to longer timeout (5-10 minutes) for actual use
+- Keep terminal window visible to see logs during testing
 
 ## License
 

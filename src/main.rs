@@ -13,10 +13,39 @@ use cocoa::base::nil;
 use cocoa::foundation::NSAutoreleasePool;
 use input_blocking::event_tap;
 use input_blocking::hotkeys::HotkeyManager;
-use log::{error, info};
+use log::{debug, error, info, warn};
+use std::env;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
+
+/// Parse the HANDS_OFF_AUTO_UNLOCK environment variable
+fn parse_auto_unlock_timeout() -> Option<u64> {
+    match env::var("HANDS_OFF_AUTO_UNLOCK") {
+        Ok(val) => match val.parse::<u64>() {
+            Ok(seconds) if seconds >= 10 && seconds <= 3600 => {
+                info!("Auto-unlock safety feature enabled: {} seconds", seconds);
+                Some(seconds)
+            }
+            Ok(seconds) if seconds == 0 => {
+                info!("Auto-unlock disabled (value: 0)");
+                None
+            }
+            Ok(seconds) => {
+                warn!("Invalid auto-unlock timeout: {} (must be 10-3600 or 0). Feature disabled.", seconds);
+                None
+            }
+            Err(e) => {
+                warn!("Failed to parse HANDS_OFF_AUTO_UNLOCK: {}. Feature disabled.", e);
+                None
+            }
+        },
+        Err(_) => {
+            debug!("HANDS_OFF_AUTO_UNLOCK not set. Auto-unlock disabled.");
+            None
+        }
+    }
+}
 
 fn main() -> Result<()> {
     // Initialize logger
@@ -35,6 +64,10 @@ fn main() -> Result<()> {
 
     // Create app state
     let state = Arc::new(AppState::new());
+
+    // Parse and configure auto-unlock timeout
+    let auto_unlock_timeout = parse_auto_unlock_timeout();
+    state.set_auto_unlock_timeout(auto_unlock_timeout);
 
     // Load passphrase hash from keychain
     match auth::keychain::retrieve_passphrase_hash() {
@@ -84,6 +117,11 @@ fn main() -> Result<()> {
     start_buffer_reset_thread(state.clone());
     start_auto_lock_thread(state.clone());
     start_hotkey_listener_thread(state.clone(), hotkey_manager);
+
+    // Start auto-unlock thread if enabled
+    if auto_unlock_timeout.is_some() {
+        start_auto_unlock_thread(state.clone());
+    }
 
     // Create menu bar app
     unsafe {
@@ -145,4 +183,123 @@ fn start_hotkey_listener_thread(state: Arc<AppState>, manager: HotkeyManager) {
             }
         }
     });
+}
+
+/// Background thread to trigger auto-unlock after timeout
+fn start_auto_unlock_thread(state: Arc<AppState>) {
+    thread::Builder::new()
+        .name("auto-unlock".to_string())
+        .spawn(move || {
+            info!("Auto-unlock monitoring thread started");
+
+            loop {
+                thread::sleep(Duration::from_secs(10)); // Check every 10 seconds
+
+                if state.should_auto_unlock() {
+                    warn!("Auto-unlock timeout expired - disabling input interception");
+
+                    // Unlock the device
+                    state.trigger_auto_unlock();
+
+                    // Update UI on main thread
+                    ui::menubar::update_menu_bar_icon(false);
+                    ui::notifications::show_auto_unlock_notification();
+                }
+            }
+        })
+        .expect("Failed to spawn auto-unlock thread");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_auto_unlock_valid_values() {
+        // Test minimum valid value
+        env::set_var("HANDS_OFF_AUTO_UNLOCK", "10");
+        assert_eq!(parse_auto_unlock_timeout(), Some(10), "Should accept 10 seconds");
+
+        // Test typical value
+        env::set_var("HANDS_OFF_AUTO_UNLOCK", "30");
+        assert_eq!(parse_auto_unlock_timeout(), Some(30), "Should accept 30 seconds");
+
+        // Test large value
+        env::set_var("HANDS_OFF_AUTO_UNLOCK", "600");
+        assert_eq!(parse_auto_unlock_timeout(), Some(600), "Should accept 600 seconds");
+
+        // Test maximum valid value
+        env::set_var("HANDS_OFF_AUTO_UNLOCK", "3600");
+        assert_eq!(parse_auto_unlock_timeout(), Some(3600), "Should accept 3600 seconds");
+
+        // Clean up
+        env::remove_var("HANDS_OFF_AUTO_UNLOCK");
+    }
+
+    #[test]
+    fn test_parse_auto_unlock_disabled() {
+        // Test explicit disable with 0
+        env::set_var("HANDS_OFF_AUTO_UNLOCK", "0");
+        assert_eq!(parse_auto_unlock_timeout(), None, "Should return None for 0");
+
+        // Test not set (should return None, not panic)
+        env::remove_var("HANDS_OFF_AUTO_UNLOCK");
+        assert_eq!(parse_auto_unlock_timeout(), None, "Should return None when not set");
+    }
+
+    #[test]
+    fn test_parse_auto_unlock_invalid_values() {
+        // Test too low
+        env::set_var("HANDS_OFF_AUTO_UNLOCK", "5");
+        assert_eq!(parse_auto_unlock_timeout(), None, "Should reject value below 10");
+
+        env::set_var("HANDS_OFF_AUTO_UNLOCK", "9");
+        assert_eq!(parse_auto_unlock_timeout(), None, "Should reject value below 10");
+
+        // Test too high
+        env::set_var("HANDS_OFF_AUTO_UNLOCK", "3601");
+        assert_eq!(parse_auto_unlock_timeout(), None, "Should reject value above 3600");
+
+        env::set_var("HANDS_OFF_AUTO_UNLOCK", "5000");
+        assert_eq!(parse_auto_unlock_timeout(), None, "Should reject value above 3600");
+
+        // Test negative number (will fail to parse)
+        env::set_var("HANDS_OFF_AUTO_UNLOCK", "-10");
+        assert_eq!(parse_auto_unlock_timeout(), None, "Should reject negative value");
+
+        // Test non-numeric
+        env::set_var("HANDS_OFF_AUTO_UNLOCK", "invalid");
+        assert_eq!(parse_auto_unlock_timeout(), None, "Should reject non-numeric value");
+
+        env::set_var("HANDS_OFF_AUTO_UNLOCK", "30s");
+        assert_eq!(parse_auto_unlock_timeout(), None, "Should reject value with units");
+
+        env::set_var("HANDS_OFF_AUTO_UNLOCK", "");
+        assert_eq!(parse_auto_unlock_timeout(), None, "Should reject empty string");
+
+        // Clean up
+        env::remove_var("HANDS_OFF_AUTO_UNLOCK");
+    }
+
+    #[test]
+    fn test_parse_auto_unlock_boundary_cases() {
+        // Test just below minimum
+        env::set_var("HANDS_OFF_AUTO_UNLOCK", "9");
+        assert_eq!(parse_auto_unlock_timeout(), None, "Should reject 9 seconds");
+
+        // Test at minimum boundary
+        env::set_var("HANDS_OFF_AUTO_UNLOCK", "10");
+        assert_eq!(parse_auto_unlock_timeout(), Some(10), "Should accept 10 seconds");
+
+        // Test at maximum boundary
+        env::set_var("HANDS_OFF_AUTO_UNLOCK", "3600");
+        assert_eq!(parse_auto_unlock_timeout(), Some(3600), "Should accept 3600 seconds");
+
+        // Test just above maximum
+        env::set_var("HANDS_OFF_AUTO_UNLOCK", "3601");
+        assert_eq!(parse_auto_unlock_timeout(), None, "Should reject 3601 seconds");
+
+        // Clean up
+        env::remove_var("HANDS_OFF_AUTO_UNLOCK");
+    }
 }
