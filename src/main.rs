@@ -1,23 +1,35 @@
-extern crate objc;
-
 mod app_state;
 mod auth;
 mod input_blocking;
-mod ui;
 mod utils;
 
 use anyhow::{Context, Result};
 use app_state::AppState;
-use cocoa::appkit::{NSApp, NSApplication, NSApplicationActivationPolicyAccessory};
-use cocoa::base::nil;
-use cocoa::foundation::NSAutoreleasePool;
 use input_blocking::event_tap;
 use input_blocking::hotkeys::HotkeyManager;
 use log::{debug, error, info, warn};
 use std::env;
+use std::io::{self, Write};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
+
+/// Prompt user for passphrase via command line
+fn prompt_for_passphrase() -> Option<String> {
+    print!("Enter passphrase to unlock HandsOff: ");
+    io::stdout().flush().ok()?;
+
+    let mut passphrase = String::new();
+    io::stdin().read_line(&mut passphrase).ok()?;
+
+    let passphrase = passphrase.trim();
+    if passphrase.is_empty() {
+        error!("Empty passphrase not allowed");
+        None
+    } else {
+        Some(passphrase.to_string())
+    }
+}
 
 /// Parse the HANDS_OFF_AUTO_UNLOCK environment variable
 fn parse_auto_unlock_timeout() -> Option<u64> {
@@ -58,7 +70,7 @@ fn main() -> Result<()> {
     // Check accessibility permissions
     if !input_blocking::check_accessibility_permissions() {
         error!("Accessibility permissions not granted");
-        ui::dialogs::show_permissions_dialog();
+        error!("Please grant accessibility permissions to HandsOff in System Preferences > Security & Privacy > Privacy > Accessibility");
         std::process::exit(1);
     }
 
@@ -77,12 +89,13 @@ fn main() -> Result<()> {
         }
         Ok(None) => {
             info!("No passphrase set - prompting user");
-            if let Some(passphrase) = ui::dialogs::show_set_passphrase_dialog() {
+            if let Some(passphrase) = prompt_for_passphrase() {
                 let hash = auth::hash_passphrase(&passphrase);
                 if let Err(e) = auth::keychain::store_passphrase_hash(&hash) {
                     error!("Failed to store passphrase: {}", e);
                 } else {
                     state.set_passphrase_hash(hash);
+                    info!("Passphrase set successfully");
                 }
             } else {
                 error!("No passphrase set - exiting");
@@ -123,23 +136,13 @@ fn main() -> Result<()> {
         start_auto_unlock_thread(state.clone());
     }
 
-    // Create menu bar app
-    unsafe {
-        let _pool = NSAutoreleasePool::new(nil);
+    info!("HandsOff is running - press Ctrl+C to quit");
+    info!("Input interception is active. Type your passphrase to unlock.");
 
-        let app = NSApp();
-        app.setActivationPolicy_(NSApplicationActivationPolicyAccessory);
-
-        // Create menu bar
-        let _menubar = ui::menubar::MenuBar::new(state.clone());
-
-        info!("HandsOff is running");
-
-        // Run the app
-        app.run();
+    // Keep the main thread alive
+    loop {
+        thread::sleep(Duration::from_secs(60));
     }
-
-    Ok(())
 }
 
 /// Background thread to reset input buffer after timeout
@@ -163,10 +166,8 @@ fn start_auto_lock_thread(state: Arc<AppState>) {
         thread::sleep(Duration::from_secs(10));
 
         if state.should_auto_lock() {
-            info!("Auto-lock triggered after inactivity");
+            info!("Auto-lock triggered after inactivity - input now locked");
             state.set_locked(true);
-            ui::menubar::update_menu_bar_icon(true);
-            ui::notifications::show_lock_notification();
         }
     });
 }
@@ -200,10 +201,7 @@ fn start_auto_unlock_thread(state: Arc<AppState>) {
 
                     // Unlock the device
                     state.trigger_auto_unlock();
-
-                    // Update UI on main thread
-                    ui::menubar::update_menu_bar_icon(false);
-                    ui::notifications::show_auto_unlock_notification();
+                    info!("Input unlocked due to auto-unlock timeout");
                 }
             }
         })

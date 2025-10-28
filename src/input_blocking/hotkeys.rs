@@ -92,7 +92,6 @@ pub fn handle_hotkey_event(
         if !state.is_locked() {
             state.set_locked(true);
             info!("Input locked via hotkey");
-            crate::ui::menubar::update_menu_bar_icon(true);
         }
     } else if manager.is_talk_hotkey(event_id) {
         info!("Talk hotkey triggered");

@@ -57,11 +57,9 @@ pub fn handle_keyboard_event(
             let state = state.clone();
             move || {
                 if let Ok(true) = auth::touchid::authenticate() {
-                    info!("Touch ID authentication successful");
+                    info!("Touch ID authentication successful - input unlocked");
                     state.set_locked(false);
                     state.clear_buffer();
-                    crate::ui::menubar::update_menu_bar_icon(false);
-                    crate::ui::notifications::show_unlock_notification();
                 }
             }
         });
@@ -91,11 +89,9 @@ pub fn handle_keyboard_event(
         if let Some(hash) = state.get_passphrase_hash() {
             let buffer = state.get_buffer();
             if auth::verify_passphrase(&buffer, &hash) {
-                info!("Passphrase verified - unlocking");
+                info!("Passphrase verified - input unlocked");
                 state.set_locked(false);
                 state.clear_buffer();
-                crate::ui::menubar::update_menu_bar_icon(false);
-                crate::ui::notifications::show_unlock_notification();
                 return true; // Block the final matching event
             }
         }
