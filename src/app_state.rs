@@ -165,7 +165,8 @@ impl AppState {
         let mut state = self.inner.lock();
 
         if state.is_locked {
-            let elapsed = state.lock_start_time
+            let elapsed = state
+                .lock_start_time
                 .map(|t| t.elapsed().as_secs())
                 .unwrap_or(0);
 
@@ -195,7 +196,10 @@ mod tests {
         let state = AppState::new();
         state.set_locked(true);
         thread::sleep(Duration::from_secs(1));
-        assert!(!state.should_auto_unlock(), "Auto-unlock should be disabled by default");
+        assert!(
+            !state.should_auto_unlock(),
+            "Auto-unlock should be disabled by default"
+        );
     }
 
     #[test]
@@ -207,13 +211,19 @@ mod tests {
         state.set_locked(true);
 
         // Should not trigger immediately
-        assert!(!state.should_auto_unlock(), "Should not trigger immediately after lock");
+        assert!(
+            !state.should_auto_unlock(),
+            "Should not trigger immediately after lock"
+        );
 
         // Wait for timeout
         thread::sleep(Duration::from_secs(3));
 
         // Should trigger after timeout
-        assert!(state.should_auto_unlock(), "Should trigger after timeout expires");
+        assert!(
+            state.should_auto_unlock(),
+            "Should trigger after timeout expires"
+        );
     }
 
     #[test]
@@ -232,7 +242,10 @@ mod tests {
         thread::sleep(Duration::from_secs(2));
 
         // Should not trigger after manual unlock
-        assert!(!state.should_auto_unlock(), "Should not trigger after manual unlock");
+        assert!(
+            !state.should_auto_unlock(),
+            "Should not trigger after manual unlock"
+        );
     }
 
     #[test]
@@ -250,13 +263,19 @@ mod tests {
         thread::sleep(Duration::from_millis(500));
 
         // Should not trigger yet (only 500ms into second cycle)
-        assert!(!state.should_auto_unlock(), "Should not trigger in middle of second cycle");
+        assert!(
+            !state.should_auto_unlock(),
+            "Should not trigger in middle of second cycle"
+        );
 
         // Wait for second cycle to complete
         thread::sleep(Duration::from_millis(600));
 
         // Should trigger now
-        assert!(state.should_auto_unlock(), "Should trigger after second cycle timeout");
+        assert!(
+            state.should_auto_unlock(),
+            "Should trigger after second cycle timeout"
+        );
     }
 
     #[test]
@@ -282,7 +301,10 @@ mod tests {
 
         // Verify lock_start_time is cleared
         let inner = state.lock();
-        assert!(inner.lock_start_time.is_none(), "Lock start time should be None");
+        assert!(
+            inner.lock_start_time.is_none(),
+            "Lock start time should be None"
+        );
     }
 
     #[test]
@@ -294,7 +316,10 @@ mod tests {
         thread::sleep(Duration::from_secs(2));
 
         // Should not trigger when device is not locked
-        assert!(!state.should_auto_unlock(), "Should not trigger when device is unlocked");
+        assert!(
+            !state.should_auto_unlock(),
+            "Should not trigger when device is unlocked"
+        );
     }
 
     #[test]
@@ -311,7 +336,10 @@ mod tests {
         thread::sleep(Duration::from_millis(1100));
 
         // Should trigger after 1 second
-        assert!(state.should_auto_unlock(), "Should work with minimum timeout");
+        assert!(
+            state.should_auto_unlock(),
+            "Should work with minimum timeout"
+        );
     }
 
     #[test]
@@ -346,7 +374,10 @@ mod tests {
         // Initially None
         {
             let inner = state.lock();
-            assert!(inner.lock_start_time.is_none(), "Lock start time should be None initially");
+            assert!(
+                inner.lock_start_time.is_none(),
+                "Lock start time should be None initially"
+            );
         }
 
         // Lock the device
@@ -355,7 +386,10 @@ mod tests {
         // Should have recorded start time
         {
             let inner = state.lock();
-            assert!(inner.lock_start_time.is_some(), "Lock start time should be recorded");
+            assert!(
+                inner.lock_start_time.is_some(),
+                "Lock start time should be recorded"
+            );
         }
 
         // Unlock the device
@@ -364,7 +398,10 @@ mod tests {
         // Should clear start time
         {
             let inner = state.lock();
-            assert!(inner.lock_start_time.is_none(), "Lock start time should be cleared on unlock");
+            assert!(
+                inner.lock_start_time.is_none(),
+                "Lock start time should be cleared on unlock"
+            );
         }
     }
 }

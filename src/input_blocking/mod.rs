@@ -10,27 +10,25 @@ use log::{debug, error, info};
 /// Handle a keyboard event during lock
 ///
 /// Returns true if the event should be blocked, false if it should pass through
-pub fn handle_keyboard_event(
-    event: &CGEvent,
-    event_type: CGEventType,
-    state: &AppState,
-) -> bool {
+pub fn handle_keyboard_event(event: &CGEvent, event_type: CGEventType, state: &AppState) -> bool {
     let keycode = event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE);
     let flags = event.get_flags();
 
     // Check for Lock hotkey (Ctrl+Cmd+Shift+L) - keycode 37 is 'L'
     // This only LOCKS, never unlocks (unlock requires passphrase or Touch ID)
-    if keycode == 37 &&
-        flags.contains(CGEventFlags::CGEventFlagControl) &&
-        flags.contains(CGEventFlags::CGEventFlagCommand) &&
-        flags.contains(CGEventFlags::CGEventFlagShift)
+    if keycode == 37
+        && flags.contains(CGEventFlags::CGEventFlagControl)
+        && flags.contains(CGEventFlags::CGEventFlagCommand)
+        && flags.contains(CGEventFlags::CGEventFlagShift)
     {
         if (event_type as u32) == (CGEventType::KeyDown as u32) {
             if !state.is_locked() {
                 info!("Lock hotkey pressed - locking input");
                 state.set_locked(true);
             } else {
-                info!("Lock hotkey pressed but already locked (use passphrase or Touch ID to unlock)");
+                info!(
+                    "Lock hotkey pressed but already locked (use passphrase or Touch ID to unlock)"
+                );
             }
         }
         return true; // Block the hotkey itself
@@ -38,10 +36,10 @@ pub fn handle_keyboard_event(
 
     // Check for Talk hotkey (Ctrl+Cmd+Shift+T) - keycode 17 is 'T'
     // Track press/release state for passthrough
-    if keycode == 17 &&
-        flags.contains(CGEventFlags::CGEventFlagControl) &&
-        flags.contains(CGEventFlags::CGEventFlagCommand) &&
-        flags.contains(CGEventFlags::CGEventFlagShift)
+    if keycode == 17
+        && flags.contains(CGEventFlags::CGEventFlagControl)
+        && flags.contains(CGEventFlags::CGEventFlagCommand)
+        && flags.contains(CGEventFlags::CGEventFlagShift)
     {
         if (event_type as u32) == (CGEventType::KeyDown as u32) {
             info!("Talk key pressed - enabling spacebar passthrough");

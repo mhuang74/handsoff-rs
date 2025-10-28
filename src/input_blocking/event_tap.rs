@@ -1,8 +1,8 @@
 use crate::app_state::AppState;
 use crate::input_blocking::{handle_keyboard_event, handle_mouse_event};
+use core_foundation::runloop::{kCFRunLoopCommonModes, CFRunLoop};
 use core_graphics::event::CGEventType;
 use core_graphics::sys::{CGEventRef, CGEventTapRef};
-use core_foundation::runloop::{kCFRunLoopCommonModes, CFRunLoop};
 use foreign_types::ForeignType;
 use log::{error, info};
 use std::ffi::c_void;
@@ -18,8 +18,8 @@ type CFIndex = i64;
 #[link(name = "CoreGraphics", kind = "framework")]
 extern "C" {
     fn CGEventTapCreate(
-        tap: u32, // CGEventTapLocation
-        place: u32, // CGEventTapPlacement
+        tap: u32,     // CGEventTapLocation
+        place: u32,   // CGEventTapPlacement
         options: u32, // CGEventTapOptions
         events_of_interest: u64,
         callback: unsafe extern "C" fn(
@@ -135,20 +135,23 @@ unsafe extern "C" fn event_tap_callback(
 }
 
 /// Enable the event tap
-pub fn enable_event_tap(tap: CGEventTapRef) {
+///
+/// # Safety
+/// The `tap` parameter must be a valid CGEventTapRef pointer returned from `CGEventTapCreate`.
+pub unsafe fn enable_event_tap(tap: CGEventTapRef) {
     use core_foundation::base::TCFType;
 
     unsafe {
         // CGEventTap is a CFMachPort, so we can use CFMachPortCreateRunLoopSource
         let source_ref = CFMachPortCreateRunLoopSource(
-            std::ptr::null_mut(),  // use default allocator
-            tap as CFMachPortRef,  // cast event tap to mach port
-            0                      // order
+            std::ptr::null_mut(), // use default allocator
+            tap as CFMachPortRef, // cast event tap to mach port
+            0,                    // order
         );
 
         // Convert raw pointer to CFRunLoopSource
         let source = core_foundation::runloop::CFRunLoopSource::wrap_under_create_rule(
-            source_ref as core_foundation::runloop::CFRunLoopSourceRef
+            source_ref as core_foundation::runloop::CFRunLoopSourceRef,
         );
         CFRunLoop::get_current().add_source(&source, kCFRunLoopCommonModes);
         CGEventTapEnable(tap, true);
@@ -157,8 +160,11 @@ pub fn enable_event_tap(tap: CGEventTapRef) {
 }
 
 /// Disable the event tap
+///
+/// # Safety
+/// The `tap` parameter must be a valid CGEventTapRef pointer returned from `CGEventTapCreate`.
 #[allow(dead_code)]
-pub fn disable_event_tap(tap: CGEventTapRef) {
+pub unsafe fn disable_event_tap(tap: CGEventTapRef) {
     unsafe {
         CGEventTapEnable(tap, false);
     }

@@ -14,8 +14,8 @@ pub struct HotkeyManager {
 
 impl HotkeyManager {
     pub fn new() -> Result<Self> {
-        let manager = GlobalHotKeyManager::new()
-            .context("Failed to create global hotkey manager")?;
+        let manager =
+            GlobalHotKeyManager::new().context("Failed to create global hotkey manager")?;
 
         Ok(Self {
             manager,
@@ -80,11 +80,7 @@ impl HotkeyManager {
 }
 
 /// Handle hotkey events
-pub fn handle_hotkey_event(
-    event: GlobalHotKeyEvent,
-    state: &AppState,
-    manager: &HotkeyManager,
-) {
+pub fn handle_hotkey_event(event: GlobalHotKeyEvent, state: &AppState, manager: &HotkeyManager) {
     let event_id = event.id;
 
     if manager.is_lock_hotkey(event_id) {
