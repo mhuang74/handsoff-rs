@@ -19,7 +19,7 @@ pub struct AppStateInner {
     pub last_input_time: Instant,
     /// Current passphrase hash (SHA-256, hex-encoded)
     pub passphrase_hash: Option<String>,
-    /// Auto-lock timeout in seconds (default: 180 = 3 minutes)
+    /// Auto-lock timeout in seconds (default: 300 = 5 minutes)
     pub auto_lock_timeout: u64,
     /// Input buffer reset timeout in seconds (default: 5)
     pub buffer_reset_timeout: u64,
@@ -40,7 +40,7 @@ impl AppState {
                 last_key_time: None,
                 last_input_time: Instant::now(),
                 passphrase_hash: None,
-                auto_lock_timeout: 180,
+                auto_lock_timeout: 300,
                 buffer_reset_timeout: 5,
                 talk_key_pressed: false,
                 lock_start_time: None,
@@ -116,6 +116,15 @@ impl AppState {
     pub fn should_auto_lock(&self) -> bool {
         let state = self.inner.lock();
         !state.is_locked && state.last_input_time.elapsed().as_secs() >= state.auto_lock_timeout
+    }
+
+    pub fn get_auto_lock_remaining_secs(&self) -> Option<u64> {
+        let state = self.inner.lock();
+        if state.is_locked {
+            return None;
+        }
+        let elapsed = state.last_input_time.elapsed().as_secs();
+        Some(state.auto_lock_timeout.saturating_sub(elapsed))
     }
 
     pub fn set_talk_key_pressed(&self, pressed: bool) {

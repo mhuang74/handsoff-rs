@@ -69,6 +69,30 @@ fn parse_auto_unlock_timeout() -> Option<u64> {
     }
 }
 
+/// Parse the HANDS_OFF_AUTO_LOCK environment variable
+fn parse_auto_lock_timeout() -> Option<u64> {
+    match env::var("HANDS_OFF_AUTO_LOCK") {
+        Ok(val) => match val.parse::<u64>() {
+            Ok(seconds) if seconds >= 10 && seconds <= 7200 => {
+                info!("Auto-lock timeout set via environment variable: {} seconds", seconds);
+                Some(seconds)
+            }
+            Ok(seconds) => {
+                warn!("Invalid auto-lock timeout: {} (must be 10-7200 seconds). Using default.", seconds);
+                None
+            }
+            Err(e) => {
+                warn!("Failed to parse HANDS_OFF_AUTO_LOCK: {}. Using default.", e);
+                None
+            }
+        },
+        Err(_) => {
+            debug!("HANDS_OFF_AUTO_LOCK not set.");
+            None
+        }
+    }
+}
+
 fn main() -> Result<()> {
     // Parse command-line arguments
     let args = Args::parse();
@@ -140,10 +164,14 @@ fn main() -> Result<()> {
         }
     }
 
-    // Load auto-lock timeout
-    if let Ok(Some(timeout)) = auth::keychain::retrieve_auto_lock_timeout() {
+    // Load auto-lock timeout: env var takes precedence over keychain
+    if let Some(timeout) = parse_auto_lock_timeout() {
         state.lock().auto_lock_timeout = timeout;
-        info!("Loaded auto-lock timeout: {} seconds", timeout);
+    } else if let Ok(Some(timeout)) = auth::keychain::retrieve_auto_lock_timeout() {
+        state.lock().auto_lock_timeout = timeout;
+        info!("Loaded auto-lock timeout from keychain: {} seconds", timeout);
+    } else {
+        info!("Using default auto-lock timeout: {} seconds", state.lock().auto_lock_timeout);
     }
 
     // Create event tap for input blocking
@@ -207,12 +235,26 @@ fn start_buffer_reset_thread(state: Arc<AppState>) {
 
 /// Background thread to enable auto-lock after inactivity
 fn start_auto_lock_thread(state: Arc<AppState>) {
-    thread::spawn(move || loop {
-        thread::sleep(Duration::from_secs(10));
+    thread::spawn(move || {
+        let mut check_count = 0u32;
+        loop {
+            thread::sleep(Duration::from_secs(10));
+            check_count += 1;
 
-        if state.should_auto_lock() {
-            info!("Auto-lock triggered after inactivity - input now locked");
-            state.set_locked(true);
+            // Log remaining time every 60 seconds (6 checks of 10 seconds each)
+            if check_count % 6 == 0 {
+                if let Some(remaining_secs) = state.get_auto_lock_remaining_secs() {
+                    let minutes = remaining_secs / 60;
+                    let seconds = remaining_secs % 60;
+                    info!("Auto-lock in {} seconds ({} min {} sec remaining)",
+                        remaining_secs, minutes, seconds);
+                }
+            }
+
+            if state.should_auto_lock() {
+                info!("Auto-lock triggered after inactivity - input now locked");
+                state.set_locked(true);
+            }
         }
     });
 }
