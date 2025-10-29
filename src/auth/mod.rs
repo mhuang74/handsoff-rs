@@ -1,4 +1,3 @@
-pub mod keychain;
 pub mod touchid;
 
 use crate::utils;

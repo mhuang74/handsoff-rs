@@ -10,7 +10,6 @@ use input_blocking::event_tap;
 use input_blocking::hotkeys::HotkeyManager;
 use log::{debug, error, info, warn};
 use std::env;
-use std::io::{self, Write};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -24,22 +23,6 @@ struct Args {
     locked: bool,
 }
 
-/// Prompt user for passphrase via command line
-fn prompt_for_passphrase() -> Option<String> {
-    print!("Enter passphrase to unlock HandsOff: ");
-    io::stdout().flush().ok()?;
-
-    let mut passphrase = String::new();
-    io::stdin().read_line(&mut passphrase).ok()?;
-
-    let passphrase = passphrase.trim();
-    if passphrase.is_empty() {
-        error!("Empty passphrase not allowed");
-        None
-    } else {
-        Some(passphrase.to_string())
-    }
-}
 
 /// Parse the HANDS_OFF_AUTO_UNLOCK environment variable
 fn parse_auto_unlock_timeout() -> Option<u64> {
@@ -138,53 +121,29 @@ fn main() -> Result<()> {
         info!("Starting in UNLOCKED mode (use --locked to start locked, or press Ctrl+Cmd+Shift+L to lock)");
     }
 
-    // Check for passphrase from environment variable first (bypasses keychain)
-    if let Ok(passphrase) = env::var("HANDS_OFF_SECRET_PHRASE") {
-        if !passphrase.is_empty() {
+    // Require passphrase from environment variable
+    match env::var("HANDS_OFF_SECRET_PHRASE") {
+        Ok(passphrase) if !passphrase.is_empty() => {
             info!("Using passphrase from HANDS_OFF_SECRET_PHRASE environment variable");
             let hash = auth::hash_passphrase(&passphrase);
             state.set_passphrase_hash(hash);
-        } else {
+        }
+        Ok(_) => {
             error!("HANDS_OFF_SECRET_PHRASE is set but empty");
+            error!("Please set a valid passphrase using: export HANDS_OFF_SECRET_PHRASE='your-passphrase'");
             std::process::exit(1);
         }
-    } else {
-        // Fall back to keychain if env var not set
-        match auth::keychain::retrieve_passphrase_hash() {
-            Ok(Some(hash)) => {
-                info!("Loaded passphrase hash from keychain");
-                state.set_passphrase_hash(hash);
-            }
-            Ok(None) => {
-                info!("No passphrase set - prompting user");
-                if let Some(passphrase) = prompt_for_passphrase() {
-                    let hash = auth::hash_passphrase(&passphrase);
-                    if let Err(e) = auth::keychain::store_passphrase_hash(&hash) {
-                        error!("Failed to store passphrase: {}", e);
-                    } else {
-                        state.set_passphrase_hash(hash);
-                        info!("Passphrase set successfully");
-                    }
-                } else {
-                    error!("No passphrase set - exiting");
-                    std::process::exit(1);
-                }
-            }
-            Err(e) => {
-                error!("Failed to retrieve passphrase from keychain: {}", e);
-            }
+        Err(_) => {
+            error!("HANDS_OFF_SECRET_PHRASE environment variable is not set");
+            error!("Please set your passphrase using: export HANDS_OFF_SECRET_PHRASE='your-passphrase'");
+            error!("This passphrase will be required to unlock HandsOff when input is locked");
+            std::process::exit(1);
         }
     }
 
-    // Load auto-lock timeout: env var takes precedence over keychain
+    // Load auto-lock timeout from environment variable
     if let Some(timeout) = parse_auto_lock_timeout() {
         state.lock().auto_lock_timeout = timeout;
-    } else if let Ok(Some(timeout)) = auth::keychain::retrieve_auto_lock_timeout() {
-        state.lock().auto_lock_timeout = timeout;
-        info!(
-            "Loaded auto-lock timeout from keychain: {} seconds",
-            timeout
-        );
     } else {
         info!(
             "Using default auto-lock timeout: {} seconds",
