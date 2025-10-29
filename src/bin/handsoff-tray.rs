@@ -7,7 +7,7 @@ use log::{error, info};
 use std::env;
 use std::sync::{Arc, Mutex};
 use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
-use tray_icon::{TrayIcon, TrayIconBuilder};
+use tray_icon::TrayIconBuilder;
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -115,58 +115,16 @@ fn main() -> Result<()> {
     let help_id = help_item.id().clone();
     let quit_id = quit_item.id().clone();
 
-    // Clone tray for event handling
-    let tray_handle = tray.clone();
-    let core_for_menu_update = core.clone();
+    // Track state for tooltip updates
+    let mut was_locked = false;
+    let mut last_tooltip = String::new();
 
-    // Spawn thread to monitor lock state and update menu/icon
-    std::thread::spawn(move || {
-        let mut was_locked = false;
-        loop {
-            std::thread::sleep(std::time::Duration::from_millis(500));
-
-            let is_locked = {
-                let core = core_for_menu_update.lock().unwrap();
-                core.is_locked()
-            };
-
-            if is_locked != was_locked {
-                was_locked = is_locked;
-
-                // Update icon to reflect lock status
-                let icon = if is_locked {
-                    create_icon_locked()
-                } else {
-                    create_icon_unlocked()
-                };
-                if let Err(e) = tray_handle.set_icon(Some(icon)) {
-                    error!("Failed to update tray icon: {}", e);
-                }
-
-                // Note: Menu label stays "Lock Input" because when locked,
-                // the menu is inaccessible (mouse clicks blocked).
-                // Unlock must be done by typing the passphrase.
-
-                // Show notification
-                #[cfg(target_os = "macos")]
-                {
-                    let _ = notify_rust::Notification::new()
-                        .summary("HandsOff")
-                        .body(if is_locked {
-                            "Input locked - Type passphrase to unlock"
-                        } else {
-                            "Input unlocked"
-                        })
-                        .timeout(notify_rust::Timeout::Milliseconds(3000))
-                        .show();
-                }
-            }
-        }
-    });
-
-    // Run event loop
+    // Run event loop with periodic updates
     event_loop.run(move |_event, _, control_flow| {
-        *control_flow = ControlFlow::Wait;
+        // Wait for 500ms or until an event occurs
+        *control_flow = ControlFlow::WaitUntil(
+            std::time::Instant::now() + std::time::Duration::from_millis(500)
+        );
 
         // Handle menu events
         if let Ok(event) = MenuEvent::receiver().try_recv() {
@@ -181,7 +139,49 @@ fn main() -> Result<()> {
             } else if event_id == quit_id {
                 info!("Quit menu item clicked, exiting");
                 *control_flow = ControlFlow::Exit;
+                return;
             }
+        }
+
+        // Periodically update icon and tooltip based on lock state
+        let core_lock = core.lock().unwrap();
+        let is_locked = core_lock.is_locked();
+
+        // Update icon when lock state changes
+        if is_locked != was_locked {
+            was_locked = is_locked;
+
+            let icon = if is_locked {
+                create_icon_locked()
+            } else {
+                create_icon_unlocked()
+            };
+            if let Err(e) = tray.set_icon(Some(icon)) {
+                error!("Failed to update tray icon: {}", e);
+            }
+
+            // Show notification on state change
+            #[cfg(target_os = "macos")]
+            {
+                let _ = notify_rust::Notification::new()
+                    .summary("HandsOff")
+                    .body(if is_locked {
+                        "Input locked - Type passphrase to unlock"
+                    } else {
+                        "Input unlocked"
+                    })
+                    .timeout(notify_rust::Timeout::Milliseconds(3000))
+                    .show();
+            }
+        }
+
+        // Always update tooltip (to show live countdown)
+        let tooltip = build_tooltip(&core_lock, is_locked);
+        if tooltip != last_tooltip {
+            if let Err(e) = tray.set_tooltip(Some(&tooltip)) {
+                error!("Failed to update tray tooltip: {}", e);
+            }
+            last_tooltip = tooltip;
         }
     });
 }
@@ -190,7 +190,7 @@ fn main() -> Result<()> {
 /// Note: This only handles locking, not unlocking. When locked, mouse clicks are blocked,
 /// so the menu is inaccessible. Users must type their passphrase to unlock (same as CLI).
 fn handle_lock_toggle(core: Arc<Mutex<HandsOffCore>>) {
-    let mut core = core.lock().unwrap();
+    let core = core.lock().unwrap();
 
     if core.is_locked() {
         // Menu should not be accessible when locked (mouse clicks blocked)
@@ -335,6 +335,52 @@ fn parse_auto_lock_timeout() -> Option<u64> {
             debug!("HANDS_OFF_AUTO_LOCK not set.");
             None
         }
+    }
+}
+
+/// Build tooltip text based on lock state
+fn build_tooltip(core: &HandsOffCore, is_locked: bool) -> String {
+    if !is_locked {
+        return "HandsOff - Unlocked".to_string();
+    }
+
+    // Locked state - build detailed tooltip
+    let mut tooltip = String::new();
+
+    // Show lock duration
+    if let Some(elapsed) = core.get_lock_elapsed_secs() {
+        tooltip.push_str(&format!("HandsOff - Locked ({})\n", format_duration(elapsed)));
+    } else {
+        tooltip.push_str("HandsOff - Locked\n");
+    }
+
+    // Show auto-unlock countdown if enabled
+    if let Some(remaining) = core.get_auto_unlock_remaining_secs() {
+        if remaining > 0 {
+            tooltip.push_str(&format!("Auto-unlock in {}\n", format_duration(remaining)));
+        } else {
+            tooltip.push_str("Auto-unlocking...\n");
+        }
+    }
+
+    // Always show unlock instructions
+    tooltip.push_str("Type passphrase to unlock");
+
+    tooltip
+}
+
+/// Format duration in human-readable form (e.g., "2m 30s" or "45s")
+fn format_duration(seconds: u64) -> String {
+    if seconds >= 60 {
+        let mins = seconds / 60;
+        let secs = seconds % 60;
+        if secs > 0 {
+            format!("{}m {}s", mins, secs)
+        } else {
+            format!("{}m", mins)
+        }
+    } else {
+        format!("{}s", seconds)
     }
 }
 

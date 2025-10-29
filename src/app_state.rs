@@ -186,6 +186,33 @@ impl AppState {
             state.input_buffer.clear();
         }
     }
+
+    /// Get the elapsed time since lock was engaged (in seconds)
+    pub fn get_lock_elapsed_secs(&self) -> Option<u64> {
+        let state = self.inner.lock();
+        state.lock_start_time.map(|t| t.elapsed().as_secs())
+    }
+
+    /// Get remaining time until auto-unlock (in seconds)
+    /// Returns None if not locked, auto-unlock disabled, or no lock start time
+    pub fn get_auto_unlock_remaining_secs(&self) -> Option<u64> {
+        let state = self.inner.lock();
+
+        // Must be locked with auto-unlock enabled
+        if !state.is_locked || state.auto_unlock_timeout.is_none() {
+            return None;
+        }
+
+        let timeout = state.auto_unlock_timeout?;
+        let elapsed = state.lock_start_time?.elapsed().as_secs();
+
+        Some(timeout.saturating_sub(elapsed))
+    }
+
+    /// Get the configured auto-unlock timeout (in seconds)
+    pub fn get_auto_unlock_timeout(&self) -> Option<u64> {
+        self.inner.lock().auto_unlock_timeout
+    }
 }
 
 impl Default for AppState {

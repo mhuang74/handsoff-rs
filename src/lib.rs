@@ -8,6 +8,7 @@ pub mod utils;
 
 use anyhow::{Context, Result};
 use app_state::AppState;
+use core_graphics::sys::CGEventTapRef;
 use input_blocking::event_tap;
 use input_blocking::hotkeys::HotkeyManager;
 use log::{info, warn};
@@ -18,7 +19,7 @@ use std::time::Duration;
 /// Core HandsOff functionality shared between CLI and Tray App
 pub struct HandsOffCore {
     pub state: Arc<AppState>,
-    event_tap: Option<event_tap::EventTap>,
+    event_tap: Option<CGEventTapRef>,
     hotkey_manager: Option<HotkeyManager>,
 }
 
@@ -62,6 +63,21 @@ impl HandsOffCore {
         self.state.is_locked()
     }
 
+    /// Get the elapsed time since lock was engaged (in seconds)
+    pub fn get_lock_elapsed_secs(&self) -> Option<u64> {
+        self.state.get_lock_elapsed_secs()
+    }
+
+    /// Get remaining time until auto-unlock (in seconds)
+    pub fn get_auto_unlock_remaining_secs(&self) -> Option<u64> {
+        self.state.get_auto_unlock_remaining_secs()
+    }
+
+    /// Get the configured auto-unlock timeout (in seconds)
+    pub fn get_auto_unlock_timeout(&self) -> Option<u64> {
+        self.state.get_auto_unlock_timeout()
+    }
+
     /// Lock input immediately
     pub fn lock(&self) -> Result<()> {
         self.state.set_locked(true);
@@ -74,7 +90,7 @@ impl HandsOffCore {
         let hash = auth::hash_passphrase(passphrase);
         let expected_hash = self.state.get_passphrase_hash();
 
-        if hash == expected_hash {
+        if Some(hash) == expected_hash {
             self.state.set_locked(false);
             info!("Input unlocked");
             Ok(true)
@@ -116,7 +132,7 @@ impl HandsOffCore {
         self.start_auto_lock_thread();
 
         if let Some(ref manager) = self.hotkey_manager {
-            self.start_hotkey_listener_thread(manager.clone());
+            self.start_hotkey_listener_thread(manager);
         }
 
         // Start auto-unlock thread if timeout is configured
@@ -174,15 +190,34 @@ impl HandsOffCore {
     }
 
     /// Background thread to listen for hotkey events
-    fn start_hotkey_listener_thread(&self, manager: HotkeyManager) {
+    fn start_hotkey_listener_thread(&self, manager: &HotkeyManager) {
         let state = self.state.clone();
+
+        // Extract hotkey IDs to avoid needing to clone manager
+        let lock_hotkey_id = manager.lock_hotkey.map(|hk| hk.id());
+        let talk_hotkey_id = manager.talk_hotkey.map(|hk| hk.id());
+
         thread::spawn(move || {
             use global_hotkey::GlobalHotKeyEvent;
 
             let receiver = GlobalHotKeyEvent::receiver();
             loop {
                 if let Ok(event) = receiver.recv() {
-                    input_blocking::hotkeys::handle_hotkey_event(event, &state, &manager);
+                    let event_id = event.id;
+
+                    // Check if it's the lock hotkey
+                    if lock_hotkey_id.is_some_and(|id| id == event_id) {
+                        info!("Lock hotkey triggered");
+                        if !state.is_locked() {
+                            state.set_locked(true);
+                            info!("Input locked via hotkey");
+                        }
+                    }
+                    // Check if it's the talk hotkey
+                    else if talk_hotkey_id.is_some_and(|id| id == event_id) {
+                        info!("Talk hotkey triggered");
+                        // Note: Spacebar passthrough is handled in the event tap
+                    }
                 }
             }
         });

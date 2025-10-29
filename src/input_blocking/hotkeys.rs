@@ -8,8 +8,8 @@ use log::info;
 
 pub struct HotkeyManager {
     manager: GlobalHotKeyManager,
-    lock_hotkey: Option<HotKey>,
-    talk_hotkey: Option<HotKey>,
+    pub lock_hotkey: Option<HotKey>,
+    pub talk_hotkey: Option<HotKey>,
 }
 
 impl HotkeyManager {
