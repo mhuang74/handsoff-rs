@@ -334,7 +334,7 @@ mod tests {
     #[test]
     fn test_auto_unlock_minimum_timeout() {
         let state = AppState::new();
-        state.set_auto_unlock_timeout(Some(1)); // 1 second (below 10s minimum in production)
+        state.set_auto_unlock_timeout(Some(1)); // 1 second (below 60s minimum in production)
 
         state.set_locked(true);
 

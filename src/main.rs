@@ -353,19 +353,19 @@ mod tests {
     #[test]
     fn test_parse_auto_unlock_valid_values() {
         // Test minimum valid value
-        env::set_var("HANDS_OFF_AUTO_UNLOCK", "10");
+        env::set_var("HANDS_OFF_AUTO_UNLOCK", "60");
         assert_eq!(
             parse_auto_unlock_timeout(),
-            Some(10),
-            "Should accept 10 seconds"
+            Some(60),
+            "Should accept 60 seconds"
         );
 
         // Test typical value
-        env::set_var("HANDS_OFF_AUTO_UNLOCK", "30");
+        env::set_var("HANDS_OFF_AUTO_UNLOCK", "300");
         assert_eq!(
             parse_auto_unlock_timeout(),
-            Some(30),
-            "Should accept 30 seconds"
+            Some(300),
+            "Should accept 300 seconds"
         );
 
         // Test large value
@@ -377,11 +377,11 @@ mod tests {
         );
 
         // Test maximum valid value
-        env::set_var("HANDS_OFF_AUTO_UNLOCK", "3600");
+        env::set_var("HANDS_OFF_AUTO_UNLOCK", "900");
         assert_eq!(
             parse_auto_unlock_timeout(),
-            Some(3600),
-            "Should accept 3600 seconds"
+            Some(900),
+            "Should accept 900 seconds"
         );
 
         // Clean up
@@ -410,37 +410,37 @@ mod tests {
     #[test]
     fn test_parse_auto_unlock_invalid_values() {
         // Test too low
-        env::set_var("HANDS_OFF_AUTO_UNLOCK", "5");
+        env::set_var("HANDS_OFF_AUTO_UNLOCK", "30");
         assert_eq!(
             parse_auto_unlock_timeout(),
             None,
-            "Should reject value below 10"
+            "Should reject value below 60"
         );
 
-        env::set_var("HANDS_OFF_AUTO_UNLOCK", "9");
+        env::set_var("HANDS_OFF_AUTO_UNLOCK", "59");
         assert_eq!(
             parse_auto_unlock_timeout(),
             None,
-            "Should reject value below 10"
+            "Should reject value below 60"
         );
 
         // Test too high
-        env::set_var("HANDS_OFF_AUTO_UNLOCK", "3601");
+        env::set_var("HANDS_OFF_AUTO_UNLOCK", "901");
         assert_eq!(
             parse_auto_unlock_timeout(),
             None,
-            "Should reject value above 3600"
+            "Should reject value above 900"
         );
 
-        env::set_var("HANDS_OFF_AUTO_UNLOCK", "5000");
+        env::set_var("HANDS_OFF_AUTO_UNLOCK", "1000");
         assert_eq!(
             parse_auto_unlock_timeout(),
             None,
-            "Should reject value above 3600"
+            "Should reject value above 900"
         );
 
         // Test negative number (will fail to parse)
-        env::set_var("HANDS_OFF_AUTO_UNLOCK", "-10");
+        env::set_var("HANDS_OFF_AUTO_UNLOCK", "-60");
         assert_eq!(
             parse_auto_unlock_timeout(),
             None,
@@ -476,31 +476,31 @@ mod tests {
     #[test]
     fn test_parse_auto_unlock_boundary_cases() {
         // Test just below minimum
-        env::set_var("HANDS_OFF_AUTO_UNLOCK", "9");
-        assert_eq!(parse_auto_unlock_timeout(), None, "Should reject 9 seconds");
+        env::set_var("HANDS_OFF_AUTO_UNLOCK", "59");
+        assert_eq!(parse_auto_unlock_timeout(), None, "Should reject 59 seconds");
 
         // Test at minimum boundary
-        env::set_var("HANDS_OFF_AUTO_UNLOCK", "10");
+        env::set_var("HANDS_OFF_AUTO_UNLOCK", "60");
         assert_eq!(
             parse_auto_unlock_timeout(),
-            Some(10),
-            "Should accept 10 seconds"
+            Some(60),
+            "Should accept 60 seconds"
         );
 
         // Test at maximum boundary
-        env::set_var("HANDS_OFF_AUTO_UNLOCK", "3600");
+        env::set_var("HANDS_OFF_AUTO_UNLOCK", "900");
         assert_eq!(
             parse_auto_unlock_timeout(),
-            Some(3600),
-            "Should accept 3600 seconds"
+            Some(900),
+            "Should accept 900 seconds"
         );
 
         // Test just above maximum
-        env::set_var("HANDS_OFF_AUTO_UNLOCK", "3601");
+        env::set_var("HANDS_OFF_AUTO_UNLOCK", "901");
         assert_eq!(
             parse_auto_unlock_timeout(),
             None,
-            "Should reject 3601 seconds"
+            "Should reject 901 seconds"
         );
 
         // Clean up

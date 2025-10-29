@@ -108,10 +108,10 @@ HANDS_OFF_AUTO_UNLOCK=600 ./handsoff
 
 #### Valid Configuration Values
 
-- **Minimum:** 10 seconds
-- **Maximum:** 3600 seconds (1 hour)
+- **Minimum:** 60 seconds
+- **Maximum:** 900 seconds (15 minutes)
 - **Disabled:** 0 or unset (default)
-- **Invalid values** (below 10 or above 3600) will disable the feature with a warning
+- **Invalid values** (below 60 or above 900) will disable the feature with a warning
 
 #### How It Works
 
@@ -250,7 +250,7 @@ RUST_LOG=info HANDS_OFF_AUTO_UNLOCK=30 ./handsoff
 
 **Common issues:**
 - Environment variable not set or set to invalid value
-- Value is outside valid range (10-3600 seconds)
+- Value is outside valid range (60-900 seconds)
 - Device was not actually locked (check menu bar icon)
 - Manual unlock occurred before timeout expired
 

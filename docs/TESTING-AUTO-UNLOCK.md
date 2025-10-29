@@ -168,24 +168,24 @@ _________________________________
 
 ---
 
-### Test 5: Minimum Timeout Value (10 seconds)
+### Test 5: Minimum Timeout Value (60 seconds)
 
 **Objective:** Verify the minimum accepted timeout value works correctly.
 
 **Steps:**
-1. Start with minimum 10-second timeout:
+1. Start with minimum 60-second timeout:
    ```bash
-   HANDS_OFF_AUTO_UNLOCK=10 cargo run
+   HANDS_OFF_AUTO_UNLOCK=60 cargo run
    ```
-2. Verify log shows: "Auto-unlock safety feature enabled: 10 seconds"
+2. Verify log shows: "Auto-unlock safety feature enabled: 60 seconds"
 3. Lock the device
-4. Wait 10+ seconds
+4. Wait 60+ seconds
 5. Verify auto-unlock triggers
 
 **Expected Results:**
 - Application starts successfully
-- Feature is enabled with 10 seconds
-- Auto-unlock triggers after 10 seconds
+- Feature is enabled with 60 seconds
+- Auto-unlock triggers after 60 seconds
 - Notification appears
 
 **Pass/Fail:** ☐ Pass  ☐ Fail
@@ -195,22 +195,22 @@ _________________________________
 
 ---
 
-### Test 6: Maximum Timeout Value (3600 seconds / 1 hour)
+### Test 6: Maximum Timeout Value (900 seconds / 15 minutes)
 
 **Objective:** Verify the maximum accepted timeout value is accepted (not practical to wait).
 
 **Steps:**
 1. Start with maximum timeout:
    ```bash
-   HANDS_OFF_AUTO_UNLOCK=3600 cargo run
+   HANDS_OFF_AUTO_UNLOCK=900 cargo run
    ```
 2. Check the log output
 
 **Expected Results:**
-- Log shows: "Auto-unlock safety feature enabled: 3600 seconds"
+- Log shows: "Auto-unlock safety feature enabled: 900 seconds"
 - Auto-unlock thread starts
 - Application runs normally
-- (No need to wait 1 hour for this test)
+- (No need to wait 15 minutes for this test)
 
 **Pass/Fail:** ☐ Pass  ☐ Fail
 
