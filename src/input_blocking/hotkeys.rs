@@ -1,8 +1,7 @@
-use crate::app_state::AppState;
 use anyhow::{Context, Result};
 use global_hotkey::{
     hotkey::{Code, HotKey, Modifiers},
-    GlobalHotKeyEvent, GlobalHotKeyManager,
+    GlobalHotKeyManager,
 };
 use log::info;
 
@@ -56,16 +55,6 @@ impl HotkeyManager {
         Ok(())
     }
 
-    /// Check if a hotkey event is the lock hotkey
-    pub fn is_lock_hotkey(&self, event_id: u32) -> bool {
-        self.lock_hotkey.is_some_and(|hk| hk.id() == event_id)
-    }
-
-    /// Check if a hotkey event is the talk hotkey
-    pub fn is_talk_hotkey(&self, event_id: u32) -> bool {
-        self.talk_hotkey.is_some_and(|hk| hk.id() == event_id)
-    }
-
     /// Unregister all hotkeys
     #[allow(dead_code)]
     pub fn unregister_all(&mut self) -> Result<()> {
@@ -76,22 +65,5 @@ impl HotkeyManager {
             self.manager.unregister(hotkey)?;
         }
         Ok(())
-    }
-}
-
-/// Handle hotkey events
-pub fn handle_hotkey_event(event: GlobalHotKeyEvent, state: &AppState, manager: &HotkeyManager) {
-    let event_id = event.id;
-
-    if manager.is_lock_hotkey(event_id) {
-        info!("Lock hotkey triggered");
-        if !state.is_locked() {
-            state.set_locked(true);
-            info!("Input locked via hotkey");
-        }
-    } else if manager.is_talk_hotkey(event_id) {
-        info!("Talk hotkey triggered");
-        // Note: Spacebar passthrough is handled in the event tap (event_tap.rs)
-        // which detects the key combination and tracks press/release states
     }
 }
