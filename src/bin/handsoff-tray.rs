@@ -1,7 +1,7 @@
 // HandsOff Tray App - macOS menu bar application for input blocking
 // This binary provides a native macOS tray icon with dropdown menu
 
-use handsoff::HandsOffCore;
+use handsoff::{config, HandsOffCore};
 use anyhow::{Context, Result};
 use log::{error, info};
 use std::env;
@@ -62,11 +62,11 @@ fn main() -> Result<()> {
     let mut core = HandsOffCore::new(&passphrase).context("Failed to initialize HandsOff")?;
 
     // Configure auto-unlock timeout (from environment)
-    let auto_unlock_timeout = parse_auto_unlock_timeout();
+    let auto_unlock_timeout = config::parse_auto_unlock_timeout();
     core.set_auto_unlock_timeout(auto_unlock_timeout);
 
     // Configure auto-lock timeout (from environment)
-    let auto_lock_timeout = parse_auto_lock_timeout();
+    let auto_lock_timeout = config::parse_auto_lock_timeout();
     core.set_auto_lock_timeout(auto_lock_timeout);
 
     // Start core components
@@ -264,78 +264,6 @@ fn show_alert(title: &str, message: &str) {
         .arg("-e")
         .arg(&script)
         .output();
-}
-
-/// Parse the HANDS_OFF_AUTO_UNLOCK environment variable
-fn parse_auto_unlock_timeout() -> Option<u64> {
-    use handsoff::app_state::{AUTO_UNLOCK_MIN_SECONDS, AUTO_UNLOCK_MAX_SECONDS};
-    use log::{debug, warn};
-
-    match env::var("HANDS_OFF_AUTO_UNLOCK") {
-        Ok(val) => match val.parse::<u64>() {
-            Ok(seconds)
-                if (AUTO_UNLOCK_MIN_SECONDS..=AUTO_UNLOCK_MAX_SECONDS).contains(&seconds) =>
-            {
-                info!("Auto-unlock safety feature enabled: {} seconds", seconds);
-                Some(seconds)
-            }
-            Ok(0) => {
-                info!("Auto-unlock disabled (value: 0)");
-                None
-            }
-            Ok(seconds) => {
-                warn!(
-                    "Invalid auto-unlock timeout: {} (must be {}-{} or 0). Feature disabled.",
-                    seconds, AUTO_UNLOCK_MIN_SECONDS, AUTO_UNLOCK_MAX_SECONDS
-                );
-                None
-            }
-            Err(e) => {
-                warn!(
-                    "Failed to parse HANDS_OFF_AUTO_UNLOCK: {}. Feature disabled.",
-                    e
-                );
-                None
-            }
-        },
-        Err(_) => {
-            debug!("HANDS_OFF_AUTO_UNLOCK not set. Auto-unlock disabled.");
-            None
-        }
-    }
-}
-
-/// Parse the HANDS_OFF_AUTO_LOCK environment variable
-fn parse_auto_lock_timeout() -> Option<u64> {
-    use handsoff::app_state::{AUTO_LOCK_MIN_SECONDS, AUTO_LOCK_MAX_SECONDS};
-    use log::{debug, warn};
-
-    match env::var("HANDS_OFF_AUTO_LOCK") {
-        Ok(val) => match val.parse::<u64>() {
-            Ok(seconds) if (AUTO_LOCK_MIN_SECONDS..=AUTO_LOCK_MAX_SECONDS).contains(&seconds) => {
-                info!(
-                    "Auto-lock timeout set via environment variable: {} seconds",
-                    seconds
-                );
-                Some(seconds)
-            }
-            Ok(seconds) => {
-                warn!(
-                    "Invalid auto-lock timeout: {} (must be {}-{} seconds). Using default.",
-                    seconds, AUTO_LOCK_MIN_SECONDS, AUTO_LOCK_MAX_SECONDS
-                );
-                None
-            }
-            Err(e) => {
-                warn!("Failed to parse HANDS_OFF_AUTO_LOCK: {}. Using default.", e);
-                None
-            }
-        },
-        Err(_) => {
-            debug!("HANDS_OFF_AUTO_LOCK not set.");
-            None
-        }
-    }
 }
 
 /// Build tooltip text based on lock state
