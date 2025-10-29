@@ -83,6 +83,8 @@ fn main() -> Result<()> {
     let event_loop = EventLoopBuilder::new().build();
 
     // Build tray menu
+    // Note: When locked, mouse clicks are blocked, so menu is inaccessible
+    // Lock menu item only works when unlocked; unlock requires typing passphrase
     let lock_item = MenuItem::new("Lock Input", true, None);
     let separator = PredefinedMenuItem::separator();
     let version_item = MenuItem::new(format!("Version {}", VERSION), true, None);
@@ -131,7 +133,7 @@ fn main() -> Result<()> {
             if is_locked != was_locked {
                 was_locked = is_locked;
 
-                // Update icon
+                // Update icon to reflect lock status
                 let icon = if is_locked {
                     create_icon_locked()
                 } else {
@@ -141,15 +143,9 @@ fn main() -> Result<()> {
                     error!("Failed to update tray icon: {}", e);
                 }
 
-                // Update menu item text
-                let label = if is_locked {
-                    "Unlock Input"
-                } else {
-                    "Lock Input"
-                };
-                if let Err(e) = lock_item.set_text(label) {
-                    error!("Failed to update menu item text: {}", e);
-                }
+                // Note: Menu label stays "Lock Input" because when locked,
+                // the menu is inaccessible (mouse clicks blocked).
+                // Unlock must be done by typing the passphrase.
 
                 // Show notification
                 #[cfg(target_os = "macos")]
@@ -157,7 +153,7 @@ fn main() -> Result<()> {
                     let _ = notify_rust::Notification::new()
                         .summary("HandsOff")
                         .body(if is_locked {
-                            "Input locked"
+                            "Input locked - Type passphrase to unlock"
                         } else {
                             "Input unlocked"
                         })
@@ -190,27 +186,20 @@ fn main() -> Result<()> {
     });
 }
 
-/// Handle lock/unlock toggle from menu
+/// Handle lock from menu
+/// Note: This only handles locking, not unlocking. When locked, mouse clicks are blocked,
+/// so the menu is inaccessible. Users must type their passphrase to unlock (same as CLI).
 fn handle_lock_toggle(core: Arc<Mutex<HandsOffCore>>) {
     let mut core = core.lock().unwrap();
 
     if core.is_locked() {
-        // Prompt for passphrase to unlock
-        if let Some(passphrase) = prompt_passphrase() {
-            match core.unlock(&passphrase) {
-                Ok(true) => {
-                    info!("Input unlocked via menu");
-                }
-                Ok(false) => {
-                    error!("Invalid passphrase");
-                    show_alert("Unlock Failed", "Invalid passphrase. Please try again.");
-                }
-                Err(e) => {
-                    error!("Error unlocking: {}", e);
-                    show_alert("Error", &format!("Failed to unlock: {}", e));
-                }
-            }
-        }
+        // Menu should not be accessible when locked (mouse clicks blocked)
+        // But if somehow clicked (e.g., during race condition), show info
+        info!("Lock menu clicked while already locked (shouldn't happen - mouse blocked)");
+        show_alert(
+            "Already Locked",
+            "Input is already locked.\n\nTo unlock, type your passphrase on the keyboard.\n\n(The menu is inaccessible when locked because mouse clicks are blocked.)"
+        );
     } else {
         // Lock immediately
         if let Err(e) = core.lock() {
@@ -236,43 +225,27 @@ fn show_help() {
     info!("Help menu item clicked");
     show_alert(
         "HandsOff Help",
-        "HandsOff Tray App\n\nMenu Items:\n\
-        • Lock/Unlock: Toggle input blocking\n\
+        "HandsOff Tray App\n\n\
+        Menu Items:\n\
+        • Lock Input: Lock immediately (menu inaccessible when locked)\n\
         • Version: Show version information\n\
         • Help: Show this help\n\
         • Quit: Exit the application\n\n\
+        Locking:\n\
+        • Click 'Lock Input' menu item, OR\n\
+        • Press Ctrl+Cmd+Shift+L hotkey\n\n\
+        Unlocking:\n\
+        • Type your passphrase on the keyboard\n\
+        • (Menu is NOT clickable when locked - mouse blocked)\n\
+        • Wait 5 seconds between attempts if you mistype\n\n\
         Hotkeys:\n\
-        • Ctrl+Cmd+Shift+L: Lock/unlock input\n\
+        • Ctrl+Cmd+Shift+L: Lock input\n\
         • Ctrl+Cmd+Shift+T (hold): Talk mode (allow spacebar)\n\n\
         Configuration:\n\
         Set HANDS_OFF_SECRET_PHRASE environment variable before launching.\n\n\
         Permissions:\n\
         Requires Accessibility permission in System Preferences."
     );
-}
-
-/// Prompt for passphrase using native macOS dialog
-fn prompt_passphrase() -> Option<String> {
-    use std::process::Command;
-
-    let output = Command::new("osascript")
-        .arg("-e")
-        .arg(r#"display dialog "Enter passphrase to unlock HandsOff:" default answer "" with hidden answer buttons {"Cancel", "OK"} default button "OK""#)
-        .output()
-        .ok()?;
-
-    if output.status.success() {
-        let result = String::from_utf8_lossy(&output.stdout);
-        // Parse "button returned:OK, text returned:password" format
-        result
-            .split("text returned:")
-            .nth(1)?
-            .trim()
-            .to_string()
-            .into()
-    } else {
-        None
-    }
 }
 
 /// Show native macOS alert dialog

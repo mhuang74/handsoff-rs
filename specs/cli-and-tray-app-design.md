@@ -307,25 +307,36 @@ let tray = TrayIconBuilder::new()
 
 ### 7.3 Menu Items
 
+**Important:** When input is locked, the event tap blocks ALL mouse clicks, including clicks on the tray menu. Therefore, the menu is inaccessible when locked, and unlock must be performed by typing the passphrase on the keyboard (same as CLI).
+
 | Menu Item | Action | Details |
 |-----------|--------|---------|
-| **Lock** | Lock input immediately | Calls `core.lock()`, changes icon to 🔒 |
-| **Unlock** | Unlock input | Calls `core.unlock()` with passphrase from dialog |
+| **Lock Input** | Lock input immediately | Calls `core.lock()`, changes icon to 🔒. Only functional when unlocked. |
 | **---** | Separator | Visual separator |
 | **Version** | Show version info | Display alert with version number |
 | **Help** | Show help | Display alert with usage instructions |
 | **Quit** | Exit app | Gracefully shutdown and exit |
 
+**Note:** There is no "Unlock" menu item because when locked, mouse clicks are blocked and the menu cannot be accessed. Users must type their passphrase to unlock (identical to CLI behavior).
+
 **Menu Structure:**
 ```
 ┌─────────────────┐
-│  🔓 HandsOff    │  (Tray Icon)
+│  🔓 HandsOff    │  (Tray Icon when unlocked)
 ├─────────────────┤
-│  Lock           │
+│  Lock Input     │
 │  ──────────     │
 │  Version        │
 │  Help           │
 │  Quit           │
+└─────────────────┘
+
+When locked:
+┌─────────────────┐
+│  🔒 HandsOff    │  (Icon changes, but menu not clickable)
+├─────────────────┤
+│  [Menu inaccessible - mouse clicks blocked]
+│  Type passphrase to unlock
 └─────────────────┘
 ```
 
@@ -401,24 +412,20 @@ fn main() -> anyhow::Result<()> {
 }
 
 fn handle_lock(core: &HandsOffCore, tray: &TrayIcon) {
+    // Note: This function only handles locking, not unlocking.
+    // When locked, mouse clicks are blocked, so this menu item is inaccessible.
+    // Unlock is done by typing the passphrase (same as CLI).
+
     if core.is_locked() {
-        // Prompt for passphrase (native dialog)
-        if let Some(passphrase) = prompt_passphrase() {
-            if core.unlock(&passphrase).unwrap_or(false) {
-                tray.set_icon(load_unlocked_icon());
-                Notification::new()
-                    .summary("HandsOff")
-                    .body("Input unlocked")
-                    .show()
-                    .ok();
-            }
-        }
+        // This should not be reachable (menu inaccessible when locked)
+        // But handle gracefully in case of race condition
+        eprintln!("Lock menu clicked while already locked (mouse should be blocked)");
     } else {
         core.lock().ok();
         tray.set_icon(load_locked_icon());
         Notification::new()
             .summary("HandsOff")
-            .body("Input locked")
+            .body("Input locked - Type passphrase to unlock")
             .show()
             .ok();
     }
@@ -444,36 +451,17 @@ Notification::new()
 - Lock deactivated: "Input unlocked"
 - Auto-lock triggered: "Auto-lock activated after inactivity"
 
-### 7.6 Passphrase Dialog (Native)
+### 7.6 Unlock Behavior
 
-For unlock, prompt user with native macOS dialog:
+**Important:** The Tray App does NOT use a passphrase dialog for unlocking. When input is locked, ALL mouse clicks are blocked by the event tap, including clicks on the tray menu. Therefore, users must unlock the same way as the CLI: by typing their passphrase on the keyboard.
 
-**Option 1: AppleScript (Simple)**
-```rust
-use std::process::Command;
+**Unlock Process:**
+1. When locked, the tray icon changes to 🔒 and shows notification "Input locked - Type passphrase to unlock"
+2. User types passphrase on keyboard (input buffer, invisible)
+3. On successful match, input unlocks and icon changes to 🔓
+4. If passphrase is wrong, buffer clears after 5 seconds and user can retry
 
-fn prompt_passphrase() -> Option<String> {
-    let output = Command::new("osascript")
-        .arg("-e")
-        .arg(r#"display dialog "Enter passphrase to unlock:" default answer "" with hidden answer"#)
-        .output()
-        .ok()?;
-
-    if output.status.success() {
-        let result = String::from_utf8_lossy(&output.stdout);
-        // Parse "text returned:password" format
-        result.split("text returned:").nth(1)?.trim().to_string().into()
-    } else {
-        None
-    }
-}
-```
-
-**Option 2: NSAlert with text field (via objc, more native)**
-```rust
-// Use objc crate to call NSAlert with NSSecureTextField
-// (More complex, but fully native without spawning process)
-```
+This is identical to the CLI behavior and ensures consistency across both binaries.
 
 ---
 

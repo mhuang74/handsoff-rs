@@ -143,10 +143,12 @@ INFO  - Press Ctrl+Cmd+Shift+L to lock input
 The Tray App will:
 - Display a menu bar icon (🔓 unlocked, 🔒 locked)
 - Show notifications on lock/unlock events
-- Provide menu items: Lock/Unlock, Version, Help, Quit
+- Provide menu items: Lock Input, Version, Help, Quit
+
+**Important:** When locked, ALL mouse clicks are blocked (including clicks on the tray menu). The menu becomes inaccessible and you must type your passphrase to unlock (same as CLI).
 
 **Menu Items:**
-- **Lock/Unlock**: Toggle input blocking (prompts for passphrase to unlock)
+- **Lock Input**: Lock immediately (only functional when unlocked)
 - **Version**: Show app version
 - **Help**: Show usage instructions
 - **Quit**: Exit the application
@@ -164,13 +166,12 @@ When locked, all keyboard/mouse/trackpad input is blocked (except for unlock hot
 
 ### Unlocking Input
 
-**Tray App:**
-1. Click the menu bar icon and select "Unlock Input" (prompts for passphrase via dialog)
-2. Type your passphrase on the keyboard (input buffer, wait 5 seconds between attempts)
+**Both CLI and Tray App use the same unlock method:**
 
-**CLI:**
 1. Type your passphrase on the keyboard (even though you can't see the input)
 2. If you mistype, wait 5 seconds for the buffer to reset, then try again
+
+**Important for Tray App users:** You CANNOT unlock via the menu! When locked, mouse clicks are blocked by the event tap, making the tray menu inaccessible. You must type your passphrase just like CLI users.
 
 **Note:** The input buffer clears automatically after 5 seconds of inactivity to prevent multiple failed attempts from interfering with each other.
 
