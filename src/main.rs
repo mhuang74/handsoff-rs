@@ -251,7 +251,6 @@ fn main() -> Result<()> {
     if state.is_locked() {
         info!("STATUS: INPUT IS LOCKED");
         info!("- Type your passphrase to unlock (input won't be visible)");
-        info!("- Or press Ctrl+Cmd+Shift+U for Touch ID");
     } else {
         info!("STATUS: INPUT IS UNLOCKED");
         info!("- Press Ctrl+Cmd+Shift+L to lock input");

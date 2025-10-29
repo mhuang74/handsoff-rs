@@ -15,7 +15,7 @@ pub fn handle_keyboard_event(event: &CGEvent, event_type: CGEventType, state: &A
     let flags = event.get_flags();
 
     // Check for Lock hotkey (Ctrl+Cmd+Shift+L) - keycode 37 is 'L'
-    // This only LOCKS, never unlocks (unlock requires passphrase or Touch ID)
+    // This only LOCKS, never unlocks (unlock requires passphrase)
     if keycode == 37
         && flags.contains(CGEventFlags::CGEventFlagControl)
         && flags.contains(CGEventFlags::CGEventFlagCommand)
@@ -27,7 +27,7 @@ pub fn handle_keyboard_event(event: &CGEvent, event_type: CGEventType, state: &A
                 state.set_locked(true);
             } else {
                 info!(
-                    "Lock hotkey pressed but already locked (use passphrase or Touch ID to unlock)"
+                    "Lock hotkey pressed but already locked (use passphrase to unlock)"
                 );
             }
         }
@@ -74,22 +74,6 @@ pub fn handle_keyboard_event(event: &CGEvent, event_type: CGEventType, state: &A
 
     let shift = flags.contains(CGEventFlags::CGEventFlagShift);
 
-    // Check for Touch ID trigger (Ctrl+Cmd+Shift+U)
-    if is_touchid_trigger(keycode, flags) {
-        info!("Touch ID trigger detected");
-        std::thread::spawn({
-            let state = state.clone();
-            move || {
-                if let Ok(true) = auth::touchid::authenticate() {
-                    info!("Touch ID authentication successful - input unlocked");
-                    state.set_locked(false);
-                    state.clear_buffer();
-                }
-            }
-        });
-        return true; // Block the event
-    }
-
     // Handle backspace
     if keycode == 51 {
         // Delete key
@@ -134,14 +118,6 @@ pub fn handle_mouse_event(_event_type: CGEventType, state: &AppState) -> bool {
 
     // Block all mouse/trackpad events during lock
     true
-}
-
-/// Check if the current key combination is the Touch ID trigger (Ctrl+Cmd+Shift+U)
-fn is_touchid_trigger(keycode: i64, flags: CGEventFlags) -> bool {
-    keycode == 32 && // U key
-        flags.contains(CGEventFlags::CGEventFlagControl) &&
-        flags.contains(CGEventFlags::CGEventFlagCommand) &&
-        flags.contains(CGEventFlags::CGEventFlagShift)
 }
 
 /// Check accessibility permissions

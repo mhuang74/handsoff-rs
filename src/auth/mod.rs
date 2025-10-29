@@ -1,5 +1,3 @@
-pub mod touchid;
-
 use crate::utils;
 
 /// Verify if a passphrase matches the stored hash
