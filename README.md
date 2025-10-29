@@ -188,21 +188,16 @@ INFO  Auto-unlock notification delivered
 ```
 src/
 ├── main.rs                 # Application entry point
+├── lib.rs                  # Library exports
 ├── app_state.rs           # Shared application state
 ├── auth/                  # Authentication modules
-│   ├── mod.rs
-│   └── keychain.rs        # Keychain storage
+│   └── mod.rs             # Passphrase verification
 ├── input_blocking/        # Input blocking modules
-│   ├── mod.rs
+│   ├── mod.rs             # Event handling and passphrase entry
 │   ├── event_tap.rs       # CGEventTap implementation
 │   └── hotkeys.rs         # Global hotkey handling
-├── ui/                    # User interface modules
-│   ├── mod.rs
-│   ├── menubar.rs         # Menu bar interface
-│   ├── notifications.rs   # System notifications
-│   └── dialogs.rs         # Alert dialogs
 └── utils/                 # Utility modules
-    ├── mod.rs
+    ├── mod.rs             # SHA-256 hashing utilities
     └── keycode.rs         # Keycode to character mapping
 ```
 
