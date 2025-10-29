@@ -68,12 +68,13 @@ struct Args {
     auto_lock: Option<u64>,
 }
 
-
 /// Parse the HANDS_OFF_AUTO_UNLOCK environment variable
 fn parse_auto_unlock_timeout() -> Option<u64> {
     match env::var("HANDS_OFF_AUTO_UNLOCK") {
         Ok(val) => match val.parse::<u64>() {
-            Ok(seconds) if (AUTO_UNLOCK_MIN_SECONDS..=AUTO_UNLOCK_MAX_SECONDS).contains(&seconds) => {
+            Ok(seconds)
+                if (AUTO_UNLOCK_MIN_SECONDS..=AUTO_UNLOCK_MAX_SECONDS).contains(&seconds) =>
+            {
                 info!("Auto-unlock safety feature enabled: {} seconds", seconds);
                 Some(seconds)
             }
@@ -190,7 +191,10 @@ fn main() -> Result<()> {
     // Command-line argument takes precedence
     match args.auto_lock {
         Some(timeout) if (AUTO_LOCK_MIN_SECONDS..=AUTO_LOCK_MAX_SECONDS).contains(&timeout) => {
-            info!("Auto-lock timeout set via --auto-lock argument: {} seconds", timeout);
+            info!(
+                "Auto-lock timeout set via --auto-lock argument: {} seconds",
+                timeout
+            );
             state.lock().auto_lock_timeout = timeout;
         }
         Some(timeout) => {
@@ -476,7 +480,11 @@ mod tests {
     fn test_parse_auto_unlock_boundary_cases() {
         // Test just below minimum
         env::set_var("HANDS_OFF_AUTO_UNLOCK", "59");
-        assert_eq!(parse_auto_unlock_timeout(), None, "Should reject 59 seconds");
+        assert_eq!(
+            parse_auto_unlock_timeout(),
+            None,
+            "Should reject 59 seconds"
+        );
 
         // Test at minimum boundary
         env::set_var("HANDS_OFF_AUTO_UNLOCK", "60");

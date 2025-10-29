@@ -26,9 +26,7 @@ pub fn handle_keyboard_event(event: &CGEvent, event_type: CGEventType, state: &A
                 info!("Lock hotkey pressed - locking input");
                 state.set_locked(true);
             } else {
-                info!(
-                    "Lock hotkey pressed but already locked (use passphrase to unlock)"
-                );
+                info!("Lock hotkey pressed but already locked (use passphrase to unlock)");
             }
         }
         return true; // Block the hotkey itself
