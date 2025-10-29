@@ -24,6 +24,47 @@ echo ""
 echo "Version: ${VERSION}"
 echo ""
 
+# Step 0: Cleanup from previous runs
+echo "Step 0: Cleaning up from previous builds/installations..."
+LAUNCH_AGENT_PLIST="${HOME}/Library/LaunchAgents/com.handsoff.inputlock.plist"
+
+# Stop and unload Launch Agent if running
+if [ -f "${LAUNCH_AGENT_PLIST}" ]; then
+    if launchctl list | grep -q "${BUNDLE_ID}" 2>/dev/null; then
+        echo "  - Stopping Launch Agent..."
+        launchctl unload "${LAUNCH_AGENT_PLIST}" 2>/dev/null || true
+    fi
+fi
+
+# Kill any running HandsOff processes
+if pgrep -x handsoff > /dev/null 2>&1; then
+    echo "  - Stopping running HandsOff processes..."
+    killall handsoff 2>/dev/null || true
+    sleep 1
+fi
+
+# Clean up root-owned bundle files from previous installations
+if [ -d "${BUNDLE_PATH}" ]; then
+    # Check if any files are owned by root
+    if [ "$(find "${BUNDLE_PATH}" -user root 2>/dev/null | wc -l)" -gt 0 ]; then
+        echo "  - Found root-owned files in bundle directory"
+        echo "  - Attempting to remove with sudo (you may be prompted for password)..."
+        if sudo -n rm -rf "${BUNDLE_PATH}" 2>/dev/null; then
+            echo "  ✓ Removed root-owned bundle files"
+        else
+            echo "  ! Could not auto-remove root-owned files"
+            echo "  ! Please run: sudo rm -rf ${BUNDLE_PATH}"
+            exit 1
+        fi
+    else
+        # Regular cleanup if no root-owned files
+        rm -rf "${BUNDLE_PATH}" 2>/dev/null || true
+    fi
+fi
+
+echo "✓ Cleanup complete"
+echo ""
+
 # Step 1: Build the app bundle
 echo "Step 1: Building application bundle..."
 make fix-plist
@@ -227,6 +268,26 @@ rm -f "${INSTALLER_DIR}/welcome.html"
 rm -f "${INSTALLER_DIR}/conclusion.html"
 rm -f "${INSTALLER_DIR}/LICENSE"
 
+# Clean up build artifacts to prevent bundle relocation during testing
+echo ""
+echo "Cleaning up build artifacts..."
+echo "  (This prevents macOS bundle relocation when testing on build machine)"
+if [ -d "${BUNDLE_PATH}" ]; then
+    # Check if any files are owned by root and handle appropriately
+    if [ "$(find "${BUNDLE_PATH}" -user root 2>/dev/null | wc -l)" -gt 0 ]; then
+        echo "  - Found root-owned files, attempting removal with sudo..."
+        sudo rm -rf "${BUNDLE_PATH}" 2>/dev/null || {
+            echo "  ! Warning: Could not remove root-owned files"
+            echo "  ! Bundle relocation may occur during testing"
+        }
+    else
+        rm -rf "${BUNDLE_PATH}"
+    fi
+    echo "  ✓ Build artifacts removed"
+else
+    echo "  ✓ No build artifacts to clean"
+fi
+
 echo ""
 echo "========================================"
 echo "  Build Complete!"
@@ -242,6 +303,9 @@ echo "  open ${PKG_FINAL}"
 echo ""
 echo "Or install from command line:"
 echo "  sudo installer -pkg ${PKG_FINAL} -target /"
+echo ""
+echo "Note: Build artifacts have been removed to ensure"
+echo "      proper installation testing on this machine."
 echo ""
 
 exit 0
