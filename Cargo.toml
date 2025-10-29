@@ -18,6 +18,11 @@ log = "0.4"
 env_logger = "0.11"
 clap = { version = "4.5", features = ["derive"] }
 
+# Tray App dependencies
+tray-icon = "0.17"
+tao = "0.28"
+notify-rust = "4"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.10"
 
@@ -28,7 +33,11 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("cargo-cli
 
 [[bin]]
 name = "handsoff"
-path = "src/main.rs"
+path = "src/bin/handsoff.rs"
+
+[[bin]]
+name = "handsoff-tray"
+path = "src/bin/handsoff-tray.rs"
 
 [package.metadata.bundle]
 name = "HandsOff"
