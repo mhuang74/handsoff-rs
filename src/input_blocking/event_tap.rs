@@ -97,27 +97,64 @@ unsafe extern "C" fn event_tap_callback(
     let state = &*(user_info as *const Arc<AppState>);
 
     let cg_event = core_graphics::event::CGEvent::from_ptr(event);
-    let event_type_enum = std::mem::transmute::<u32, CGEventType>(event_type);
 
-    // Handle different event types
+    // Handle different event types - use safe pattern matching instead of transmute
     let should_block = match event_type {
-        t if t == CGEventType::KeyDown as u32 || t == CGEventType::KeyUp as u32 => {
+        t if t == CGEventType::KeyDown as u32 => {
             // Always handle keyboard events (for hotkeys even when unlocked)
-            handle_keyboard_event(&cg_event, event_type_enum, state)
+            handle_keyboard_event(&cg_event, CGEventType::KeyDown, state)
         }
-        t if t == CGEventType::MouseMoved as u32
-            || t == CGEventType::LeftMouseDown as u32
-            || t == CGEventType::LeftMouseUp as u32
-            || t == CGEventType::RightMouseDown as u32
-            || t == CGEventType::RightMouseUp as u32
-            || t == CGEventType::ScrollWheel as u32 =>
-        {
+        t if t == CGEventType::KeyUp as u32 => {
+            // Always handle keyboard events (for hotkeys even when unlocked)
+            handle_keyboard_event(&cg_event, CGEventType::KeyUp, state)
+        }
+        t if t == CGEventType::MouseMoved as u32 => {
             // Only block mouse events when locked
             if state.is_locked() {
-                handle_mouse_event(event_type_enum, state)
+                handle_mouse_event(CGEventType::MouseMoved, state)
             } else {
                 state.update_input_time();
                 false // Pass through when unlocked
+            }
+        }
+        t if t == CGEventType::LeftMouseDown as u32 => {
+            if state.is_locked() {
+                handle_mouse_event(CGEventType::LeftMouseDown, state)
+            } else {
+                state.update_input_time();
+                false
+            }
+        }
+        t if t == CGEventType::LeftMouseUp as u32 => {
+            if state.is_locked() {
+                handle_mouse_event(CGEventType::LeftMouseUp, state)
+            } else {
+                state.update_input_time();
+                false
+            }
+        }
+        t if t == CGEventType::RightMouseDown as u32 => {
+            if state.is_locked() {
+                handle_mouse_event(CGEventType::RightMouseDown, state)
+            } else {
+                state.update_input_time();
+                false
+            }
+        }
+        t if t == CGEventType::RightMouseUp as u32 => {
+            if state.is_locked() {
+                handle_mouse_event(CGEventType::RightMouseUp, state)
+            } else {
+                state.update_input_time();
+                false
+            }
+        }
+        t if t == CGEventType::ScrollWheel as u32 => {
+            if state.is_locked() {
+                handle_mouse_event(CGEventType::ScrollWheel, state)
+            } else {
+                state.update_input_time();
+                false
             }
         }
         _ => false, // Pass through other events
@@ -141,21 +178,20 @@ unsafe extern "C" fn event_tap_callback(
 pub unsafe fn enable_event_tap(tap: CGEventTapRef) {
     use core_foundation::base::TCFType;
 
-    unsafe {
-        // CGEventTap is a CFMachPort, so we can use CFMachPortCreateRunLoopSource
-        let source_ref = CFMachPortCreateRunLoopSource(
-            std::ptr::null_mut(), // use default allocator
-            tap as CFMachPortRef, // cast event tap to mach port
-            0,                    // order
-        );
+    // CGEventTap is a CFMachPort, so we can use CFMachPortCreateRunLoopSource
+    let source_ref = CFMachPortCreateRunLoopSource(
+        std::ptr::null_mut(), // use default allocator
+        tap as CFMachPortRef, // cast event tap to mach port
+        0,                    // order
+    );
 
-        // Convert raw pointer to CFRunLoopSource
-        let source = core_foundation::runloop::CFRunLoopSource::wrap_under_create_rule(
-            source_ref as core_foundation::runloop::CFRunLoopSourceRef,
-        );
-        CFRunLoop::get_current().add_source(&source, kCFRunLoopCommonModes);
-        CGEventTapEnable(tap, true);
-    }
+    // Convert raw pointer to CFRunLoopSource
+    let source = core_foundation::runloop::CFRunLoopSource::wrap_under_create_rule(
+        source_ref as core_foundation::runloop::CFRunLoopSourceRef,
+    );
+    CFRunLoop::get_current().add_source(&source, kCFRunLoopCommonModes);
+    CGEventTapEnable(tap, true);
+
     info!("Event tap enabled");
 }
 
@@ -165,8 +201,6 @@ pub unsafe fn enable_event_tap(tap: CGEventTapRef) {
 /// The `tap` parameter must be a valid CGEventTapRef pointer returned from `CGEventTapCreate`.
 #[allow(dead_code)]
 pub unsafe fn disable_event_tap(tap: CGEventTapRef) {
-    unsafe {
-        CGEventTapEnable(tap, false);
-    }
+    CGEventTapEnable(tap, false);
     info!("Event tap disabled");
 }
