@@ -8,7 +8,7 @@ APP_NAME="HandsOff"
 BUNDLE_ID="com.handsoff.inputlock"
 LAUNCH_AGENT_DIR="${HOME}/Library/LaunchAgents"
 LAUNCH_AGENT_PLIST="${LAUNCH_AGENT_DIR}/${BUNDLE_ID}.plist"
-APP_EXECUTABLE="/Applications/${APP_NAME}.app/Contents/MacOS/handsoff"
+APP_EXECUTABLE="/Applications/${APP_NAME}.app/Contents/MacOS/handsoff-tray"
 
 echo ""
 echo "========================================"

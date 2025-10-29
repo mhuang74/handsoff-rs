@@ -21,10 +21,11 @@ if [ -f "${LAUNCH_AGENT_PLIST}" ]; then
     fi
 fi
 
-# Kill any running HandsOff processes
-if pgrep -x handsoff > /dev/null 2>&1; then
+# Kill any running HandsOff processes (both old and new binary names)
+if pgrep -x handsoff > /dev/null 2>&1 || pgrep -x handsoff-tray > /dev/null 2>&1; then
     echo "Stopping running HandsOff processes..."
     killall handsoff 2>/dev/null || true
+    killall handsoff-tray 2>/dev/null || true
     sleep 1
     echo "✓ Processes stopped"
 fi

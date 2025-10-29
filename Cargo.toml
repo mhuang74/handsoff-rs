@@ -1,6 +1,6 @@
 [package]
 name = "handsoff"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2021"
 authors = ["Michael S. Huang"]
 description = "macOS utility to block unsolicited input from unwanted hands"
@@ -61,3 +61,7 @@ osx_info_plist_template = "Info.plist.template"
 
 # Resources to include in the bundle
 resources = []
+
+# Bundle configuration for tray binary (same as main bundle)
+[package.metadata.bundle.bin.handsoff-tray]
+name = "HandsOff"
