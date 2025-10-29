@@ -14,9 +14,43 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-/// macOS CLI tool to prevent accidental input during video calls
+/// macOS utility to block unsolicited input from unwanted hands
 #[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
+#[command(
+    author,
+    version,
+    about = "macOS utility to block unsolicited input from unwanted hands",
+    long_about = "macOS utility to block accidental or unsolicited input from unwanted hands.
+
+Usecases:
+ - safely monitor progress on your laptop from across the room
+ - join a conference call with a toddler in your lap
+ - prevent your kid from sending out that draft email when you go rummage for snacks
+
+Blocks:
+ - keypress
+ - mouse/trackpad clicks
+
+ENVIRONMENT VARIABLES (Required):
+  HANDS_OFF_SECRET_PHRASE    Passphrase required to unlock input when locked
+                             Example: export HANDS_OFF_SECRET_PHRASE='my-secret'
+
+ENVIRONMENT VARIABLES (Optional):
+  HANDS_OFF_AUTO_LOCK        Auto-lock timeout in seconds (10-7200)
+                             Input will lock after this period of inactivity
+                             Example: export HANDS_OFF_AUTO_LOCK=300
+
+  HANDS_OFF_AUTO_UNLOCK      Auto-unlock timeout in seconds (10-3600, or 0 to disable)
+                             Safety feature: automatically unlocks after this duration
+                             to prevent permanent lockouts
+                             Example: export HANDS_OFF_AUTO_UNLOCK=30
+
+HOTKEYS:
+  Ctrl+Cmd+Shift+L          Lock input (blocks all keyboard/mouse input)
+  Ctrl+Cmd+Shift+T          Talk mode (hold to allow spacebar keypress, for unmuting conf calls)
+
+When locked, type your passphrase to unlock (input won't be visible on screen)."
+)]
 struct Args {
     /// Start with input locked immediately
     #[arg(short, long)]
