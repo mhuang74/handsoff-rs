@@ -51,6 +51,7 @@ A macOS menu bar application that prevents accidental or unsolicited input from
 keyboard, trackpad, and mouse devices during video conferencing, presentations,
 or when leaving your laptop unattended.
 """
+icon = ["assets/AppIcon.icns"]
 
 # macOS-specific bundle configuration
 osx_minimum_system_version = "10.11"
