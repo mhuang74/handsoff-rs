@@ -30,7 +30,7 @@ The Auto-Unlock feature provides a time-based escape hatch that guarantees input
    - Accept configuration via `HANDS_OFF_AUTO_UNLOCK` environment variable
    - Value specifies timeout duration in seconds
    - If not set or set to `0`, feature is disabled (backward compatible)
-   - Valid range: 10-3600 seconds (10 seconds to 1 hour)
+   - Valid range: 60-900 seconds (1 minute to 15 minutes)
    - Invalid values should log a warning and disable the feature
 
 2. **Automatic Unlock Behavior**
@@ -76,7 +76,7 @@ The Auto-Unlock feature provides a time-based escape hatch that guarantees input
 
 3. **Security**
    - Feature is opt-in via environment variable (not enabled by default)
-   - Timeout value must be reasonable (>= 10 seconds minimum)
+   - Timeout value must be reasonable (>= 60 seconds minimum)
    - Auto-unlock event is logged for audit purposes
 
 4. **Backward Compatibility**
@@ -104,7 +104,7 @@ fn parse_auto_unlock_timeout() -> Option<u64> {
                 None
             }
             Ok(seconds) => {
-                warn!("Invalid auto-unlock timeout: {} (must be 10-3600 or 0). Feature disabled.", seconds);
+                warn!("Invalid auto-unlock timeout: {} (must be 60-900 or 0). Feature disabled.", seconds);
                 None
             }
             Err(e) => {
@@ -457,8 +457,8 @@ mod tests {
 ### Cons (Potential Risks)
 
 1. **Reduced Security If Misconfigured**
-   - If set too low (e.g., 10s), an attacker has a time window
-   - Mitigation: Enforce minimum of 10 seconds, document recommended values
+   - If set too low (e.g., 60s), an attacker has a time window
+   - Mitigation: Enforce minimum of 60 seconds, document recommended values
 
 2. **Social Engineering Risk**
    - Attacker could set environment variable before user launches app
@@ -698,7 +698,7 @@ As documented in the specification:
 - Feature is clearly documented as development/testing tool
 - Appropriate warnings in README about production use
 - All auto-unlock events logged at WARNING level for audit
-- Minimum timeout enforced (10 seconds)
+- Minimum timeout enforced (60 seconds)
 - Invalid values rejected with warnings
 
 ---

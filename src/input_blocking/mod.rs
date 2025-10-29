@@ -10,20 +10,34 @@ use log::{debug, error, info};
 /// Handle a keyboard event during lock
 ///
 /// Returns true if the event should be blocked, false if it should pass through
-pub fn handle_keyboard_event(
-    event: &CGEvent,
-    event_type: CGEventType,
-    state: &AppState,
-) -> bool {
+pub fn handle_keyboard_event(event: &CGEvent, event_type: CGEventType, state: &AppState) -> bool {
     let keycode = event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE);
     let flags = event.get_flags();
 
+    // Check for Lock hotkey (Ctrl+Cmd+Shift+L) - keycode 37 is 'L'
+    // This only LOCKS, never unlocks (unlock requires passphrase)
+    if keycode == 37
+        && flags.contains(CGEventFlags::CGEventFlagControl)
+        && flags.contains(CGEventFlags::CGEventFlagCommand)
+        && flags.contains(CGEventFlags::CGEventFlagShift)
+    {
+        if (event_type as u32) == (CGEventType::KeyDown as u32) {
+            if !state.is_locked() {
+                info!("Lock hotkey pressed - locking input");
+                state.set_locked(true);
+            } else {
+                info!("Lock hotkey pressed but already locked (use passphrase to unlock)");
+            }
+        }
+        return true; // Block the hotkey itself
+    }
+
     // Check for Talk hotkey (Ctrl+Cmd+Shift+T) - keycode 17 is 'T'
     // Track press/release state for passthrough
-    if keycode == 17 &&
-        flags.contains(CGEventFlags::CGEventFlagControl) &&
-        flags.contains(CGEventFlags::CGEventFlagCommand) &&
-        flags.contains(CGEventFlags::CGEventFlagShift)
+    if keycode == 17
+        && flags.contains(CGEventFlags::CGEventFlagControl)
+        && flags.contains(CGEventFlags::CGEventFlagCommand)
+        && flags.contains(CGEventFlags::CGEventFlagShift)
     {
         if (event_type as u32) == (CGEventType::KeyDown as u32) {
             info!("Talk key pressed - enabling spacebar passthrough");
@@ -42,6 +56,14 @@ pub fn handle_keyboard_event(
         return false; // Allow spacebar through
     }
 
+    // If not locked, pass through all non-hotkey events
+    if !state.is_locked() {
+        state.update_input_time();
+        return false; // Pass through
+    }
+
+    // From here on, we're locked - block events and handle passphrase entry
+
     // Only process KeyDown events for passphrase entry
     // CGEventType doesn't implement PartialEq, so we compare as u32
     if (event_type as u32) != (CGEventType::KeyDown as u32) {
@@ -49,24 +71,6 @@ pub fn handle_keyboard_event(
     }
 
     let shift = flags.contains(CGEventFlags::CGEventFlagShift);
-
-    // Check for Touch ID trigger (Ctrl+Cmd+Shift+U)
-    if is_touchid_trigger(keycode, flags) {
-        info!("Touch ID trigger detected");
-        std::thread::spawn({
-            let state = state.clone();
-            move || {
-                if let Ok(true) = auth::touchid::authenticate() {
-                    info!("Touch ID authentication successful");
-                    state.set_locked(false);
-                    state.clear_buffer();
-                    crate::ui::menubar::update_menu_bar_icon(false);
-                    crate::ui::notifications::show_unlock_notification();
-                }
-            }
-        });
-        return true; // Block the event
-    }
 
     // Handle backspace
     if keycode == 51 {
@@ -91,11 +95,9 @@ pub fn handle_keyboard_event(
         if let Some(hash) = state.get_passphrase_hash() {
             let buffer = state.get_buffer();
             if auth::verify_passphrase(&buffer, &hash) {
-                info!("Passphrase verified - unlocking");
+                info!("Passphrase verified - input unlocked");
                 state.set_locked(false);
                 state.clear_buffer();
-                crate::ui::menubar::update_menu_bar_icon(false);
-                crate::ui::notifications::show_unlock_notification();
                 return true; // Block the final matching event
             }
         }
@@ -114,14 +116,6 @@ pub fn handle_mouse_event(_event_type: CGEventType, state: &AppState) -> bool {
 
     // Block all mouse/trackpad events during lock
     true
-}
-
-/// Check if the current key combination is the Touch ID trigger (Ctrl+Cmd+Shift+U)
-fn is_touchid_trigger(keycode: i64, flags: CGEventFlags) -> bool {
-    keycode == 32 && // U key
-        flags.contains(CGEventFlags::CGEventFlagControl) &&
-        flags.contains(CGEventFlags::CGEventFlagCommand) &&
-        flags.contains(CGEventFlags::CGEventFlagShift)
 }
 
 /// Check accessibility permissions

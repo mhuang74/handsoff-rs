@@ -5,14 +5,13 @@ A macOS menu bar application that prevents accidental or unsolicited input from 
 ## Features
 
 - **Complete Input Blocking**: Blocks all keyboard, trackpad, and mouse inputs while keeping the screen visible
-- **Secure Unlocking**: Unlock via passphrase or Touch ID
+- **Secure Unlocking**: Unlock via passphrase
 - **Auto-Lock**: Automatically locks after 3 minutes of inactivity (configurable)
 - **Auto-Unlock Safety Feature**: Configurable timeout that automatically unlocks after a set period to prevent permanent lockouts (optional, for development/testing)
 - **Smart Buffer Reset**: 5-second input buffer reset to handle accidental input
 - **Hotkeys**:
   - `Ctrl+Cmd+Shift+L`: Enable lock
   - `Ctrl+Cmd+Shift+T`: Talk hotkey (spacebar passthrough for unmuting)
-  - `Ctrl+Cmd+Shift+U`: Trigger Touch ID unlock
 - **Microphone & Camera**: Video conferencing apps continue to work normally
 - **Menu Bar Interface**: Unobtrusive menu bar icon showing lock status (🔓/🔒)
 
@@ -69,10 +68,9 @@ When locked, the menu bar icon changes to 🔒 and all keyboard/mouse/trackpad i
 
 ### Unlocking Input
 
-Three ways to unlock:
+Two ways to unlock:
 1. **Passphrase**: Type your passphrase on the keyboard (even though you can't see the input)
-2. **Touch ID**: Press `Ctrl+Cmd+Shift+U` to trigger Touch ID authentication
-3. **Wait**: If you accidentally type gibberish, wait 5 seconds for the buffer to reset, then try again
+2. **Wait**: If you accidentally type gibberish, wait 5 seconds for the buffer to reset, then try again
 
 ### Auto-Lock
 
@@ -108,10 +106,10 @@ HANDS_OFF_AUTO_UNLOCK=600 ./handsoff
 
 #### Valid Configuration Values
 
-- **Minimum:** 10 seconds
-- **Maximum:** 3600 seconds (1 hour)
+- **Minimum:** 60 seconds
+- **Maximum:** 900 seconds (15 minutes)
 - **Disabled:** 0 or unset (default)
-- **Invalid values** (below 10 or above 3600) will disable the feature with a warning
+- **Invalid values** (below 60 or above 900) will disable the feature with a warning
 
 #### How It Works
 
@@ -190,29 +188,22 @@ INFO  Auto-unlock notification delivered
 ```
 src/
 ├── main.rs                 # Application entry point
+├── lib.rs                  # Library exports
 ├── app_state.rs           # Shared application state
 ├── auth/                  # Authentication modules
-│   ├── mod.rs
-│   ├── keychain.rs        # Keychain storage
-│   └── touchid.rs         # Touch ID authentication
+│   └── mod.rs             # Passphrase verification
 ├── input_blocking/        # Input blocking modules
-│   ├── mod.rs
+│   ├── mod.rs             # Event handling and passphrase entry
 │   ├── event_tap.rs       # CGEventTap implementation
 │   └── hotkeys.rs         # Global hotkey handling
-├── ui/                    # User interface modules
-│   ├── mod.rs
-│   ├── menubar.rs         # Menu bar interface
-│   ├── notifications.rs   # System notifications
-│   └── dialogs.rs         # Alert dialogs
 └── utils/                 # Utility modules
-    ├── mod.rs
+    ├── mod.rs             # SHA-256 hashing utilities
     └── keycode.rs         # Keycode to character mapping
 ```
 
 ## Security
 
 - Passphrases are stored as SHA-256 hashes in macOS Keychain
-- Touch ID uses macOS's secure enclave
 - No network connections or telemetry
 - All data stays on your device
 
@@ -220,17 +211,12 @@ src/
 
 - Tested on macOS 10.11 (El Capitan) through macOS 14 (Sonoma)
 - Works on both Intel and Apple Silicon Macs
-- Touch ID requires macOS 10.12.2+ and compatible hardware
 
 ## Troubleshooting
 
 ### App doesn't block input
 - Ensure Accessibility permissions are granted in System Settings > Privacy & Security > Accessibility
 - Restart the app after granting permissions
-
-### Touch ID doesn't work
-- Touch ID requires macOS 10.12.2+ and compatible hardware (MacBook Pro 2016+)
-- Fall back to passphrase entry if Touch ID is unavailable
 
 ### Forgot passphrase
 - Quit the app (when unlocked)
@@ -250,7 +236,7 @@ RUST_LOG=info HANDS_OFF_AUTO_UNLOCK=30 ./handsoff
 
 **Common issues:**
 - Environment variable not set or set to invalid value
-- Value is outside valid range (10-3600 seconds)
+- Value is outside valid range (60-900 seconds)
 - Device was not actually locked (check menu bar icon)
 - Manual unlock occurred before timeout expired
 

@@ -4,5 +4,4 @@
 pub mod app_state;
 pub mod auth;
 pub mod input_blocking;
-pub mod ui;
 pub mod utils;

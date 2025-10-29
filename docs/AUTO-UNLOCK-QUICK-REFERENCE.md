@@ -24,8 +24,8 @@ HANDS_OFF_AUTO_UNLOCK=300 ./handsoff
 | Setting | Value | Notes |
 |---------|-------|-------|
 | **Environment Variable** | `HANDS_OFF_AUTO_UNLOCK` | Must be set before app starts |
-| **Minimum Timeout** | 10 seconds | Below this = disabled with warning |
-| **Maximum Timeout** | 3600 seconds (1 hour) | Above this = disabled with warning |
+| **Minimum Timeout** | 60 seconds | Below this = disabled with warning |
+| **Maximum Timeout** | 900 seconds (15 minutes) | Above this = disabled with warning |
 | **Default** | Disabled (unset or 0) | Feature is opt-in |
 | **Recommended for Testing** | 30-60 seconds | Quick iteration |
 | **Recommended for Development** | 300-600 seconds (5-10 min) | Safety net |
@@ -72,7 +72,7 @@ Auto-unlock notification delivered
 
 ### Invalid Config (WARN)
 ```
-Invalid auto-unlock timeout: 5 (must be 10-3600 or 0). Feature disabled.
+Invalid auto-unlock timeout: 5 (must be 60-900 or 0). Feature disabled.
 Failed to parse HANDS_OFF_AUTO_UNLOCK: invalid digit found in string. Feature disabled.
 ```
 

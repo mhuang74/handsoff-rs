@@ -114,23 +114,39 @@ fn test_invalid_keycode() {
 fn test_all_letters_complete() {
     // Verify complete alphabet mapping
     let expected = "abcdefghijklmnopqrstuvwxyz";
-    let keycodes = [0, 11, 8, 2, 14, 3, 5, 4, 34, 38, 40, 37, 46, 45, 31, 35, 12, 15, 1, 17, 32, 9, 13, 7, 16, 6];
+    let keycodes = [
+        0, 11, 8, 2, 14, 3, 5, 4, 34, 38, 40, 37, 46, 45, 31, 35, 12, 15, 1, 17, 32, 9, 13, 7, 16,
+        6,
+    ];
 
     for (i, keycode) in keycodes.iter().enumerate() {
         let expected_char = expected.chars().nth(i).unwrap();
-        assert_eq!(keycode_to_char(*keycode, false), Some(expected_char),
-                   "Keycode {} should map to '{}'", keycode, expected_char);
+        assert_eq!(
+            keycode_to_char(*keycode, false),
+            Some(expected_char),
+            "Keycode {} should map to '{}'",
+            keycode,
+            expected_char
+        );
     }
 }
 
 #[test]
 fn test_all_letters_uppercase() {
     let expected = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-    let keycodes = [0, 11, 8, 2, 14, 3, 5, 4, 34, 38, 40, 37, 46, 45, 31, 35, 12, 15, 1, 17, 32, 9, 13, 7, 16, 6];
+    let keycodes = [
+        0, 11, 8, 2, 14, 3, 5, 4, 34, 38, 40, 37, 46, 45, 31, 35, 12, 15, 1, 17, 32, 9, 13, 7, 16,
+        6,
+    ];
 
     for (i, keycode) in keycodes.iter().enumerate() {
         let expected_char = expected.chars().nth(i).unwrap();
-        assert_eq!(keycode_to_char(*keycode, true), Some(expected_char),
-                   "Keycode {} with shift should map to '{}'", keycode, expected_char);
+        assert_eq!(
+            keycode_to_char(*keycode, true),
+            Some(expected_char),
+            "Keycode {} with shift should map to '{}'",
+            keycode,
+            expected_char
+        );
     }
 }
