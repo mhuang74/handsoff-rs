@@ -2,6 +2,15 @@ use parking_lot::Mutex;
 use std::sync::Arc;
 use std::time::Instant;
 
+// Auto-lock timeout configuration constants
+pub const AUTO_LOCK_MIN_SECONDS: u64 = 20;
+pub const AUTO_LOCK_MAX_SECONDS: u64 = 600;
+pub const AUTO_LOCK_DEFAULT_SECONDS: u64 = 30;
+
+// Auto-unlock timeout configuration constants
+pub const AUTO_UNLOCK_MIN_SECONDS: u64 = 60;
+pub const AUTO_UNLOCK_MAX_SECONDS: u64 = 900;
+
 /// Application state shared across modules
 #[derive(Clone)]
 pub struct AppState {
@@ -19,7 +28,7 @@ pub struct AppStateInner {
     pub last_input_time: Instant,
     /// Current passphrase hash (SHA-256, hex-encoded)
     pub passphrase_hash: Option<String>,
-    /// Auto-lock timeout in seconds (default: 300 = 5 minutes)
+    /// Auto-lock timeout in seconds (default: 30 seconds)
     pub auto_lock_timeout: u64,
     /// Input buffer reset timeout in seconds (default: 5)
     pub buffer_reset_timeout: u64,
@@ -40,7 +49,7 @@ impl AppState {
                 last_key_time: None,
                 last_input_time: Instant::now(),
                 passphrase_hash: None,
-                auto_lock_timeout: 300,
+                auto_lock_timeout: AUTO_LOCK_DEFAULT_SECONDS,
                 buffer_reset_timeout: 5,
                 talk_key_pressed: false,
                 lock_start_time: None,

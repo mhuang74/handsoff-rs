@@ -4,7 +4,10 @@ mod input_blocking;
 mod utils;
 
 use anyhow::{Context, Result};
-use app_state::AppState;
+use app_state::{
+    AppState, AUTO_LOCK_MAX_SECONDS, AUTO_LOCK_MIN_SECONDS, AUTO_UNLOCK_MAX_SECONDS,
+    AUTO_UNLOCK_MIN_SECONDS,
+};
 use clap::Parser;
 use input_blocking::event_tap;
 use input_blocking::hotkeys::HotkeyManager;
@@ -13,6 +16,9 @@ use std::env;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
+
+// Auto-lock and auto-unlock timeout configuration constants are defined in app_state.rs
+// NOTE: Update help text strings below if these values change
 
 /// macOS utility to block unsolicited input from unwanted hands
 #[derive(Parser, Debug)]
@@ -36,14 +42,14 @@ ENVIRONMENT VARIABLES (Required):
                              Example: export HANDS_OFF_SECRET_PHRASE='my-secret'
 
 ENVIRONMENT VARIABLES (Optional):
-  HANDS_OFF_AUTO_LOCK        Auto-lock timeout in seconds (10-7200)
-                             Input will lock after this period of inactivity
-                             Example: export HANDS_OFF_AUTO_LOCK=300
+  HANDS_OFF_AUTO_LOCK        Auto-lock timeout in seconds (20-600, default: 30)
+                             Input will lock after this period of contiguous inactivity
+                             Example: export HANDS_OFF_AUTO_LOCK=60
 
-  HANDS_OFF_AUTO_UNLOCK      Auto-unlock timeout in seconds (10-3600, or 0 to disable)
+  HANDS_OFF_AUTO_UNLOCK      Auto-unlock timeout in seconds (60-900, or 0 to disable)
                              Safety feature: automatically unlocks after this duration
                              to prevent permanent lockouts
-                             Example: export HANDS_OFF_AUTO_UNLOCK=30
+                             Example: export HANDS_OFF_AUTO_UNLOCK=300
 
 HOTKEYS:
   Ctrl+Cmd+Shift+L          Lock input (blocks all keyboard/mouse input)
@@ -55,6 +61,11 @@ struct Args {
     /// Start with input locked immediately
     #[arg(short, long)]
     locked: bool,
+
+    /// Auto-lock timeout in seconds of contiguous inactivity (20-600, default: 30, overrides HANDS_OFF_AUTO_LOCK)
+    /// NOTE: Keep range/default values in sync with AUTO_LOCK_* constants
+    #[arg(long)]
+    auto_lock: Option<u64>,
 }
 
 
@@ -62,7 +73,7 @@ struct Args {
 fn parse_auto_unlock_timeout() -> Option<u64> {
     match env::var("HANDS_OFF_AUTO_UNLOCK") {
         Ok(val) => match val.parse::<u64>() {
-            Ok(seconds) if (10..=3600).contains(&seconds) => {
+            Ok(seconds) if (AUTO_UNLOCK_MIN_SECONDS..=AUTO_UNLOCK_MAX_SECONDS).contains(&seconds) => {
                 info!("Auto-unlock safety feature enabled: {} seconds", seconds);
                 Some(seconds)
             }
@@ -72,8 +83,8 @@ fn parse_auto_unlock_timeout() -> Option<u64> {
             }
             Ok(seconds) => {
                 warn!(
-                    "Invalid auto-unlock timeout: {} (must be 10-3600 or 0). Feature disabled.",
-                    seconds
+                    "Invalid auto-unlock timeout: {} (must be {}-{} or 0). Feature disabled.",
+                    seconds, AUTO_UNLOCK_MIN_SECONDS, AUTO_UNLOCK_MAX_SECONDS
                 );
                 None
             }
@@ -96,7 +107,7 @@ fn parse_auto_unlock_timeout() -> Option<u64> {
 fn parse_auto_lock_timeout() -> Option<u64> {
     match env::var("HANDS_OFF_AUTO_LOCK") {
         Ok(val) => match val.parse::<u64>() {
-            Ok(seconds) if (10..=7200).contains(&seconds) => {
+            Ok(seconds) if (AUTO_LOCK_MIN_SECONDS..=AUTO_LOCK_MAX_SECONDS).contains(&seconds) => {
                 info!(
                     "Auto-lock timeout set via environment variable: {} seconds",
                     seconds
@@ -105,8 +116,8 @@ fn parse_auto_lock_timeout() -> Option<u64> {
             }
             Ok(seconds) => {
                 warn!(
-                    "Invalid auto-lock timeout: {} (must be 10-7200 seconds). Using default.",
-                    seconds
+                    "Invalid auto-lock timeout: {} (must be {}-{} seconds). Using default.",
+                    seconds, AUTO_LOCK_MIN_SECONDS, AUTO_LOCK_MAX_SECONDS
                 );
                 None
             }
@@ -175,14 +186,38 @@ fn main() -> Result<()> {
         }
     }
 
-    // Load auto-lock timeout from environment variable
-    if let Some(timeout) = parse_auto_lock_timeout() {
-        state.lock().auto_lock_timeout = timeout;
-    } else {
-        info!(
-            "Using default auto-lock timeout: {} seconds",
-            state.lock().auto_lock_timeout
-        );
+    // Load auto-lock timeout from command-line argument or environment variable
+    // Command-line argument takes precedence
+    match args.auto_lock {
+        Some(timeout) if (AUTO_LOCK_MIN_SECONDS..=AUTO_LOCK_MAX_SECONDS).contains(&timeout) => {
+            info!("Auto-lock timeout set via --auto-lock argument: {} seconds", timeout);
+            state.lock().auto_lock_timeout = timeout;
+        }
+        Some(timeout) => {
+            warn!(
+                "Invalid --auto-lock value: {} (must be {}-{} seconds). Trying environment variable.",
+                timeout, AUTO_LOCK_MIN_SECONDS, AUTO_LOCK_MAX_SECONDS
+            );
+            if let Some(timeout) = parse_auto_lock_timeout() {
+                state.lock().auto_lock_timeout = timeout;
+            } else {
+                info!(
+                    "Using default auto-lock timeout: {} seconds",
+                    state.lock().auto_lock_timeout
+                );
+            }
+        }
+        None => {
+            // Fall back to environment variable
+            if let Some(timeout) = parse_auto_lock_timeout() {
+                state.lock().auto_lock_timeout = timeout;
+            } else {
+                info!(
+                    "Using default auto-lock timeout: {} seconds",
+                    state.lock().auto_lock_timeout
+                );
+            }
+        }
     }
 
     // Create event tap for input blocking
@@ -252,10 +287,10 @@ fn start_auto_lock_thread(state: Arc<AppState>) {
     thread::spawn(move || {
         let mut check_count = 0u32;
         loop {
-            thread::sleep(Duration::from_secs(10));
+            thread::sleep(Duration::from_secs(5));
             check_count += 1;
 
-            // Log remaining time every 60 seconds (6 checks of 10 seconds each)
+            // Log remaining time every 30 seconds (6 checks of 5 seconds each)
             if check_count.is_multiple_of(6) {
                 if let Some(remaining_secs) = state.get_auto_lock_remaining_secs() {
                     let minutes = remaining_secs / 60;
