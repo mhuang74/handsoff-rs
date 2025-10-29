@@ -109,13 +109,10 @@ unsafe extern "C" fn event_tap_callback(
             handle_keyboard_event(&cg_event, CGEventType::KeyUp, state)
         }
         t if t == CGEventType::MouseMoved as u32 => {
-            // Only block mouse events when locked
-            if state.is_locked() {
-                handle_mouse_event(CGEventType::MouseMoved, state)
-            } else {
-                state.update_input_time();
-                false // Pass through when unlocked
-            }
+            // Always allow mouse movement (needed for tooltips and cursor position)
+            // This is a passive event and doesn't trigger any actions
+            state.update_input_time();
+            false // Always pass through
         }
         t if t == CGEventType::LeftMouseDown as u32 => {
             if state.is_locked() {

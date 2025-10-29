@@ -3,7 +3,7 @@
 
 use handsoff::{config, HandsOffCore};
 use anyhow::{Context, Result};
-use log::{error, info};
+use log::{error, info, warn};
 use std::env;
 use std::sync::{Arc, Mutex};
 use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
@@ -195,19 +195,15 @@ fn handle_lock_toggle(core: Arc<Mutex<HandsOffCore>>) {
     if core.is_locked() {
         // Menu should not be accessible when locked (mouse clicks blocked)
         // But if somehow clicked (e.g., during race condition), show info
-        info!("Lock menu clicked while already locked (shouldn't happen - mouse blocked)");
-        show_alert(
-            "Already Locked",
-            "Input is already locked.\n\nTo unlock, type your passphrase on the keyboard.\n\n(The menu is inaccessible when locked because mouse clicks are blocked.)"
-        );
+        warn!("Lock menu clicked while already locked (shouldn't happen)");
+    }
+    
+    // Lock immediately
+    if let Err(e) = core.lock() {
+        error!("Error locking: {}", e);
+        show_alert("Error", &format!("Failed to lock: {}", e));
     } else {
-        // Lock immediately
-        if let Err(e) = core.lock() {
-            error!("Error locking: {}", e);
-            show_alert("Error", &format!("Failed to lock: {}", e));
-        } else {
-            info!("Input locked via menu");
-        }
+        info!("Input locked via menu");
     }
 }
 
