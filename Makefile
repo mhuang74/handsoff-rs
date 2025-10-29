@@ -1,4 +1,4 @@
-.PHONY: build bundle fix-plist sign dmg clean install test check clippy
+.PHONY: build bundle fix-plist sign dmg pkg clean install test check clippy
 
 # Get version from Cargo.toml
 VERSION := $(shell cargo pkgid | cut -d\# -f2 | cut -d: -f2 | cut -d@ -f2)
@@ -38,6 +38,10 @@ dmg: sign
 	@rm -rf dmg-contents
 	@echo "DMG created at $(DIST_DIR)/$(APP_NAME)-v$(VERSION).dmg"
 
+# Create PKG installer with Launch Agent setup
+pkg:
+	./installer/build-pkg.sh
+
 # Install to /Applications
 install: fix-plist
 	cp -r $(BUNDLE_PATH) /Applications/
@@ -61,6 +65,11 @@ clean:
 	rm -rf target/release/bundle
 	rm -rf $(DIST_DIR)
 	rm -rf dmg-contents
+	rm -rf installer/pkg-root
+	rm -f installer/*.pkg
+	rm -f installer/distribution.xml
+	rm -f installer/*.html
+	rm -f installer/LICENSE
 
 # Build everything (bundle with fixes)
 all: fix-plist
@@ -73,6 +82,7 @@ help:
 	@echo "  fix-plist  - Create bundle and fix Info.plist (add LSUIElement)"
 	@echo "  sign       - Build, bundle, fix, and sign the app"
 	@echo "  dmg        - Build, bundle, fix, sign, and create DMG installer"
+	@echo "  pkg        - Build and create .pkg installer with Launch Agent setup"
 	@echo "  install    - Build, bundle, fix, and install to /Applications"
 	@echo "  test       - Run cargo tests"
 	@echo "  check      - Run cargo check"
