@@ -79,8 +79,29 @@ impl HandsOffCore {
         self.state.get_auto_unlock_timeout()
     }
 
+    /// Check if accessibility permissions are currently granted
+    pub fn has_accessibility_permissions(&self) -> bool {
+        input_blocking::check_accessibility_permissions()
+    }
+
     /// Lock input immediately
+    ///
+    /// # Safety Note
+    /// If accessibility permissions are not granted, this will set the locked state
+    /// but input blocking will NOT work. The app will think it's locked but events
+    /// won't actually be blocked, leading to a broken state where passphrase entry
+    /// doesn't work properly. This is why the tray app should check permissions
+    /// before allowing lock() to be called.
+    ///
+    /// The permission monitor thread will detect this condition and perform an
+    /// emergency unlock, but it's better to prevent the lock attempt in the first place.
     pub fn lock(&self) -> Result<()> {
+        // Check permissions before locking
+        if !self.has_accessibility_permissions() {
+            warn!("Cannot lock: Accessibility permissions not granted");
+            anyhow::bail!("Cannot lock input - accessibility permissions not granted. Please enable permissions in System Settings > Privacy & Security > Accessibility");
+        }
+
         self.state.set_locked(true);
         info!("Input locked");
         Ok(())
@@ -127,7 +148,7 @@ impl HandsOffCore {
         Ok(())
     }
 
-    /// Start all background threads (buffer reset, auto-lock, hotkey listener, auto-unlock)
+    /// Start all background threads (buffer reset, auto-lock, hotkey listener, auto-unlock, permission monitor)
     pub fn start_background_threads(&self) -> Result<()> {
         self.start_buffer_reset_thread();
         self.start_auto_lock_thread();
@@ -140,6 +161,9 @@ impl HandsOffCore {
         if self.state.get_auto_unlock_timeout().is_some() {
             self.start_auto_unlock_thread();
         }
+
+        // Start permission monitoring thread for safety
+        self.start_permission_monitor_thread();
 
         info!("Background threads started");
         Ok(())
@@ -245,5 +269,92 @@ impl HandsOffCore {
                 }
             })
             .expect("Failed to spawn auto-unlock thread");
+    }
+
+    /// Background thread to monitor accessibility permissions and auto-unlock if lost
+    /// CRITICAL SAFETY FEATURE: Prevents user lockout if permissions are revoked while app is running
+    fn start_permission_monitor_thread(&self) {
+        let state = self.state.clone();
+        thread::Builder::new()
+            .name("permission-monitor".to_string())
+            .spawn(move || {
+                info!("Permission monitoring thread started - will check every 5 seconds");
+
+                // CRITICAL: Check initial permission state rather than assuming true
+                // This handles the edge case where permissions are removed before the first check
+                let mut last_permission_state = input_blocking::check_accessibility_permissions();
+
+                // If permissions are already missing AND we're locked, emergency unlock immediately
+                if !last_permission_state && state.is_locked() {
+                    warn!("CRITICAL: Permissions already missing and app is locked - performing emergency unlock");
+                    state.set_locked(false);
+                    info!("Emergency unlock completed - input is now accessible");
+
+                    #[cfg(target_os = "macos")]
+                    {
+                        let _ = notify_rust::Notification::new()
+                            .summary("HandsOff - Emergency Unlock")
+                            .body("Accessibility permissions are missing.\nInput has been unlocked for safety.\n\nPlease restore permissions or quit HandsOff.")
+                            .timeout(notify_rust::Timeout::Milliseconds(10000))
+                            .show();
+                    }
+                }
+
+                loop {
+                    thread::sleep(Duration::from_secs(5)); // Check every 5 seconds
+
+                    let has_permissions = input_blocking::check_accessibility_permissions();
+
+                    // Detect permission loss (transition from true to false)
+                    if last_permission_state && !has_permissions {
+                        warn!("CRITICAL: Accessibility permissions were revoked while app is running!");
+
+                        // SAFETY MEASURE: If currently locked, immediately unlock to prevent lockout
+                        if state.is_locked() {
+                            warn!("App is locked - performing emergency unlock to prevent user lockout");
+                            state.set_locked(false);
+                            info!("Emergency unlock completed - input is now accessible");
+
+                            // Show notification about the emergency unlock
+                            #[cfg(target_os = "macos")]
+                            {
+                                let _ = notify_rust::Notification::new()
+                                    .summary("HandsOff - Emergency Unlock")
+                                    .body("Accessibility permissions were revoked.\nInput has been unlocked for safety.\n\nPlease restore permissions or quit HandsOff.")
+                                    .timeout(notify_rust::Timeout::Milliseconds(10000))
+                                    .show();
+                            }
+                        } else {
+                            // If not locked, just warn the user
+                            warn!("App is unlocked - user will be unable to lock until permissions are restored");
+
+                            #[cfg(target_os = "macos")]
+                            {
+                                let _ = notify_rust::Notification::new()
+                                    .summary("HandsOff - Permissions Lost")
+                                    .body("Accessibility permissions were revoked.\n\nRestore permissions in System Settings or quit HandsOff.")
+                                    .timeout(notify_rust::Timeout::Milliseconds(10000))
+                                    .show();
+                            }
+                        }
+                    }
+                    // Detect permission restoration
+                    else if !last_permission_state && has_permissions {
+                        info!("Accessibility permissions have been restored");
+
+                        #[cfg(target_os = "macos")]
+                        {
+                            let _ = notify_rust::Notification::new()
+                                .summary("HandsOff - Permissions Restored")
+                                .body("Accessibility permissions restored.\nHandsOff is now fully functional.")
+                                .timeout(notify_rust::Timeout::Milliseconds(5000))
+                                .show();
+                        }
+                    }
+
+                    last_permission_state = has_permissions;
+                }
+            })
+            .expect("Failed to spawn permission monitor thread");
     }
 }

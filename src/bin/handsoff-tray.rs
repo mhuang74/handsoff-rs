@@ -127,9 +127,10 @@ fn main() -> Result<()> {
     // Store passphrase for reset functionality
     let passphrase_for_reset = passphrase.clone();
 
-    // Track state for tooltip updates
+    // Track state for tooltip updates and permission state
     let mut was_locked = false;
     let mut last_tooltip = String::new();
+    let mut has_permissions = true; // Assume true at start (already verified at startup)
 
     // Run event loop with periodic updates
     event_loop.run(move |_event, _, control_flow| {
@@ -154,9 +155,25 @@ fn main() -> Result<()> {
             }
         }
 
-        // Periodically update icon and tooltip based on lock state
+        // Periodically check permissions and update menu state
         let core_lock = core.lock().unwrap();
         let is_locked = core_lock.is_locked();
+        let current_permissions = core_lock.has_accessibility_permissions();
+
+        // Update Lock menu item enabled state based on permissions
+        // Only enable Lock when we have permissions AND are not already locked
+        let should_enable_lock = current_permissions && !is_locked;
+        lock_item.set_enabled(should_enable_lock);
+
+        // Track permission state changes for logging
+        if has_permissions != current_permissions {
+            if current_permissions {
+                info!("Tray: Accessibility permissions detected, Lock menu enabled");
+            } else {
+                warn!("Tray: Accessibility permissions lost, Lock menu disabled");
+            }
+            has_permissions = current_permissions;
+        }
 
         // Update icon when lock state changes
         if is_locked != was_locked {
@@ -186,8 +203,8 @@ fn main() -> Result<()> {
             }
         }
 
-        // Always update tooltip (to show live countdown)
-        let tooltip = build_tooltip(&core_lock, is_locked);
+        // Always update tooltip (to show live countdown and permission status)
+        let tooltip = build_tooltip(&core_lock, is_locked, current_permissions);
         if tooltip != last_tooltip {
             if let Err(e) = tray.set_tooltip(Some(&tooltip)) {
                 error!("Failed to update tray tooltip: {}", e);
@@ -288,7 +305,11 @@ fn show_help() {
         • Ctrl+Cmd+Shift+L: Lock input\n\
         • Ctrl+Cmd+Shift+T (hold): Talk mode (Spacebar passthrough)\n\n\
         Permissions:\n\
-        Requires Accessibility permission in System Preferences."
+        Requires Accessibility permission in System Preferences.\n\n\
+        Safety Features:\n\
+        • Permission Monitor: Checks every 5 seconds\n\
+        • Emergency Unlock: Auto-unlocks if permissions are revoked while locked\n\
+        • This prevents lockout if permissions are removed while running"
     );
 }
 
@@ -310,8 +331,13 @@ fn show_alert(title: &str, message: &str) {
         .output();
 }
 
-/// Build tooltip text based on lock state
-fn build_tooltip(core: &HandsOffCore, is_locked: bool) -> String {
+/// Build tooltip text based on lock state and permission status
+fn build_tooltip(core: &HandsOffCore, is_locked: bool, has_permissions: bool) -> String {
+    // Show permission warning if missing
+    if !has_permissions {
+        return "HandsOff - NO PERMISSIONS\nCannot lock until restored".to_string();
+    }
+
     if !is_locked {
         return "HandsOff - Unlocked".to_string();
     }
