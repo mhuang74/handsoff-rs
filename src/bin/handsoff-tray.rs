@@ -76,6 +76,15 @@ fn main() -> Result<()> {
 
     info!("HandsOff core components started");
 
+    // CRITICAL: Start CFRunLoop in a background thread
+    // The event tap requires CFRunLoop to be running to intercept events
+    // Without this, the event tap callback is never invoked and input blocking doesn't work
+    std::thread::spawn(|| {
+        info!("Starting CFRunLoop in background thread (required for event tap)");
+        use core_foundation::runloop::CFRunLoop;
+        CFRunLoop::run_current();
+    });
+
     // Wrap core in Arc<Mutex> for event loop
     let core = Arc::new(Mutex::new(core));
 
