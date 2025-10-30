@@ -38,6 +38,8 @@ pub struct AppStateInner {
     pub lock_start_time: Option<Instant>,
     /// Auto-unlock timeout in seconds (None = disabled)
     pub auto_unlock_timeout: Option<u64>,
+    /// Cached accessibility permissions state (updated by background thread)
+    pub has_accessibility_permissions: bool,
 }
 
 impl AppState {
@@ -54,6 +56,7 @@ impl AppState {
                 talk_key_pressed: false,
                 lock_start_time: None,
                 auto_unlock_timeout: None,
+                has_accessibility_permissions: false,
             })),
         }
     }
@@ -212,6 +215,16 @@ impl AppState {
     /// Get the configured auto-unlock timeout (in seconds)
     pub fn get_auto_unlock_timeout(&self) -> Option<u64> {
         self.inner.lock().auto_unlock_timeout
+    }
+
+    /// Get cached accessibility permissions state
+    pub fn get_cached_accessibility_permissions(&self) -> bool {
+        self.inner.lock().has_accessibility_permissions
+    }
+
+    /// Set cached accessibility permissions state (called by permission monitor thread)
+    pub fn set_cached_accessibility_permissions(&self, has_permissions: bool) {
+        self.inner.lock().has_accessibility_permissions = has_permissions;
     }
 }
 

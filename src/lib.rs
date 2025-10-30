@@ -80,8 +80,9 @@ impl HandsOffCore {
     }
 
     /// Check if accessibility permissions are currently granted
+    /// Returns cached value updated by background permission monitor thread
     pub fn has_accessibility_permissions(&self) -> bool {
-        input_blocking::check_accessibility_permissions()
+        self.state.get_cached_accessibility_permissions()
     }
 
     /// Lock input immediately
@@ -284,6 +285,9 @@ impl HandsOffCore {
                 // This handles the edge case where permissions are removed before the first check
                 let mut last_permission_state = input_blocking::check_accessibility_permissions();
 
+                // Cache the initial permission state
+                state.set_cached_accessibility_permissions(last_permission_state);
+
                 // If permissions are already missing AND we're locked, emergency unlock immediately
                 if !last_permission_state && state.is_locked() {
                     warn!("CRITICAL: Permissions already missing and app is locked - performing emergency unlock");
@@ -352,6 +356,8 @@ impl HandsOffCore {
                         }
                     }
 
+                    // Update cached state
+                    state.set_cached_accessibility_permissions(has_permissions);
                     last_permission_state = has_permissions;
                 }
             })

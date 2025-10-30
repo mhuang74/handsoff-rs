@@ -145,6 +145,11 @@ pub fn check_accessibility_permissions() -> bool {
         fn AXIsProcessTrusted() -> bool;
     }
 
+    #[link(name = "CoreFoundation", kind = "framework")]
+    extern "C" {
+        fn CFRelease(cf: *const c_void);
+    }
+
     unsafe extern "C" fn test_callback(
         _proxy: CGEventTapRef,
         _event_type: u32,
@@ -159,11 +164,12 @@ pub fn check_accessibility_permissions() -> bool {
     const K_CGEVENT_TAP_OPTION_DEFAULT: u32 = 0;
 
     unsafe {
-        // First check using AXIsProcessTrusted - more reliable for permission status
+        // Check using AXIsProcessTrusted first (informational)
         let ax_trusted = AXIsProcessTrusted();
         info!("AXIsProcessTrusted check: {}", ax_trusted);
 
-        // Also test event tap creation as a secondary check
+        // Test event tap creation - this is the PRIMARY and most reliable check
+        // Event tap creation directly tests if we can actually intercept events
         let tap = CGEventTapCreate(
             K_CGSESSION_EVENT_TAP,
             K_CGHEAD_INSERT_EVENT_TAP,
@@ -176,7 +182,23 @@ pub fn check_accessibility_permissions() -> bool {
         let tap_created = !tap.is_null();
         info!("Event tap creation check: {}", tap_created);
 
-        if !ax_trusted || !tap_created {
+        // Clean up test tap if it was created
+        if tap_created {
+            CFRelease(tap as *const c_void);
+        }
+
+        // IMPORTANT: Use event tap test as the authoritative check
+        // AXIsProcessTrusted() is known to have caching issues on macOS and may
+        // return false even after permissions are granted until app restart.
+        // The event tap creation test is more reliable because it directly tests
+        // what we need to work.
+        if tap_created && !ax_trusted {
+            info!("Event tap test passed but AXIsProcessTrusted returned false");
+            info!("This is a known macOS caching issue - trusting event tap test");
+            info!("The app should work correctly despite AXIsProcessTrusted returning false");
+        }
+
+        if !tap_created {
             error!("Accessibility permission check failed:");
             error!("  - AXIsProcessTrusted: {}", ax_trusted);
             error!("  - Event tap created: {}", tap_created);
@@ -184,6 +206,7 @@ pub fn check_accessibility_permissions() -> bool {
             error!("  - Please check System Settings > Privacy & Security > Accessibility");
         }
 
-        ax_trusted && tap_created
+        // Return true if event tap can be created (the actual test that matters)
+        tap_created
     }
 }
