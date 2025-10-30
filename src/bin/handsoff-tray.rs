@@ -308,40 +308,35 @@ fn format_duration(seconds: u64) -> String {
     }
 }
 
-/// Create unlocked icon (green circle with unlock symbol)
+/// Create unlocked icon (green circle)
 fn create_icon_unlocked() -> tray_icon::Icon {
-    // Use simple text icon for now (Unicode lock symbol)
-    // In production, you'd want to load PNG/ICNS files
-    create_text_icon("🔓")
+    let png_data = include_bytes!("../../assets/tray_unlocked.png");
+    load_png_icon(png_data)
 }
 
-/// Create locked icon (red circle with lock symbol)
+/// Create locked icon (red circle)
 fn create_icon_locked() -> tray_icon::Icon {
-    create_text_icon("🔒")
+    let png_data = include_bytes!("../../assets/tray_locked.png");
+    load_png_icon(png_data)
 }
 
-/// Create an icon from text (emoji)
-/// This is a simple implementation. For production, load PNG/ICNS files.
-fn create_text_icon(text: &str) -> tray_icon::Icon {
-    // Create a simple 32x32 RGBA icon with the emoji
-    // This is a placeholder - ideally load from assets/
-    let size = 32;
-    let mut rgba = vec![0u8; (size * size * 4) as usize];
+/// Load PNG icon from embedded bytes
+fn load_png_icon(png_data: &[u8]) -> tray_icon::Icon {
+    use image::ImageReader;
+    use std::io::Cursor;
 
-    // For now, create a simple colored square
-    // Green for unlocked, red for locked
-    let color = if text == "🔓" {
-        [0, 255, 0, 255] // Green
-    } else {
-        [255, 0, 0, 255] // Red
-    };
+    // Decode PNG to RGBA
+    let img = ImageReader::new(Cursor::new(png_data))
+        .with_guessed_format()
+        .expect("Failed to detect PNG format")
+        .decode()
+        .expect("Failed to decode PNG icon");
 
-    for i in 0..(size * size) as usize {
-        rgba[i * 4] = color[0];
-        rgba[i * 4 + 1] = color[1];
-        rgba[i * 4 + 2] = color[2];
-        rgba[i * 4 + 3] = color[3];
-    }
+    // Convert to RGBA8
+    let rgba_img = img.to_rgba8();
+    let (width, height) = rgba_img.dimensions();
+    let rgba_data = rgba_img.into_raw();
 
-    tray_icon::Icon::from_rgba(rgba, size, size).expect("Failed to create icon")
+    tray_icon::Icon::from_rgba(rgba_data, width, height)
+        .expect("Failed to create icon from RGBA data")
 }

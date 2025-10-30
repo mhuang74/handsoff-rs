@@ -1,6 +1,6 @@
 [package]
 name = "handsoff"
-version = "0.3.2"
+version = "0.3.3"
 edition = "2021"
 authors = ["Michael S. Huang"]
 description = "macOS utility to block unsolicited input from unwanted hands"
@@ -22,6 +22,7 @@ clap = { version = "4.5", features = ["derive"] }
 tray-icon = "0.17"
 tao = "0.28"
 notify-rust = "4"
+image = { version = "0.25", default-features = false, features = ["png"] }  # Lightweight PNG decoder
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.10"
@@ -65,3 +66,4 @@ resources = []
 # Bundle configuration for tray binary (same as main bundle)
 [package.metadata.bundle.bin.handsoff-tray]
 name = "HandsOff"
+icon = ["assets/AppIcon.icns"]
