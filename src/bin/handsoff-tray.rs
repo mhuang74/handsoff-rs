@@ -89,14 +89,14 @@ fn main() -> Result<()> {
     let separator = PredefinedMenuItem::separator();
     let about_item = MenuItem::new("About", true, None);
     let help_item = MenuItem::new("Help", true, None);
-    let quit_item = MenuItem::new("Quit", true, None);
+    let reset_item = MenuItem::new("Reset", true, None);
 
     let menu = Menu::new();
     menu.append(&lock_item).context("Failed to add lock menu item")?;
     menu.append(&separator).context("Failed to add separator")?;
     menu.append(&help_item).context("Failed to add help menu item")?;
     menu.append(&about_item).context("Failed to add about menu item")?;
-    menu.append(&quit_item).context("Failed to add quit menu item")?;
+    menu.append(&reset_item).context("Failed to add reset menu item")?;
 
     // Create tray icon
     let icon = create_icon_unlocked();
@@ -113,7 +113,10 @@ fn main() -> Result<()> {
     let lock_id = lock_item.id().clone();
     let about_id = about_item.id().clone();
     let help_id = help_item.id().clone();
-    let quit_id = quit_item.id().clone();
+    let reset_id = reset_item.id().clone();
+
+    // Store passphrase for reset functionality
+    let passphrase_for_reset = passphrase.clone();
 
     // Track state for tooltip updates
     let mut was_locked = false;
@@ -136,10 +139,9 @@ fn main() -> Result<()> {
                 show_about();
             } else if event_id == help_id {
                 show_help();
-            } else if event_id == quit_id {
-                info!("Quit menu item clicked, exiting");
-                *control_flow = ControlFlow::Exit;
-                return;
+            } else if event_id == reset_id {
+                info!("Reset menu item clicked, resetting app state");
+                handle_reset(core.clone(), &passphrase_for_reset);
             }
         }
 
@@ -197,13 +199,52 @@ fn handle_lock_toggle(core: Arc<Mutex<HandsOffCore>>) {
         // But if somehow clicked (e.g., during race condition), show info
         warn!("Lock menu clicked while already locked (shouldn't happen)");
     }
-    
+
     // Lock immediately
     if let Err(e) = core.lock() {
         error!("Error locking: {}", e);
         show_alert("Error", &format!("Failed to lock: {}", e));
     } else {
         info!("Input locked via menu");
+    }
+}
+
+/// Handle reset from menu
+/// Resets the app state to default: unlocked with all timers reset
+fn handle_reset(core: Arc<Mutex<HandsOffCore>>, passphrase: &str) {
+    let core = core.lock().unwrap();
+
+    // Unlock if currently locked (this also resets lock timer)
+    if core.is_locked() {
+        match core.unlock(passphrase) {
+            Ok(true) => {
+                info!("App state reset: unlocked successfully");
+            }
+            Ok(false) => {
+                // This shouldn't happen as we're using the stored passphrase
+                error!("Failed to unlock during reset: invalid passphrase");
+                show_alert("Reset Error", "Failed to unlock. This is unexpected - please check logs.");
+                return;
+            }
+            Err(e) => {
+                error!("Error during reset unlock: {}", e);
+                show_alert("Reset Error", &format!("Failed to reset: {}", e));
+                return;
+            }
+        }
+    }
+
+    // Note: Unlocking automatically resets the lock timer and related state
+    // Auto-lock and auto-unlock timers are managed by the core and will reset on next lock
+    info!("App state reset complete");
+
+    #[cfg(target_os = "macos")]
+    {
+        let _ = notify_rust::Notification::new()
+            .summary("HandsOff")
+            .body("App state reset - Ready to use")
+            .timeout(notify_rust::Timeout::Milliseconds(3000))
+            .show();
     }
 }
 
@@ -226,19 +267,17 @@ fn show_help() {
         • Lock Input: Lock immediately (menu inaccessible when locked)\n\
         • Help: Show this help\n\
         • About: Show version and project information\n\
-        • Quit: Exit the application\n\n\
-        Locking:\n\
+        • Reset: Reset app state (unlock and reset all timers)\n\n\
+        To Lock:\n\
         • Click 'Lock Input' menu item, OR\n\
         • Press Ctrl+Cmd+Shift+L hotkey\n\n\
-        Unlocking:\n\
+        To Unlock:\n\
         • Type your passphrase on the keyboard\n\
         • (Menu is NOT clickable when locked - mouse blocked)\n\
         • Wait 5 seconds between attempts if you mistype\n\n\
         Hotkeys:\n\
         • Ctrl+Cmd+Shift+L: Lock input\n\
-        • Ctrl+Cmd+Shift+T (hold): Talk mode (allow spacebar)\n\n\
-        Configuration:\n\
-        Set HANDS_OFF_SECRET_PHRASE environment variable before launching.\n\n\
+        • Ctrl+Cmd+Shift+T (hold): Talk mode (Spacebar passthrough)\n\n\
         Permissions:\n\
         Requires Accessibility permission in System Preferences."
     );
