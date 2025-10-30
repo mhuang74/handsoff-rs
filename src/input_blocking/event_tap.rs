@@ -58,8 +58,11 @@ pub fn create_event_tap(state: Arc<AppState>) -> Option<CGEventTapRef> {
         | (1 << CGEventType::MouseMoved as u64)
         | (1 << CGEventType::LeftMouseDown as u64)
         | (1 << CGEventType::LeftMouseUp as u64)
+        | (1 << CGEventType::LeftMouseDragged as u64)
         | (1 << CGEventType::RightMouseDown as u64)
         | (1 << CGEventType::RightMouseUp as u64)
+        | (1 << CGEventType::RightMouseDragged as u64)
+        | (1 << CGEventType::OtherMouseDragged as u64)
         | (1 << CGEventType::ScrollWheel as u64);
 
     // Box the state so we can pass it as user_info
@@ -152,6 +155,33 @@ unsafe extern "C" fn event_tap_callback(
             } else {
                 state.update_input_time();
                 false
+            }
+        }
+        t if t == CGEventType::LeftMouseDragged as u32 => {
+            // Mouse drag with left button - reset auto-lock timer
+            state.update_input_time();
+            if state.is_locked() {
+                true // Block during lock
+            } else {
+                false // Pass through when unlocked
+            }
+        }
+        t if t == CGEventType::RightMouseDragged as u32 => {
+            // Mouse drag with right button - reset auto-lock timer
+            state.update_input_time();
+            if state.is_locked() {
+                true // Block during lock
+            } else {
+                false // Pass through when unlocked
+            }
+        }
+        t if t == CGEventType::OtherMouseDragged as u32 => {
+            // Mouse drag with other button (middle/wheel) - reset auto-lock timer
+            state.update_input_time();
+            if state.is_locked() {
+                true // Block during lock
+            } else {
+                false // Pass through when unlocked
             }
         }
         _ => false, // Pass through other events
