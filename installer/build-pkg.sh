@@ -210,7 +210,18 @@ cat > "${INSTALLER_DIR}/conclusion.html" << 'EOF'
 
     <div class="next-steps">
         <h2>Next Steps: Complete Setup</h2>
-        <p>Open Terminal and run:</p>
+
+        <h3>STEP 1: Grant Accessibility Permissions</h3>
+        <p>Before running the setup script, you must grant Accessibility permissions:</p>
+        <ol>
+            <li>Go to: <strong>System Preferences → Security & Privacy → Privacy → Accessibility</strong></li>
+            <li>Click the lock icon to make changes</li>
+            <li>Click the <strong>+</strong> button and add <code>/Applications/HandsOff.app</code></li>
+            <li>Ensure the checkbox next to HandsOff is checked</li>
+        </ol>
+
+        <h3>STEP 2: Run Setup Script</h3>
+        <p>After granting permissions, open Terminal and run:</p>
         <p><code>/Applications/HandsOff.app/Contents/MacOS/setup-launch-agent.sh</code></p>
         <p>This will:</p>
         <ul>
