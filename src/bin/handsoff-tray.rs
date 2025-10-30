@@ -87,15 +87,15 @@ fn main() -> Result<()> {
     // Lock menu item only works when unlocked; unlock requires typing passphrase
     let lock_item = MenuItem::new("Lock Input", true, None);
     let separator = PredefinedMenuItem::separator();
-    let version_item = MenuItem::new(format!("Version {}", VERSION), true, None);
+    let about_item = MenuItem::new("About", true, None);
     let help_item = MenuItem::new("Help", true, None);
     let quit_item = MenuItem::new("Quit", true, None);
 
     let menu = Menu::new();
     menu.append(&lock_item).context("Failed to add lock menu item")?;
     menu.append(&separator).context("Failed to add separator")?;
-    menu.append(&version_item).context("Failed to add version menu item")?;
     menu.append(&help_item).context("Failed to add help menu item")?;
+    menu.append(&about_item).context("Failed to add about menu item")?;
     menu.append(&quit_item).context("Failed to add quit menu item")?;
 
     // Create tray icon
@@ -111,7 +111,7 @@ fn main() -> Result<()> {
 
     // Clone IDs for event handling
     let lock_id = lock_item.id().clone();
-    let version_id = version_item.id().clone();
+    let about_id = about_item.id().clone();
     let help_id = help_item.id().clone();
     let quit_id = quit_item.id().clone();
 
@@ -132,8 +132,8 @@ fn main() -> Result<()> {
 
             if event_id == lock_id {
                 handle_lock_toggle(core.clone());
-            } else if event_id == version_id {
-                show_version();
+            } else if event_id == about_id {
+                show_about();
             } else if event_id == help_id {
                 show_help();
             } else if event_id == quit_id {
@@ -207,12 +207,12 @@ fn handle_lock_toggle(core: Arc<Mutex<HandsOffCore>>) {
     }
 }
 
-/// Show version information
-fn show_version() {
-    info!("Version menu item clicked");
+/// Show about information
+fn show_about() {
+    info!("About menu item clicked");
     show_alert(
-        "HandsOff Version",
-        &format!("HandsOff Tray App\nVersion {}\n\nA macOS utility to block unsolicited input.", VERSION)
+        "About HandsOff",
+        &format!("HandsOff Tray App\nVersion {}\n\nA macOS utility to block unsolicited input.\n\nMichael S. Huang\nhttps://github.com/mhuang74/handsoff-rs", VERSION)
     );
 }
 
@@ -224,8 +224,8 @@ fn show_help() {
         "HandsOff Tray App\n\n\
         Menu Items:\n\
         • Lock Input: Lock immediately (menu inaccessible when locked)\n\
-        • Version: Show version information\n\
         • Help: Show this help\n\
+        • About: Show version and project information\n\
         • Quit: Exit the application\n\n\
         Locking:\n\
         • Click 'Lock Input' menu item, OR\n\
