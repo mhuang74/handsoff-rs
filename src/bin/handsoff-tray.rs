@@ -329,7 +329,7 @@ fn show_help() {
         Permissions:\n\
         Requires Accessibility permission in System Settings.\n\n\
         Safety Features:\n\
-        • Permission Monitor: Checks every 5 seconds\n\
+        • Permission Monitor: Checks every 15 seconds\n\
         • Auto-Stop: Stops event tap if permissions revoked (prevents lockout)\n\
         • Restore: Use Reset menu after restoring permissions to restart\n\
         • Tooltip shows permission status when you hover over tray icon"
