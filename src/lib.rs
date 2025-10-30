@@ -74,6 +74,11 @@ impl HandsOffCore {
         self.state.get_lock_elapsed_secs()
     }
 
+    /// Get remaining time until auto-lock (in seconds)
+    pub fn get_auto_lock_remaining_secs(&self) -> Option<u64> {
+        self.state.get_auto_lock_remaining_secs()
+    }
+
     /// Get remaining time until auto-unlock (in seconds)
     pub fn get_auto_unlock_remaining_secs(&self) -> Option<u64> {
         self.state.get_auto_unlock_remaining_secs()

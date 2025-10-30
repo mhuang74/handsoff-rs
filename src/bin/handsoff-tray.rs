@@ -334,11 +334,21 @@ fn build_tooltip(core: &HandsOffCore, is_locked: bool, has_permissions: bool) ->
                 tooltip.push_str("Auto-unlocking...\n");
             }
         }
-        tooltip.push_str("\n");
     } else {
-        tooltip.push_str("STATUS: Unlocked\n\n");
+        tooltip.push_str("STATUS: Unlocked\n");
+
+        // Show auto-lock countdown if enabled
+        if let Some(remaining) = core.get_auto_lock_remaining_secs() {
+            if remaining > 0 {
+                tooltip.push_str(&format!("Auto-lock in {}\n", format_duration(remaining)));
+            } else {
+                tooltip.push_str("Auto-locking...\n");
+            }
+        }
     }
 
+    tooltip.push_str("\n\n");
+    
     // Menu items
     tooltip.push_str("MENU:\n");
     tooltip.push_str("• Lock Input: Lock immediately\n");
