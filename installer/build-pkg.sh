@@ -25,26 +25,9 @@ echo "Version: ${VERSION}"
 echo ""
 
 # Step 0: Cleanup from previous runs
-echo "Step 0: Cleaning up from previous builds/installations..."
-LAUNCH_AGENT_PLIST="${HOME}/Library/LaunchAgents/com.handsoff.inputlock.plist"
+echo "Step 0: Cleaning up from previous builds..."
 
-# Stop and unload Launch Agent if running
-if [ -f "${LAUNCH_AGENT_PLIST}" ]; then
-    if launchctl list | grep -q "${BUNDLE_ID}" 2>/dev/null; then
-        echo "  - Stopping Launch Agent..."
-        launchctl unload "${LAUNCH_AGENT_PLIST}" 2>/dev/null || true
-    fi
-fi
-
-# Kill any running HandsOff processes (both old and new binary names)
-if pgrep -x handsoff > /dev/null 2>&1 || pgrep -x handsoff-tray > /dev/null 2>&1; then
-    echo "  - Stopping running HandsOff processes..."
-    killall handsoff 2>/dev/null || true
-    killall handsoff-tray 2>/dev/null || true
-    sleep 1
-fi
-
-# Clean up root-owned bundle files from previous installations
+# Clean up root-owned bundle files from previous builds
 if [ -d "${BUNDLE_PATH}" ]; then
     # Check if any files are owned by root
     if [ "$(find "${BUNDLE_PATH}" -user root 2>/dev/null | wc -l)" -gt 0 ]; then
