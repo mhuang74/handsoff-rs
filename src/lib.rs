@@ -322,7 +322,7 @@ impl HandsOffCore {
         thread::Builder::new()
             .name("permission-monitor".to_string())
             .spawn(move || {
-                info!("Permission monitoring thread started - will check every 5 seconds");
+                info!("Permission monitoring thread started - will check every 15 seconds");
 
                 // CRITICAL: Check initial permission state rather than assuming true
                 // This handles the edge case where permissions are removed before the first check
@@ -355,7 +355,7 @@ impl HandsOffCore {
                 }
 
                 loop {
-                    thread::sleep(Duration::from_secs(5)); // Check every 5 seconds
+                    thread::sleep(Duration::from_secs(15)); // Check every 15 seconds
 
                     let has_permissions = input_blocking::check_accessibility_permissions();
 
