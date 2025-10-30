@@ -198,11 +198,14 @@ unsafe extern "C" fn event_tap_callback(
     }
 }
 
-/// Enable the event tap
+/// Enable the event tap and return the run loop source
 ///
 /// # Safety
 /// The `tap` parameter must be a valid CGEventTapRef pointer returned from `CGEventTapCreate`.
-pub unsafe fn enable_event_tap(tap: CGEventTapRef) {
+///
+/// # Returns
+/// Returns the CFRunLoopSourceRef that was added to the run loop, so it can be removed later if needed
+pub unsafe fn enable_event_tap(tap: CGEventTapRef) -> CFRunLoopSourceRef {
     use core_foundation::base::TCFType;
 
     // CGEventTap is a CFMachPort, so we can use CFMachPortCreateRunLoopSource
@@ -220,6 +223,9 @@ pub unsafe fn enable_event_tap(tap: CGEventTapRef) {
     CGEventTapEnable(tap, true);
 
     info!("Event tap enabled");
+
+    // Return the source ref so caller can store it for later removal
+    source_ref
 }
 
 /// Disable the event tap
@@ -230,4 +236,25 @@ pub unsafe fn enable_event_tap(tap: CGEventTapRef) {
 pub unsafe fn disable_event_tap(tap: CGEventTapRef) {
     CGEventTapEnable(tap, false);
     info!("Event tap disabled");
+}
+
+/// Remove event tap source from run loop and disable it
+///
+/// # Safety
+/// The `tap` and `source` parameters must be valid pointers
+pub unsafe fn remove_event_tap_from_runloop(tap: CGEventTapRef, source: CFRunLoopSourceRef) {
+    use core_foundation::base::TCFType;
+
+    info!("Removing event tap from run loop");
+
+    // Disable the tap first
+    CGEventTapEnable(tap, false);
+
+    // Convert the source ref back to CFRunLoopSource and remove it from the run loop
+    let source = core_foundation::runloop::CFRunLoopSource::wrap_under_get_rule(
+        source as core_foundation::runloop::CFRunLoopSourceRef,
+    );
+    CFRunLoop::get_current().remove_source(&source, kCFRunLoopCommonModes);
+
+    info!("Event tap removed from run loop");
 }

@@ -17,10 +17,14 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
+// Type alias for CFRunLoopSourceRef (from event_tap.rs)
+type CFRunLoopSourceRef = *mut std::ffi::c_void;
+
 /// Core HandsOff functionality shared between CLI and Tray App
 pub struct HandsOffCore {
     pub state: Arc<AppState>,
     event_tap: Option<CGEventTapRef>,
+    run_loop_source: Option<CFRunLoopSourceRef>,
     hotkey_manager: Option<HotkeyManager>,
 }
 
@@ -34,6 +38,7 @@ impl HandsOffCore {
         Ok(Self {
             state,
             event_tap: None,
+            run_loop_source: None,
             hotkey_manager: None,
         })
     }
@@ -127,11 +132,48 @@ impl HandsOffCore {
     pub fn start_event_tap(&mut self) -> Result<()> {
         let tap = event_tap::create_event_tap(self.state.clone())
             .context("Failed to create event tap")?;
-        unsafe {
-            event_tap::enable_event_tap(tap);
-        }
+        let source = unsafe {
+            event_tap::enable_event_tap(tap)
+        };
         self.event_tap = Some(tap);
+        self.run_loop_source = Some(source);
         info!("Event tap started");
+        Ok(())
+    }
+
+    /// Stop the event tap and remove it from run loop
+    /// This should be called when permissions are lost to stop blocking input
+    pub fn stop_event_tap(&mut self) {
+        if let (Some(tap), Some(source)) = (self.event_tap, self.run_loop_source) {
+            warn!("Stopping event tap and removing from run loop");
+            unsafe {
+                event_tap::remove_event_tap_from_runloop(tap, source);
+            }
+            self.event_tap = None;
+            self.run_loop_source = None;
+            info!("Event tap stopped - input should now be accessible");
+        } else {
+            warn!("Attempted to stop event tap but it was not running");
+        }
+    }
+
+    /// Restart the event tap after permissions are restored
+    /// Returns Ok if successful, Err if permissions are still missing or creation fails
+    pub fn restart_event_tap(&mut self) -> Result<()> {
+        // First check if we already have an event tap running
+        if self.event_tap.is_some() {
+            warn!("Event tap already running, stopping it first");
+            self.stop_event_tap();
+        }
+
+        // Verify permissions before attempting to create tap
+        if !input_blocking::check_accessibility_permissions() {
+            anyhow::bail!("Cannot restart event tap - accessibility permissions not granted");
+        }
+
+        info!("Restarting event tap");
+        self.start_event_tap()?;
+        info!("Event tap restarted successfully");
         Ok(())
     }
 
@@ -272,10 +314,11 @@ impl HandsOffCore {
             .expect("Failed to spawn auto-unlock thread");
     }
 
-    /// Background thread to monitor accessibility permissions and auto-unlock if lost
+    /// Background thread to monitor accessibility permissions and signal when to stop event tap
     /// CRITICAL SAFETY FEATURE: Prevents user lockout if permissions are revoked while app is running
     fn start_permission_monitor_thread(&self) {
         let state = self.state.clone();
+
         thread::Builder::new()
             .name("permission-monitor".to_string())
             .spawn(move || {
@@ -288,17 +331,24 @@ impl HandsOffCore {
                 // Cache the initial permission state
                 state.set_cached_accessibility_permissions(last_permission_state);
 
-                // If permissions are already missing AND we're locked, emergency unlock immediately
-                if !last_permission_state && state.is_locked() {
-                    warn!("CRITICAL: Permissions already missing and app is locked - performing emergency unlock");
-                    state.set_locked(false);
-                    info!("Emergency unlock completed - input is now accessible");
+                // If permissions are already missing, request event tap stop
+                if !last_permission_state {
+                    warn!("CRITICAL: Accessibility permissions are missing at startup");
+
+                    // Unlock if locked
+                    if state.is_locked() {
+                        state.set_locked(false);
+                        info!("Unlocked - permissions missing");
+                    }
+
+                    // Signal to stop event tap
+                    state.request_stop_event_tap();
 
                     #[cfg(target_os = "macos")]
                     {
                         let _ = notify_rust::Notification::new()
-                            .summary("HandsOff - Emergency Unlock")
-                            .body("Accessibility permissions are missing.\nInput has been unlocked for safety.\n\nPlease restore permissions or quit HandsOff.")
+                            .summary("HandsOff - Permissions Missing")
+                            .body("Accessibility permissions are missing.\nEvent tap stopped to restore normal input.\n\nUse Reset menu to restart after granting permissions.")
                             .timeout(notify_rust::Timeout::Milliseconds(10000))
                             .show();
                     }
@@ -313,34 +363,27 @@ impl HandsOffCore {
                     if last_permission_state && !has_permissions {
                         warn!("CRITICAL: Accessibility permissions were revoked while app is running!");
 
-                        // SAFETY MEASURE: If currently locked, immediately unlock to prevent lockout
+                        // Unlock if currently locked
                         if state.is_locked() {
-                            warn!("App is locked - performing emergency unlock to prevent user lockout");
+                            warn!("App is locked - unlocking to restore input");
                             state.set_locked(false);
-                            info!("Emergency unlock completed - input is now accessible");
-
-                            // Show notification about the emergency unlock
-                            #[cfg(target_os = "macos")]
-                            {
-                                let _ = notify_rust::Notification::new()
-                                    .summary("HandsOff - Emergency Unlock")
-                                    .body("Accessibility permissions were revoked.\nInput has been unlocked for safety.\n\nPlease restore permissions or quit HandsOff.")
-                                    .timeout(notify_rust::Timeout::Milliseconds(10000))
-                                    .show();
-                            }
-                        } else {
-                            // If not locked, just warn the user
-                            warn!("App is unlocked - user will be unable to lock until permissions are restored");
-
-                            #[cfg(target_os = "macos")]
-                            {
-                                let _ = notify_rust::Notification::new()
-                                    .summary("HandsOff - Permissions Lost")
-                                    .body("Accessibility permissions were revoked.\n\nRestore permissions in System Settings or quit HandsOff.")
-                                    .timeout(notify_rust::Timeout::Milliseconds(10000))
-                                    .show();
-                            }
+                            info!("Unlocked - permissions revoked");
                         }
+
+                        // Signal to stop event tap (main thread will handle the actual stop)
+                        state.request_stop_event_tap();
+
+                        // Show notification
+                        #[cfg(target_os = "macos")]
+                        {
+                            let _ = notify_rust::Notification::new()
+                                .summary("HandsOff - Permissions Revoked")
+                                .body("Accessibility permissions were revoked.\nEvent tap stopped to restore normal input.\n\nRestore permissions and use Reset menu to restart.")
+                                .timeout(notify_rust::Timeout::Milliseconds(10000))
+                                .show();
+                        }
+
+                        warn!("Event tap stop requested - main thread will handle cleanup");
                     }
                     // Detect permission restoration
                     else if !last_permission_state && has_permissions {
@@ -350,7 +393,7 @@ impl HandsOffCore {
                         {
                             let _ = notify_rust::Notification::new()
                                 .summary("HandsOff - Permissions Restored")
-                                .body("Accessibility permissions restored.\nHandsOff is now fully functional.")
+                                .body("Accessibility permissions restored.\n\nUse Reset menu to restart event tap.")
                                 .timeout(notify_rust::Timeout::Milliseconds(5000))
                                 .show();
                         }

@@ -155,6 +155,16 @@ fn main() -> Result<()> {
             }
         }
 
+        // Check if event tap should be stopped (due to permission loss)
+        {
+            let mut core_lock = core.lock().unwrap();
+            if core_lock.state.should_stop_event_tap_and_clear() {
+                warn!("Tray: Stopping event tap due to permission loss");
+                core_lock.stop_event_tap();
+                info!("Tray: Event tap stopped - normal input restored");
+            }
+        }
+
         // Periodically check permissions and update menu state
         let core_lock = core.lock().unwrap();
         let is_locked = core_lock.is_locked();
@@ -237,8 +247,9 @@ fn handle_lock_toggle(core: Arc<Mutex<HandsOffCore>>) {
 
 /// Handle reset from menu
 /// Resets the app state to default: unlocked with all timers reset
+/// Also attempts to restart the event tap if permissions are available
 fn handle_reset(core: Arc<Mutex<HandsOffCore>>, passphrase: &str) {
-    let core = core.lock().unwrap();
+    let mut core = core.lock().unwrap();
 
     // Unlock if currently locked (this also resets lock timer)
     if core.is_locked() {
@@ -260,18 +271,29 @@ fn handle_reset(core: Arc<Mutex<HandsOffCore>>, passphrase: &str) {
         }
     }
 
-    // Note: Unlocking automatically resets the lock timer and related state
-    // Auto-lock and auto-unlock timers are managed by the core and will reset on next lock
-    info!("App state reset complete");
-
-    #[cfg(target_os = "macos")]
-    {
-        let _ = notify_rust::Notification::new()
-            .summary("HandsOff")
-            .body("App state reset - Ready to use")
-            .timeout(notify_rust::Timeout::Milliseconds(3000))
-            .show();
+    // Attempt to restart event tap (will check permissions internally)
+    match core.restart_event_tap() {
+        Ok(()) => {
+            info!("Event tap restarted successfully during reset");
+            #[cfg(target_os = "macos")]
+            {
+                let _ = notify_rust::Notification::new()
+                    .summary("HandsOff")
+                    .body("App reset complete - Event tap restarted\nReady to use")
+                    .timeout(notify_rust::Timeout::Milliseconds(3000))
+                    .show();
+            }
+        }
+        Err(e) => {
+            warn!("Could not restart event tap during reset: {}", e);
+            show_alert(
+                "Reset Partial Success",
+                &format!("App state reset but event tap could not be restarted:\n{}\n\nPlease check accessibility permissions.", e)
+            );
+        }
     }
+
+    info!("App state reset complete");
 }
 
 /// Show about information
@@ -305,11 +327,12 @@ fn show_help() {
         • Ctrl+Cmd+Shift+L: Lock input\n\
         • Ctrl+Cmd+Shift+T (hold): Talk mode (Spacebar passthrough)\n\n\
         Permissions:\n\
-        Requires Accessibility permission in System Preferences.\n\n\
+        Requires Accessibility permission in System Settings.\n\n\
         Safety Features:\n\
         • Permission Monitor: Checks every 5 seconds\n\
-        • Emergency Unlock: Auto-unlocks if permissions are revoked while locked\n\
-        • This prevents lockout if permissions are removed while running"
+        • Auto-Stop: Stops event tap if permissions revoked (prevents lockout)\n\
+        • Restore: Use Reset menu after restoring permissions to restart\n\
+        • Tooltip shows permission status when you hover over tray icon"
     );
 }
 
@@ -335,7 +358,7 @@ fn show_alert(title: &str, message: &str) {
 fn build_tooltip(core: &HandsOffCore, is_locked: bool, has_permissions: bool) -> String {
     // Show permission warning if missing
     if !has_permissions {
-        return "HandsOff - NO PERMISSIONS\nCannot lock until restored".to_string();
+        return "HandsOff - NO PERMISSIONS\n\nRestore Accessibility Permissions in:\nSystem Settings > Privacy & Security\n\nThen use Reset menu to restart".to_string();
     }
 
     if !is_locked {

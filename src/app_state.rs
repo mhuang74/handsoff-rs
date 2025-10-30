@@ -40,6 +40,8 @@ pub struct AppStateInner {
     pub auto_unlock_timeout: Option<u64>,
     /// Cached accessibility permissions state (updated by background thread)
     pub has_accessibility_permissions: bool,
+    /// Flag to signal that event tap should be stopped (set by permission monitor)
+    pub should_stop_event_tap: bool,
 }
 
 impl AppState {
@@ -57,6 +59,7 @@ impl AppState {
                 lock_start_time: None,
                 auto_unlock_timeout: None,
                 has_accessibility_permissions: false,
+                should_stop_event_tap: false,
             })),
         }
     }
@@ -225,6 +228,19 @@ impl AppState {
     /// Set cached accessibility permissions state (called by permission monitor thread)
     pub fn set_cached_accessibility_permissions(&self, has_permissions: bool) {
         self.inner.lock().has_accessibility_permissions = has_permissions;
+    }
+
+    /// Request event tap to be stopped (called by permission monitor when permissions lost)
+    pub fn request_stop_event_tap(&self) {
+        self.inner.lock().should_stop_event_tap = true;
+    }
+
+    /// Check if event tap should be stopped and clear the flag
+    pub fn should_stop_event_tap_and_clear(&self) -> bool {
+        let mut state = self.inner.lock();
+        let should_stop = state.should_stop_event_tap;
+        state.should_stop_event_tap = false;
+        should_stop
     }
 }
 
