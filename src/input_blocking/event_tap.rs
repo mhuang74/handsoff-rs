@@ -58,8 +58,11 @@ pub fn create_event_tap(state: Arc<AppState>) -> Option<CGEventTapRef> {
         | (1 << CGEventType::MouseMoved as u64)
         | (1 << CGEventType::LeftMouseDown as u64)
         | (1 << CGEventType::LeftMouseUp as u64)
+        | (1 << CGEventType::LeftMouseDragged as u64)
         | (1 << CGEventType::RightMouseDown as u64)
         | (1 << CGEventType::RightMouseUp as u64)
+        | (1 << CGEventType::RightMouseDragged as u64)
+        | (1 << CGEventType::OtherMouseDragged as u64)
         | (1 << CGEventType::ScrollWheel as u64);
 
     // Box the state so we can pass it as user_info
@@ -109,13 +112,10 @@ unsafe extern "C" fn event_tap_callback(
             handle_keyboard_event(&cg_event, CGEventType::KeyUp, state)
         }
         t if t == CGEventType::MouseMoved as u32 => {
-            // Only block mouse events when locked
-            if state.is_locked() {
-                handle_mouse_event(CGEventType::MouseMoved, state)
-            } else {
-                state.update_input_time();
-                false // Pass through when unlocked
-            }
+            // Always allow mouse movement (needed for tooltips and cursor position)
+            // This is a passive event and doesn't trigger any actions
+            state.update_input_time();
+            false // Always pass through
         }
         t if t == CGEventType::LeftMouseDown as u32 => {
             if state.is_locked() {
@@ -157,6 +157,33 @@ unsafe extern "C" fn event_tap_callback(
                 false
             }
         }
+        t if t == CGEventType::LeftMouseDragged as u32 => {
+            // Mouse drag with left button - reset auto-lock timer
+            state.update_input_time();
+            if state.is_locked() {
+                true // Block during lock
+            } else {
+                false // Pass through when unlocked
+            }
+        }
+        t if t == CGEventType::RightMouseDragged as u32 => {
+            // Mouse drag with right button - reset auto-lock timer
+            state.update_input_time();
+            if state.is_locked() {
+                true // Block during lock
+            } else {
+                false // Pass through when unlocked
+            }
+        }
+        t if t == CGEventType::OtherMouseDragged as u32 => {
+            // Mouse drag with other button (middle/wheel) - reset auto-lock timer
+            state.update_input_time();
+            if state.is_locked() {
+                true // Block during lock
+            } else {
+                false // Pass through when unlocked
+            }
+        }
         _ => false, // Pass through other events
     };
 
@@ -171,11 +198,14 @@ unsafe extern "C" fn event_tap_callback(
     }
 }
 
-/// Enable the event tap
+/// Enable the event tap and return the run loop source
 ///
 /// # Safety
 /// The `tap` parameter must be a valid CGEventTapRef pointer returned from `CGEventTapCreate`.
-pub unsafe fn enable_event_tap(tap: CGEventTapRef) {
+///
+/// # Returns
+/// Returns the CFRunLoopSourceRef that was added to the run loop, so it can be removed later if needed
+pub unsafe fn enable_event_tap(tap: CGEventTapRef) -> CFRunLoopSourceRef {
     use core_foundation::base::TCFType;
 
     // CGEventTap is a CFMachPort, so we can use CFMachPortCreateRunLoopSource
@@ -193,6 +223,9 @@ pub unsafe fn enable_event_tap(tap: CGEventTapRef) {
     CGEventTapEnable(tap, true);
 
     info!("Event tap enabled");
+
+    // Return the source ref so caller can store it for later removal
+    source_ref
 }
 
 /// Disable the event tap
@@ -203,4 +236,25 @@ pub unsafe fn enable_event_tap(tap: CGEventTapRef) {
 pub unsafe fn disable_event_tap(tap: CGEventTapRef) {
     CGEventTapEnable(tap, false);
     info!("Event tap disabled");
+}
+
+/// Remove event tap source from run loop and disable it
+///
+/// # Safety
+/// The `tap` and `source` parameters must be valid pointers
+pub unsafe fn remove_event_tap_from_runloop(tap: CGEventTapRef, source: CFRunLoopSourceRef) {
+    use core_foundation::base::TCFType;
+
+    info!("Removing event tap from run loop");
+
+    // Disable the tap first
+    CGEventTapEnable(tap, false);
+
+    // Convert the source ref back to CFRunLoopSource and remove it from the run loop
+    let source = core_foundation::runloop::CFRunLoopSource::wrap_under_get_rule(
+        source as core_foundation::runloop::CFRunLoopSourceRef,
+    );
+    CFRunLoop::get_current().remove_source(&source, kCFRunLoopCommonModes);
+
+    info!("Event tap removed from run loop");
 }

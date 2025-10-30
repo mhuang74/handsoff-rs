@@ -1,6 +1,10 @@
 # HandsOff - macOS Input Lock
 
-A macOS menu bar application that prevents accidental or unsolicited input from keyboard, trackpad, and mouse devices during video conferencing, presentations, or when leaving your laptop unattended.
+A macOS utility that prevents accidental or unsolicited input from keyboard, trackpad, and mouse devices during video conferencing, presentations, or when leaving your laptop unattended.
+
+**Available in two modes:**
+- **CLI**: Command-line interface with terminal output
+- **Tray App**: Native macOS menu bar application with notifications
 
 ## Features
 
@@ -23,15 +27,31 @@ A macOS menu bar application that prevents accidental or unsolicited input from 
 
 ## Building
 
+### Build Both Binaries
+
 ```bash
 # Clone the repository
 cd handsoff-rs
 
-# Build the project
+# Build both CLI and Tray App
 cargo build --release
 
-# The binary will be at: target/release/handsoff
+# The binaries will be at:
+# - target/release/handsoff (CLI)
+# - target/release/handsoff-tray (Tray App)
 ```
+
+### Build Individual Binaries
+
+```bash
+# CLI only
+cargo build --release --bin handsoff
+
+# Tray App only
+cargo build --release --bin handsoff-tray
+```
+
+### Build for Specific Architecture
 
 For Apple Silicon Macs:
 ```bash
@@ -41,6 +61,24 @@ cargo build --release --target aarch64-apple-darwin
 For Intel Macs:
 ```bash
 cargo build --release --target x86_64-apple-darwin
+```
+
+### Universal Binary (Both Architectures)
+
+```bash
+# Install targets
+rustup target add x86_64-apple-darwin
+rustup target add aarch64-apple-darwin
+
+# Build for both architectures
+cargo build --release --target x86_64-apple-darwin --bin handsoff
+cargo build --release --target aarch64-apple-darwin --bin handsoff
+
+# Combine with lipo
+lipo -create \
+  target/x86_64-apple-darwin/release/handsoff \
+  target/aarch64-apple-darwin/release/handsoff \
+  -output target/release/handsoff-universal
 ```
 
 ## Installation
@@ -54,23 +92,88 @@ cargo build --release --target x86_64-apple-darwin
 
 ## Usage
 
-### First Run
+### Configuration
 
-On first launch, you'll be prompted to set a passphrase. This passphrase will be used to unlock the input when locked.
+Before running either binary, set the required environment variable:
+
+```bash
+export HANDS_OFF_SECRET_PHRASE='your-secret-passphrase'
+```
+
+**Optional environment variables:**
+
+```bash
+# Auto-lock after inactivity (20-600 seconds, default: 30)
+export HANDS_OFF_AUTO_LOCK=60
+
+# Auto-unlock safety timeout (60-900 seconds, 0=disabled)
+export HANDS_OFF_AUTO_UNLOCK=300
+```
+
+### Running the CLI
+
+```bash
+# Start the CLI
+./target/release/handsoff
+
+# With options
+./target/release/handsoff --locked        # Start locked
+./target/release/handsoff --auto-lock 60  # Auto-lock after 60s
+
+# View help
+./target/release/handsoff --help
+```
+
+**CLI Output:**
+```
+INFO  Starting HandsOff Input Lock
+INFO  Using passphrase from HANDS_OFF_SECRET_PHRASE environment variable
+INFO  HandsOff is running - press Ctrl+C to quit
+INFO  STATUS: INPUT IS UNLOCKED
+INFO  - Press Ctrl+Cmd+Shift+L to lock input
+```
+
+### Running the Tray App
+
+```bash
+# Start the Tray App (runs in background with menu bar icon)
+./target/release/handsoff-tray
+```
+
+The Tray App will:
+- Display a menu bar icon (🔓 unlocked, 🔒 locked)
+- Show notifications on lock/unlock events
+- Provide menu items: Lock Input, Version, Help, Quit
+
+**Important:** When locked, ALL mouse clicks are blocked (including clicks on the tray menu). The menu becomes inaccessible and you must type your passphrase to unlock (same as CLI).
+
+**Menu Items:**
+- **Lock Input**: Lock immediately (only functional when unlocked)
+- **Version**: Show app version
+- **Help**: Show usage instructions
+- **Quit**: Exit the application
 
 ### Locking Input
 
-You can lock input in two ways:
-1. Click the menu bar icon (🔓) and select "Enable Lock"
-2. Press `Ctrl+Cmd+Shift+L` (default hotkey)
+**Tray App:**
+1. Click the menu bar icon and select "Lock Input"
+2. Press `Ctrl+Cmd+Shift+L` (global hotkey)
 
-When locked, the menu bar icon changes to 🔒 and all keyboard/mouse/trackpad input is blocked.
+**CLI:**
+1. Press `Ctrl+Cmd+Shift+L` (global hotkey)
+
+When locked, all keyboard/mouse/trackpad input is blocked (except for unlock hotkey and passphrase entry).
 
 ### Unlocking Input
 
-Two ways to unlock:
-1. **Passphrase**: Type your passphrase on the keyboard (even though you can't see the input)
-2. **Wait**: If you accidentally type gibberish, wait 5 seconds for the buffer to reset, then try again
+**Both CLI and Tray App use the same unlock method:**
+
+1. Type your passphrase on the keyboard (even though you can't see the input)
+2. If you mistype, wait 5 seconds for the buffer to reset, then try again
+
+**Important for Tray App users:** You CANNOT unlock via the menu! When locked, mouse clicks are blocked by the event tap, making the tray menu inaccessible. You must type your passphrase just like CLI users.
+
+**Note:** The input buffer clears automatically after 5 seconds of inactivity to prevent multiple failed attempts from interfering with each other.
 
 ### Auto-Lock
 
@@ -187,19 +290,26 @@ INFO  Auto-unlock notification delivered
 
 ```
 src/
-├── main.rs                 # Application entry point
-├── lib.rs                  # Library exports
-├── app_state.rs           # Shared application state
-├── auth/                  # Authentication modules
-│   └── mod.rs             # Passphrase verification
-├── input_blocking/        # Input blocking modules
-│   ├── mod.rs             # Event handling and passphrase entry
-│   ├── event_tap.rs       # CGEventTap implementation
-│   └── hotkeys.rs         # Global hotkey handling
-└── utils/                 # Utility modules
-    ├── mod.rs             # SHA-256 hashing utilities
-    └── keycode.rs         # Keycode to character mapping
+├── lib.rs                  # Core library (HandsOffCore)
+├── app_state.rs            # Shared application state
+├── auth/                   # Authentication modules
+│   └── mod.rs              # Passphrase verification
+├── input_blocking/         # Input blocking modules
+│   ├── mod.rs              # Event handling and passphrase entry
+│   ├── event_tap.rs        # CGEventTap implementation
+│   └── hotkeys.rs          # Global hotkey handling
+├── utils/                  # Utility modules
+│   ├── mod.rs              # SHA-256 hashing utilities
+│   └── keycode.rs          # Keycode to character mapping
+└── bin/                    # Binary entry points
+    ├── handsoff.rs         # CLI binary
+    └── handsoff-tray.rs    # Tray App binary
 ```
+
+**Architecture:**
+- **Core Library** (`lib.rs`): Shared functionality (input blocking, state management, auth)
+- **CLI Binary** (`bin/handsoff.rs`): Terminal-based interface with clap argument parsing
+- **Tray App Binary** (`bin/handsoff-tray.rs`): Native macOS menu bar app with tray-icon and notifications
 
 ## Security
 
@@ -300,8 +410,14 @@ See LICENSE file for details.
 ## Acknowledgments
 
 Built with:
-- `cocoa-rs`: Rust bindings for Cocoa (AppKit)
-- `core-graphics-rs`: CoreGraphics event handling
-- `keyring-rs`: Keychain integration
+- `core-graphics`: CoreGraphics event handling (CGEventTap)
+- `core-foundation`: CFRunLoop integration
+- `tray-icon`: Native macOS menu bar icon (Tray App)
+- `tao`: Cross-platform event loop (Tray App)
+- `notify-rust`: Native macOS notifications (Tray App)
 - `global-hotkey`: Global hotkey registration
-- `ring`: Cryptographic hashing
+- `ring`: Cryptographic hashing (SHA-256)
+- `clap`: Command-line argument parsing (CLI)
+- `parking_lot`: Fast mutex implementation
+
+See `specs/cli-and-tray-app-design.md` for complete architecture and design decisions.

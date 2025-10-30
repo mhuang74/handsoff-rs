@@ -32,6 +32,7 @@ make
 
 - `make sign` - Build, bundle, fix, and sign the app with development certificate
 - `make dmg` - Build, bundle, fix, sign, and create a DMG installer in `dist/`
+- `make pkg` - Build and create a .pkg installer with Launch Agent setup (recommended)
 - `make install` - Build, bundle, fix, and install to `/Applications`
 
 ### Development
@@ -136,7 +137,43 @@ This creates `dist/HandsOff-v0.1.0.dmg` with:
 - A symbolic link to /Applications for easy installation
 - Professional presentation
 
-### Option 3: Install Locally
+**Note**: DMG installers don't solve the environment variable issue. Users will still need to manually configure the Launch Agent.
+
+### Option 3: PKG Installer with Launch Agent (Recommended)
+
+Create a complete installer package that includes setup tooling:
+
+```bash
+make pkg
+```
+
+This creates `dist/HandsOff-v{VERSION}.pkg` with:
+- The HandsOff.app bundle
+- Built-in setup script for configuring the Launch Agent
+- Professional installer UI with welcome and instructions
+- Postinstall script that guides users through setup
+
+**Why use PKG instead of DMG?**
+
+The PKG installer solves the environment variable problem by:
+1. Installing the app to /Applications
+2. Including a setup script that prompts for your passphrase
+3. Automatically creating the Launch Agent plist with the passphrase
+4. Configuring the app to start at login
+
+**User Experience:**
+1. User runs the .pkg installer
+2. After installation, user runs the setup script:
+   ```bash
+   /Applications/HandsOff.app/Contents/MacOS/setup-launch-agent.sh
+   ```
+3. Setup script prompts for passphrase
+4. Launch Agent is configured and app starts automatically
+5. App starts at every login with correct environment variables
+
+For detailed information, see [installer/README.md](installer/README.md).
+
+### Option 4: Install Locally
 
 To test the installed version:
 

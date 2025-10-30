@@ -1,0 +1,151 @@
+// HandsOff CLI - Command-line interface for input blocking utility
+// This binary provides a terminal-based interface with argument parsing
+
+use handsoff::app_state::{AUTO_LOCK_MAX_SECONDS, AUTO_LOCK_MIN_SECONDS};
+use handsoff::{config, HandsOffCore};
+use anyhow::{Context, Result};
+use clap::Parser;
+use log::{error, info, warn};
+use std::env;
+
+/// macOS utility to block unsolicited input from unwanted hands
+#[derive(Parser, Debug)]
+#[command(
+    author,
+    version,
+    about = "macOS utility to block unsolicited input from unwanted hands",
+    long_about = "macOS utility to block accidental or unsolicited input from unwanted hands.
+
+Usecases:
+ - safely monitor progress on your laptop from across the room
+ - join a conference call with a toddler in your lap
+ - prevent your kid from sending out that draft email when you go rummage for snacks
+
+Blocks:
+ - keypress
+ - mouse/trackpad clicks
+
+ENVIRONMENT VARIABLES (Required):
+  HANDS_OFF_SECRET_PHRASE    Passphrase required to unlock input when locked
+                             Example: export HANDS_OFF_SECRET_PHRASE='my-secret'
+
+ENVIRONMENT VARIABLES (Optional):
+  HANDS_OFF_AUTO_LOCK        Auto-lock timeout in seconds (20-600, default: 30)
+                             Input will lock after this period of contiguous inactivity
+                             Example: export HANDS_OFF_AUTO_LOCK=60
+
+  HANDS_OFF_AUTO_UNLOCK      Auto-unlock timeout in seconds (60-900, or 0 to disable)
+                             Safety feature: automatically unlocks after this duration
+                             to prevent permanent lockouts
+                             Example: export HANDS_OFF_AUTO_UNLOCK=300
+
+HOTKEYS:
+  Ctrl+Cmd+Shift+L          Lock input (blocks all keyboard/mouse input)
+  Ctrl+Cmd+Shift+T          Talk mode (hold to allow spacebar keypress, for unmuting conf calls)
+
+When locked, type your passphrase to unlock (input won't be visible on screen)."
+)]
+struct Args {
+    /// Start with input locked immediately
+    #[arg(short, long)]
+    locked: bool,
+
+    /// Auto-lock timeout in seconds of contiguous inactivity (20-600, default: 30, overrides HANDS_OFF_AUTO_LOCK)
+    /// NOTE: Keep range/default values in sync with AUTO_LOCK_* constants
+    #[arg(long)]
+    auto_lock: Option<u64>,
+}
+
+fn main() -> Result<()> {
+    // Parse command-line arguments
+    let args = Args::parse();
+
+    // Initialize logger
+    env_logger::Builder::from_default_env()
+        .filter_level(log::LevelFilter::Info)
+        .init();
+
+    info!("Starting HandsOff Input Lock");
+
+    // Check accessibility permissions
+    if !handsoff::input_blocking::check_accessibility_permissions() {
+        error!("Accessibility permissions not granted");
+        error!("Please grant accessibility permissions to HandsOff in System Preferences > Security & Privacy > Privacy > Accessibility");
+        std::process::exit(1);
+    }
+
+    // Get passphrase from environment variable
+    let passphrase = match env::var("HANDS_OFF_SECRET_PHRASE") {
+        Ok(passphrase) if !passphrase.is_empty() => {
+            info!("Using passphrase from HANDS_OFF_SECRET_PHRASE environment variable");
+            passphrase
+        }
+        Ok(_) => {
+            error!("HANDS_OFF_SECRET_PHRASE is set but empty");
+            error!("Please set a valid passphrase using: export HANDS_OFF_SECRET_PHRASE='your-passphrase'");
+            std::process::exit(1);
+        }
+        Err(_) => {
+            error!("HANDS_OFF_SECRET_PHRASE environment variable is not set");
+            error!("Please set your passphrase using: export HANDS_OFF_SECRET_PHRASE='your-passphrase'");
+            error!("This passphrase will be required to unlock HandsOff when input is locked");
+            std::process::exit(1);
+        }
+    };
+
+    // Create HandsOffCore instance
+    let mut core = HandsOffCore::new(&passphrase).context("Failed to initialize HandsOff")?;
+
+    // Configure auto-unlock timeout (from environment)
+    let auto_unlock_timeout = config::parse_auto_unlock_timeout();
+    core.set_auto_unlock_timeout(auto_unlock_timeout);
+
+    // Configure auto-lock timeout (command-line takes precedence over environment)
+    let auto_lock_timeout = match args.auto_lock {
+        Some(timeout) if (AUTO_LOCK_MIN_SECONDS..=AUTO_LOCK_MAX_SECONDS).contains(&timeout) => {
+            info!("Auto-lock timeout set via --auto-lock argument: {} seconds", timeout);
+            Some(timeout)
+        }
+        Some(timeout) => {
+            warn!(
+                "Invalid --auto-lock value: {} (must be {}-{} seconds). Trying environment variable.",
+                timeout, AUTO_LOCK_MIN_SECONDS, AUTO_LOCK_MAX_SECONDS
+            );
+            config::parse_auto_lock_timeout()
+        }
+        None => config::parse_auto_lock_timeout(),
+    };
+    core.set_auto_lock_timeout(auto_lock_timeout);
+
+    // Set initial lock state
+    if args.locked {
+        core.set_locked(true);
+        info!("Starting in LOCKED mode (--locked flag)");
+    } else {
+        info!("Starting in UNLOCKED mode (use --locked to start locked, or press Ctrl+Cmd+Shift+L to lock)");
+    }
+
+    // Start core components
+    core.start_event_tap().context("Failed to start event tap")?;
+    core.start_hotkeys().context("Failed to start hotkeys")?;
+    core.start_background_threads().context("Failed to start background threads")?;
+
+    // Display status and instructions
+    info!("HandsOff is running - press Ctrl+C to quit");
+    if core.is_locked() {
+        info!("STATUS: INPUT IS LOCKED");
+        info!("- Type your passphrase to unlock (input won't be visible)");
+    } else {
+        info!("STATUS: INPUT IS UNLOCKED");
+        info!("- Press Ctrl+Cmd+Shift+L to lock input");
+    }
+
+    // Run the CFRunLoop on the main thread - this is required for event tap to work!
+    info!("Starting CFRunLoop (required for event interception)...");
+    use core_foundation::runloop::CFRunLoop;
+    CFRunLoop::run_current();
+
+    // CFRunLoop::run_current() runs indefinitely, so this is unreachable
+    #[allow(unreachable_code)]
+    Ok(())
+}

@@ -1,0 +1,45 @@
+#!/bin/bash
+# PreInstall script for HandsOff
+# This script runs BEFORE installation to clean up any existing installation
+
+APP_NAME="HandsOff"
+APP_PATH="/Applications/${APP_NAME}.app"
+LAUNCH_AGENT_DIR="${HOME}/Library/LaunchAgents"
+LAUNCH_AGENT_PLIST="${LAUNCH_AGENT_DIR}/com.handsoff.inputlock.plist"
+BUNDLE_ID="com.handsoff.inputlock"
+
+echo "HandsOff PreInstall Script"
+echo "==========================="
+echo ""
+
+# Stop and unload Launch Agent if running
+if [ -f "${LAUNCH_AGENT_PLIST}" ]; then
+    if launchctl list | grep -q "${BUNDLE_ID}" 2>/dev/null; then
+        echo "Stopping Launch Agent..."
+        launchctl unload "${LAUNCH_AGENT_PLIST}" 2>/dev/null || true
+        echo "✓ Launch Agent stopped"
+    fi
+fi
+
+# Kill any running HandsOff processes (both old and new binary names)
+if pgrep -x handsoff > /dev/null 2>&1 || pgrep -x handsoff-tray > /dev/null 2>&1; then
+    echo "Stopping running HandsOff processes..."
+    killall handsoff 2>/dev/null || true
+    killall handsoff-tray 2>/dev/null || true
+    sleep 1
+    echo "✓ Processes stopped"
+fi
+
+# Remove existing app bundle to force fresh installation
+# This prevents PackageKit's "bundle relocation" optimization
+if [ -d "${APP_PATH}" ]; then
+    echo "Removing existing installation..."
+    rm -rf "${APP_PATH}" 2>/dev/null || true
+    echo "✓ Old installation removed"
+fi
+
+echo ""
+echo "Ready for installation"
+echo ""
+
+exit 0

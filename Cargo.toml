@@ -1,6 +1,6 @@
 [package]
 name = "handsoff"
-version = "0.2.0"
+version = "0.3.5"
 edition = "2021"
 authors = ["Michael S. Huang"]
 description = "macOS utility to block unsolicited input from unwanted hands"
@@ -18,6 +18,12 @@ log = "0.4"
 env_logger = "0.11"
 clap = { version = "4.5", features = ["derive"] }
 
+# Tray App dependencies
+tray-icon = "0.17"
+tao = "0.28"
+notify-rust = "4"
+image = { version = "0.25", default-features = false, features = ["png"] }  # Lightweight PNG decoder
+
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.10"
 
@@ -28,7 +34,11 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("cargo-cli
 
 [[bin]]
 name = "handsoff"
-path = "src/main.rs"
+path = "src/bin/handsoff.rs"
+
+[[bin]]
+name = "handsoff-tray"
+path = "src/bin/handsoff-tray.rs"
 
 [package.metadata.bundle]
 name = "HandsOff"
@@ -42,6 +52,7 @@ A macOS menu bar application that prevents accidental or unsolicited input from
 keyboard, trackpad, and mouse devices during video conferencing, presentations,
 or when leaving your laptop unattended.
 """
+icon = ["assets/AppIcon.icns"]
 
 # macOS-specific bundle configuration
 osx_minimum_system_version = "10.11"
@@ -51,3 +62,8 @@ osx_info_plist_template = "Info.plist.template"
 
 # Resources to include in the bundle
 resources = []
+
+# Bundle configuration for tray binary (same as main bundle)
+[package.metadata.bundle.bin.handsoff-tray]
+name = "HandsOff"
+icon = ["assets/AppIcon.icns"]

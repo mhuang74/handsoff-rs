@@ -38,6 +38,10 @@ pub struct AppStateInner {
     pub lock_start_time: Option<Instant>,
     /// Auto-unlock timeout in seconds (None = disabled)
     pub auto_unlock_timeout: Option<u64>,
+    /// Cached accessibility permissions state (updated by background thread)
+    pub has_accessibility_permissions: bool,
+    /// Flag to signal that event tap should be stopped (set by permission monitor)
+    pub should_stop_event_tap: bool,
 }
 
 impl AppState {
@@ -54,6 +58,8 @@ impl AppState {
                 talk_key_pressed: false,
                 lock_start_time: None,
                 auto_unlock_timeout: None,
+                has_accessibility_permissions: false,
+                should_stop_event_tap: false,
             })),
         }
     }
@@ -185,6 +191,56 @@ impl AppState {
             state.lock_start_time = None;
             state.input_buffer.clear();
         }
+    }
+
+    /// Get the elapsed time since lock was engaged (in seconds)
+    pub fn get_lock_elapsed_secs(&self) -> Option<u64> {
+        let state = self.inner.lock();
+        state.lock_start_time.map(|t| t.elapsed().as_secs())
+    }
+
+    /// Get remaining time until auto-unlock (in seconds)
+    /// Returns None if not locked, auto-unlock disabled, or no lock start time
+    pub fn get_auto_unlock_remaining_secs(&self) -> Option<u64> {
+        let state = self.inner.lock();
+
+        // Must be locked with auto-unlock enabled
+        if !state.is_locked || state.auto_unlock_timeout.is_none() {
+            return None;
+        }
+
+        let timeout = state.auto_unlock_timeout?;
+        let elapsed = state.lock_start_time?.elapsed().as_secs();
+
+        Some(timeout.saturating_sub(elapsed))
+    }
+
+    /// Get the configured auto-unlock timeout (in seconds)
+    pub fn get_auto_unlock_timeout(&self) -> Option<u64> {
+        self.inner.lock().auto_unlock_timeout
+    }
+
+    /// Get cached accessibility permissions state
+    pub fn get_cached_accessibility_permissions(&self) -> bool {
+        self.inner.lock().has_accessibility_permissions
+    }
+
+    /// Set cached accessibility permissions state (called by permission monitor thread)
+    pub fn set_cached_accessibility_permissions(&self, has_permissions: bool) {
+        self.inner.lock().has_accessibility_permissions = has_permissions;
+    }
+
+    /// Request event tap to be stopped (called by permission monitor when permissions lost)
+    pub fn request_stop_event_tap(&self) {
+        self.inner.lock().should_stop_event_tap = true;
+    }
+
+    /// Check if event tap should be stopped and clear the flag
+    pub fn should_stop_event_tap_and_clear(&self) -> bool {
+        let mut state = self.inner.lock();
+        let should_stop = state.should_stop_event_tap;
+        state.should_stop_event_tap = false;
+        should_stop
     }
 }
 

@@ -1,0 +1,76 @@
+#!/bin/bash
+# PostInstall script for HandsOff
+# This script runs during the .app installation to /Applications
+# Note: During installation, files may be in a sandbox, not yet at final location
+
+set -e
+
+APP_NAME="HandsOff"
+APP_PATH="/Applications/${APP_NAME}.app"
+LAUNCH_AGENT_DIR="${HOME}/Library/LaunchAgents"
+LAUNCH_AGENT_PLIST="${LAUNCH_AGENT_DIR}/com.handsoff.inputlock.plist"
+BUNDLE_ID="com.handsoff.inputlock"
+
+echo "HandsOff PostInstall Script"
+echo "============================"
+echo ""
+echo "Installation target: ${APP_PATH}"
+echo ""
+
+# Note: We don't verify the app exists here because during pkg installation,
+# files are in a sandbox and not yet committed to /Applications.
+# The installer will move them after this script completes.
+
+# Check if Launch Agent plist already exists
+if [ -f "${LAUNCH_AGENT_PLIST}" ]; then
+    echo ""
+    echo "Launch Agent already configured at:"
+    echo "  ${LAUNCH_AGENT_PLIST}"
+    echo ""
+
+    # Check if it's already loaded
+    if launchctl list | grep -q "${BUNDLE_ID}"; then
+        echo "Launch Agent is already loaded and running."
+        echo ""
+        echo "To restart with new configuration:"
+        echo "  launchctl unload ${LAUNCH_AGENT_PLIST}"
+        echo "  launchctl load ${LAUNCH_AGENT_PLIST}"
+    else
+        echo "Loading Launch Agent..."
+        launchctl load "${LAUNCH_AGENT_PLIST}"
+        echo "✓ Launch Agent loaded successfully"
+    fi
+else
+    echo ""
+    echo "=========================================="
+    echo "IMPORTANT: Configuration Required"
+    echo "=========================================="
+    echo ""
+    echo "HandsOff requires:"
+    echo "  1. Accessibility permissions"
+    echo "  2. A secret passphrase to unlock"
+    echo ""
+    echo "STEP 1: Grant Accessibility Permissions"
+    echo "  Go to: System Preferences > Security & Privacy > Privacy > Accessibility"
+    echo "  Click the lock to make changes"
+    echo "  Add HandsOff from /Applications/HandsOff.app"
+    echo "  Check the box next to HandsOff"
+    echo ""
+    echo "STEP 2: Complete Setup"
+    echo "  After granting permissions, run:"
+    echo ""
+    echo "  /Applications/${APP_NAME}.app/Contents/MacOS/setup-launch-agent.sh"
+    echo ""
+    echo "  This will prompt you for your passphrase and configure"
+    echo "  the app to start automatically at login."
+    echo ""
+fi
+
+echo ""
+echo "Installation complete!"
+echo ""
+echo "For help and documentation:"
+echo "  Open the HandsOff menu bar icon and click 'Help'"
+echo ""
+
+exit 0

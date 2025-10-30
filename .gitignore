@@ -29,5 +29,12 @@ target
 dist/
 dmg-contents/
 
+# Installer intermediate files
+installer/pkg-root/
+installer/*.pkg
+installer/distribution.xml
+installer/*.html
+installer/LICENSE
+
 # macOS specific
 .DS_Store
