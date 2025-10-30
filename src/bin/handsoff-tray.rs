@@ -96,15 +96,11 @@ fn main() -> Result<()> {
     // Lock menu item only works when unlocked; unlock requires typing passphrase
     let lock_item = MenuItem::new("Lock Input", true, None);
     let separator = PredefinedMenuItem::separator();
-    let about_item = MenuItem::new("About", true, None);
-    let help_item = MenuItem::new("Help", true, None);
     let reset_item = MenuItem::new("Reset", true, None);
 
     let menu = Menu::new();
     menu.append(&lock_item).context("Failed to add lock menu item")?;
     menu.append(&separator).context("Failed to add separator")?;
-    menu.append(&help_item).context("Failed to add help menu item")?;
-    menu.append(&about_item).context("Failed to add about menu item")?;
     menu.append(&reset_item).context("Failed to add reset menu item")?;
 
     // Create tray icon
@@ -120,8 +116,6 @@ fn main() -> Result<()> {
 
     // Clone IDs for event handling
     let lock_id = lock_item.id().clone();
-    let about_id = about_item.id().clone();
-    let help_id = help_item.id().clone();
     let reset_id = reset_item.id().clone();
 
     // Store passphrase for reset functionality
@@ -145,10 +139,6 @@ fn main() -> Result<()> {
 
             if event_id == lock_id {
                 handle_lock_toggle(core.clone());
-            } else if event_id == about_id {
-                show_about();
-            } else if event_id == help_id {
-                show_help();
             } else if event_id == reset_id {
                 info!("Reset menu item clicked, resetting app state");
                 handle_reset(core.clone(), &passphrase_for_reset);
@@ -296,46 +286,6 @@ fn handle_reset(core: Arc<Mutex<HandsOffCore>>, passphrase: &str) {
     info!("App state reset complete");
 }
 
-/// Show about information
-fn show_about() {
-    info!("About menu item clicked");
-    show_alert(
-        "About HandsOff",
-        &format!("HandsOff Tray App\nVersion {}\n\nA macOS utility to block unsolicited input.\n\nMichael S. Huang\nhttps://github.com/mhuang74/handsoff-rs", VERSION)
-    );
-}
-
-/// Show help information
-fn show_help() {
-    info!("Help menu item clicked");
-    show_alert(
-        "HandsOff Help",
-        "HandsOff Tray App\n\n\
-        Menu Items:\n\
-        • Lock Input: Lock immediately (menu inaccessible when locked)\n\
-        • Help: Show this help\n\
-        • About: Show version and project information\n\
-        • Reset: Reset app state (unlock and reset all timers)\n\n\
-        To Lock:\n\
-        • Click 'Lock Input' menu item, OR\n\
-        • Press Ctrl+Cmd+Shift+L hotkey\n\n\
-        To Unlock:\n\
-        • Type your passphrase on the keyboard\n\
-        • (Menu is NOT clickable when locked - mouse blocked)\n\
-        • Wait 5 seconds between attempts if you mistype\n\n\
-        Hotkeys:\n\
-        • Ctrl+Cmd+Shift+L: Lock input\n\
-        • Ctrl+Cmd+Shift+T (hold): Talk mode (Spacebar passthrough)\n\n\
-        Permissions:\n\
-        Requires Accessibility permission in System Settings.\n\n\
-        Safety Features:\n\
-        • Permission Monitor: Checks every 15 seconds\n\
-        • Auto-Stop: Stops event tap if permissions revoked (prevents lockout)\n\
-        • Restore: Use Reset menu after restoring permissions to restart\n\
-        • Tooltip shows permission status when you hover over tray icon"
-    );
-}
-
 /// Show native macOS alert dialog
 fn show_alert(title: &str, message: &str) {
     use std::process::Command;
@@ -356,36 +306,61 @@ fn show_alert(title: &str, message: &str) {
 
 /// Build tooltip text based on lock state and permission status
 fn build_tooltip(core: &HandsOffCore, is_locked: bool, has_permissions: bool) -> String {
-    // Show permission warning if missing
-    if !has_permissions {
-        return "HandsOff - NO PERMISSIONS\n\nRestore Accessibility Permissions in:\nSystem Settings > Privacy & Security\n\nThen use Reset menu to restart".to_string();
-    }
-
-    if !is_locked {
-        return "HandsOff - Unlocked".to_string();
-    }
-
-    // Locked state - build detailed tooltip
     let mut tooltip = String::new();
 
-    // Show lock duration
-    if let Some(elapsed) = core.get_lock_elapsed_secs() {
-        tooltip.push_str(&format!("HandsOff - Locked ({})\n", format_duration(elapsed)));
-    } else {
-        tooltip.push_str("HandsOff - Locked\n");
-    }
+    // Header with version
+    tooltip.push_str(&format!("HandsOff v{}\n", VERSION));
+    tooltip.push_str("A macOS utility to block unsolicited input\n\n");
 
-    // Show auto-unlock countdown if enabled
-    if let Some(remaining) = core.get_auto_unlock_remaining_secs() {
-        if remaining > 0 {
-            tooltip.push_str(&format!("Auto-unlock in {}\n", format_duration(remaining)));
+    // Current status
+    if !has_permissions {
+        tooltip.push_str("STATUS: NO PERMISSIONS\n");
+        tooltip.push_str("Restore Accessibility Permissions in:\n");
+        tooltip.push_str("System Settings > Privacy & Security\n");
+        tooltip.push_str("Then use Reset menu to restart\n\n");
+    } else if is_locked {
+        // Show lock duration
+        if let Some(elapsed) = core.get_lock_elapsed_secs() {
+            tooltip.push_str(&format!("STATUS: LOCKED ({})\n", format_duration(elapsed)));
         } else {
-            tooltip.push_str("Auto-unlocking...\n");
+            tooltip.push_str("STATUS: LOCKED\n");
         }
+
+        // Show auto-unlock countdown if enabled
+        if let Some(remaining) = core.get_auto_unlock_remaining_secs() {
+            if remaining > 0 {
+                tooltip.push_str(&format!("Auto-unlock in {}\n", format_duration(remaining)));
+            } else {
+                tooltip.push_str("Auto-unlocking...\n");
+            }
+        }
+        tooltip.push_str("\n");
+    } else {
+        tooltip.push_str("STATUS: Unlocked\n\n");
     }
 
-    // Always show unlock instructions
-    tooltip.push_str("Type passphrase to unlock");
+    // Menu items
+    tooltip.push_str("MENU:\n");
+    tooltip.push_str("• Lock Input: Lock immediately\n");
+    tooltip.push_str("• Reset: Reset app state and restart event tap\n\n");
+
+    // Instructions
+    tooltip.push_str("TO LOCK:\n");
+    tooltip.push_str("• Click 'Lock Input' menu, OR\n");
+    tooltip.push_str("• Press Ctrl+Cmd+Shift+L\n\n");
+
+    tooltip.push_str("TO UNLOCK:\n");
+    tooltip.push_str("• Type your passphrase on keyboard\n");
+    tooltip.push_str("• Wait 5 sec between attempts if you mistype\n\n");
+
+    // Hotkeys
+    tooltip.push_str("HOTKEYS:\n");
+    tooltip.push_str("• Ctrl+Cmd+Shift+L: Lock input\n");
+    tooltip.push_str("• Ctrl+Cmd+Shift+T (hold): Talk mode\n\n");
+
+    // Repository info
+    tooltip.push_str("Michael S. Huang\n");
+    tooltip.push_str("https://github.com/mhuang74/handsoff-rs");
 
     tooltip
 }
