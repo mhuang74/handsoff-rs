@@ -95,11 +95,13 @@ fn main() -> Result<()> {
     // Note: When locked, mouse clicks are blocked, so menu is inaccessible
     // Lock menu item only works when unlocked; unlock requires typing passphrase
     let lock_item = MenuItem::new("Lock Input", true, None);
+    let disable_item = MenuItem::new("Disable", true, None);
     let separator = PredefinedMenuItem::separator();
     let reset_item = MenuItem::new("Reset", true, None);
 
     let menu = Menu::new();
     menu.append(&lock_item).context("Failed to add lock menu item")?;
+    menu.append(&disable_item).context("Failed to add disable menu item")?;
     menu.append(&separator).context("Failed to add separator")?;
     menu.append(&reset_item).context("Failed to add reset menu item")?;
 
@@ -116,6 +118,7 @@ fn main() -> Result<()> {
 
     // Clone IDs for event handling
     let lock_id = lock_item.id().clone();
+    let disable_id = disable_item.id().clone();
     let reset_id = reset_item.id().clone();
 
     // Store passphrase for reset functionality
@@ -139,6 +142,9 @@ fn main() -> Result<()> {
 
             if event_id == lock_id {
                 handle_lock_toggle(core.clone());
+            } else if event_id == disable_id {
+                info!("Disable menu item clicked");
+                handle_disable(core.clone());
             } else if event_id == reset_id {
                 info!("Reset menu item clicked, resetting app state");
                 handle_reset(core.clone(), &passphrase_for_reset);
@@ -158,12 +164,18 @@ fn main() -> Result<()> {
         // Periodically check permissions and update menu state
         let core_lock = core.lock().unwrap();
         let is_locked = core_lock.is_locked();
+        let is_disabled = core_lock.state.is_disabled();
         let current_permissions = core_lock.has_accessibility_permissions();
 
-        // Update Lock menu item enabled state based on permissions
-        // Only enable Lock when we have permissions AND are not already locked
-        let should_enable_lock = current_permissions && !is_locked;
+        // Update Lock menu item enabled state based on permissions and disabled state
+        // Only enable Lock when we have permissions AND are not already locked AND not disabled
+        let should_enable_lock = current_permissions && !is_locked && !is_disabled;
         lock_item.set_enabled(should_enable_lock);
+
+        // Update Disable menu item enabled state
+        // Only enable Disable when we have permissions AND are not locked AND not already disabled
+        let should_enable_disable = current_permissions && !is_locked && !is_disabled;
+        disable_item.set_enabled(should_enable_disable);
 
         // Track permission state changes for logging
         if has_permissions != current_permissions {
@@ -204,7 +216,7 @@ fn main() -> Result<()> {
         }
 
         // Always update tooltip (to show live countdown and permission status)
-        let tooltip = build_tooltip(&core_lock, is_locked, current_permissions);
+        let tooltip = build_tooltip(&core_lock, is_locked, is_disabled, current_permissions);
         if tooltip != last_tooltip {
             if let Err(e) = tray.set_tooltip(Some(&tooltip)) {
                 error!("Failed to update tray tooltip: {}", e);
@@ -235,11 +247,35 @@ fn handle_lock_toggle(core: Arc<Mutex<HandsOffCore>>) {
     }
 }
 
+/// Handle disable from menu
+/// Disables HandsOff by stopping event tap and hotkeys for minimal CPU usage
+fn handle_disable(core: Arc<Mutex<HandsOffCore>>) {
+    let mut core = core.lock().unwrap();
+
+    if let Err(e) = core.disable() {
+        error!("Error disabling: {}", e);
+        show_alert("Error", &format!("Failed to disable: {}", e));
+    } else {
+        info!("HandsOff disabled - minimal CPU mode");
+        #[cfg(target_os = "macos")]
+        {
+            let _ = notify_rust::Notification::new()
+                .summary("HandsOff")
+                .body("Disabled - Minimal CPU mode\nUse Reset to re-enable")
+                .timeout(notify_rust::Timeout::Milliseconds(3000))
+                .show();
+        }
+    }
+}
+
 /// Handle reset from menu
 /// Resets the app state to default: unlocked with all timers reset
-/// Also attempts to restart the event tap if permissions are available
+/// If disabled, re-enables the app. Otherwise, restarts the event tap if permissions are available
 fn handle_reset(core: Arc<Mutex<HandsOffCore>>, passphrase: &str) {
     let mut core = core.lock().unwrap();
+
+    // Check if disabled - if so, enable instead of just restarting
+    let is_disabled = core.state.is_disabled();
 
     // Unlock if currently locked (this also resets lock timer)
     if core.is_locked() {
@@ -261,25 +297,50 @@ fn handle_reset(core: Arc<Mutex<HandsOffCore>>, passphrase: &str) {
         }
     }
 
-    // Attempt to restart event tap (will check permissions internally)
-    match core.restart_event_tap() {
-        Ok(()) => {
-            info!("Event tap restarted successfully during reset");
-            #[cfg(target_os = "macos")]
-            {
-                let _ = notify_rust::Notification::new()
-                    .summary("HandsOff")
-                    .body("App reset complete - Event tap restarted\nReady to use")
-                    .timeout(notify_rust::Timeout::Milliseconds(3000))
-                    .show();
+    // If disabled, re-enable (which also restarts event tap and hotkeys)
+    // Otherwise, just restart event tap
+    if is_disabled {
+        match core.enable() {
+            Ok(()) => {
+                info!("HandsOff re-enabled successfully during reset");
+                #[cfg(target_os = "macos")]
+                {
+                    let _ = notify_rust::Notification::new()
+                        .summary("HandsOff")
+                        .body("App reset complete - Re-enabled and ready to use")
+                        .timeout(notify_rust::Timeout::Milliseconds(3000))
+                        .show();
+                }
+            }
+            Err(e) => {
+                warn!("Could not re-enable during reset: {}", e);
+                show_alert(
+                    "Reset Partial Success",
+                    &format!("App state reset but could not re-enable:\n{}\n\nPlease check accessibility permissions.", e)
+                );
             }
         }
-        Err(e) => {
-            warn!("Could not restart event tap during reset: {}", e);
-            show_alert(
-                "Reset Partial Success",
-                &format!("App state reset but event tap could not be restarted:\n{}\n\nPlease check accessibility permissions.", e)
-            );
+    } else {
+        // Attempt to restart event tap (will check permissions internally)
+        match core.restart_event_tap() {
+            Ok(()) => {
+                info!("Event tap restarted successfully during reset");
+                #[cfg(target_os = "macos")]
+                {
+                    let _ = notify_rust::Notification::new()
+                        .summary("HandsOff")
+                        .body("App reset complete - Event tap restarted\nReady to use")
+                        .timeout(notify_rust::Timeout::Milliseconds(3000))
+                        .show();
+                }
+            }
+            Err(e) => {
+                warn!("Could not restart event tap during reset: {}", e);
+                show_alert(
+                    "Reset Partial Success",
+                    &format!("App state reset but event tap could not be restarted:\n{}\n\nPlease check accessibility permissions.", e)
+                );
+            }
         }
     }
 
@@ -304,8 +365,8 @@ fn show_alert(title: &str, message: &str) {
         .output();
 }
 
-/// Build tooltip text based on lock state and permission status
-fn build_tooltip(core: &HandsOffCore, is_locked: bool, has_permissions: bool) -> String {
+/// Build tooltip text based on lock state, disabled state, and permission status
+fn build_tooltip(core: &HandsOffCore, is_locked: bool, is_disabled: bool, has_permissions: bool) -> String {
     let mut tooltip = String::new();
 
     // Header with version
@@ -313,7 +374,11 @@ fn build_tooltip(core: &HandsOffCore, is_locked: bool, has_permissions: bool) ->
     tooltip.push_str("A macOS utility to block unsolicited input\n\n");
 
     // Current status
-    if !has_permissions {
+    if is_disabled {
+        tooltip.push_str("STATUS: DISABLED\n");
+        tooltip.push_str("Minimal CPU mode - all features suspended\n");
+        tooltip.push_str("Use Reset menu to re-enable HandsOff\n\n");
+    } else if !has_permissions {
         tooltip.push_str("STATUS: NO PERMISSIONS\n");
         tooltip.push_str("Restore Accessibility Permissions in:\n");
         tooltip.push_str("System Settings > Privacy & Security\n");

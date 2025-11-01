@@ -42,6 +42,8 @@ pub struct AppStateInner {
     pub has_accessibility_permissions: bool,
     /// Flag to signal that event tap should be stopped (set by permission monitor)
     pub should_stop_event_tap: bool,
+    /// Whether the app is currently disabled (minimal CPU mode)
+    pub is_disabled: bool,
 }
 
 impl AppState {
@@ -60,6 +62,7 @@ impl AppState {
                 auto_unlock_timeout: None,
                 has_accessibility_permissions: false,
                 should_stop_event_tap: false,
+                is_disabled: false,
             })),
         }
     }
@@ -241,6 +244,16 @@ impl AppState {
         let should_stop = state.should_stop_event_tap;
         state.should_stop_event_tap = false;
         should_stop
+    }
+
+    /// Check if the app is currently disabled
+    pub fn is_disabled(&self) -> bool {
+        self.inner.lock().is_disabled
+    }
+
+    /// Set the disabled state
+    pub fn set_disabled(&self, disabled: bool) {
+        self.inner.lock().is_disabled = disabled;
     }
 }
 
