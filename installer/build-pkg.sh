@@ -94,7 +94,7 @@ cat > "${DISTRIBUTION_XML}" << EOF
 <installer-gui-script minSpecVersion="1">
     <title>${APP_NAME}</title>
     <organization>${BUNDLE_ID}</organization>
-    <domains enable_localSystem="true"/>
+    <domains enable_currentUserHome="true"/>
     <options customize="never" require-scripts="false" hostArchitectures="arm64,x86_64"/>
 
     <!-- Define documents displayed at various steps -->
@@ -149,13 +149,14 @@ cat > "${INSTALLER_DIR}/welcome.html" << 'EOF'
 
     <h2>What This Installer Does</h2>
     <ul>
-        <li>Installs HandsOff.app to /Applications</li>
+        <li>Installs HandsOff.app to ~/Applications (your user Applications folder)</li>
         <li>Includes setup script for Launch Agent configuration</li>
+        <li>No administrator password required</li>
     </ul>
 
     <h2>After Installation</h2>
     <p>You will need to complete setup by running:</p>
-    <p><code>/Applications/HandsOff.app/Contents/MacOS/setup-launch-agent.sh</code></p>
+    <p><code>~/Applications/HandsOff.app/Contents/MacOS/setup-launch-agent.sh</code></p>
     <p>This setup script will:</p>
     <ul>
         <li>Prompt you for your secret passphrase</li>
@@ -188,7 +189,7 @@ cat > "${INSTALLER_DIR}/conclusion.html" << 'EOF'
     <h1>Installation Complete!</h1>
 
     <div class="success">
-        HandsOff has been installed to /Applications/HandsOff.app
+        HandsOff has been installed to ~/Applications/HandsOff.app
     </div>
 
     <div class="next-steps">
@@ -199,13 +200,13 @@ cat > "${INSTALLER_DIR}/conclusion.html" << 'EOF'
         <ol>
             <li>Go to: <strong>System Preferences → Security & Privacy → Privacy → Accessibility</strong></li>
             <li>Click the lock icon to make changes</li>
-            <li>Click the <strong>+</strong> button and add <code>/Applications/HandsOff.app</code></li>
+            <li>Click the <strong>+</strong> button and add <code>~/Applications/HandsOff.app</code></li>
             <li>Ensure the checkbox next to HandsOff is checked</li>
         </ol>
 
         <h3>STEP 2: Run Setup Script</h3>
         <p>After granting permissions, open Terminal and run:</p>
-        <p><code>/Applications/HandsOff.app/Contents/MacOS/setup-launch-agent.sh</code></p>
+        <p><code>~/Applications/HandsOff.app/Contents/MacOS/setup-launch-agent.sh</code></p>
         <p>This will:</p>
         <ul>
             <li>Prompt you for your secret passphrase</li>
@@ -222,7 +223,7 @@ cat > "${INSTALLER_DIR}/conclusion.html" << 'EOF'
     </ul>
 
     <h2>Support</h2>
-    <p>Documentation: <code>/Applications/HandsOff.app/Contents/Resources/docs/</code></p>
+    <p>Documentation: <code>~/Applications/HandsOff.app/Contents/Resources/docs/</code></p>
 </body>
 </html>
 EOF
@@ -311,8 +312,8 @@ echo ""
 echo "To test the installer:"
 echo "  open ${PKG_FINAL}"
 echo ""
-echo "Or install from command line:"
-echo "  sudo installer -pkg ${PKG_FINAL} -target /"
+echo "Or install from command line (no sudo required):"
+echo "  installer -pkg ${PKG_FINAL} -target CurrentUserHomeDirectory"
 echo ""
 echo "Note: Build artifacts have been removed to ensure"
 echo "      proper installation testing on this machine."

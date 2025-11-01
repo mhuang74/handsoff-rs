@@ -3,7 +3,7 @@
 # This script runs BEFORE installation to clean up any existing installation
 
 APP_NAME="HandsOff"
-APP_PATH="/Applications/${APP_NAME}.app"
+APP_PATH="${HOME}/Applications/${APP_NAME}.app"
 LAUNCH_AGENT_DIR="${HOME}/Library/LaunchAgents"
 LAUNCH_AGENT_PLIST="${LAUNCH_AGENT_DIR}/com.handsoff.inputlock.plist"
 BUNDLE_ID="com.handsoff.inputlock"
@@ -11,6 +11,13 @@ BUNDLE_ID="com.handsoff.inputlock"
 echo "HandsOff PreInstall Script"
 echo "==========================="
 echo ""
+
+# Ensure ~/Applications directory exists
+if [ ! -d "${HOME}/Applications" ]; then
+    echo "Creating ~/Applications directory..."
+    mkdir -p "${HOME}/Applications"
+    echo "✓ Directory created"
+fi
 
 # Stop and unload Launch Agent if running
 if [ -f "${LAUNCH_AGENT_PLIST}" ]; then
