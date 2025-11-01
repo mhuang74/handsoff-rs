@@ -140,7 +140,23 @@ cat > "${INSTALLER_DIR}/welcome.html" << 'EOF'
         h1 { font-size: 24px; font-weight: 300; margin-bottom: 10px; }
         h2 { font-size: 16px; font-weight: 500; margin-top: 20px; margin-bottom: 10px; }
         ul { margin: 10px 0; padding-left: 25px; }
-        .warning { background: #fff3cd; border-left: 4px solid #ffc107; padding: 10px; margin: 15px 0; }
+        code { background: rgba(0,0,0,0.08); padding: 2px 6px; border-radius: 3px; font-family: monospace; font-size: 12px; }
+        .warning {
+            background: rgba(255,193,7,0.15);
+            border: 1px solid rgba(255,193,7,0.5);
+            border-left: 4px solid #ffc107;
+            padding: 10px;
+            margin: 15px 0;
+        }
+
+        @media (prefers-color-scheme: dark) {
+            code { background: rgba(255,255,255,0.1); }
+            .warning {
+                background: rgba(255,193,7,0.15);
+                border: 1px solid rgba(255,193,7,0.4);
+                border-left: 4px solid #ffc107;
+            }
+        }
     </style>
 </head>
 <body>
@@ -180,9 +196,37 @@ cat > "${INSTALLER_DIR}/conclusion.html" << 'EOF'
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; font-size: 13px; line-height: 1.6; }
         h1 { font-size: 24px; font-weight: 300; margin-bottom: 10px; }
         h2 { font-size: 16px; font-weight: 500; margin-top: 20px; margin-bottom: 10px; }
-        code { background: #f5f5f5; padding: 2px 6px; border-radius: 3px; font-family: monospace; font-size: 12px; }
-        .success { background: #d4edda; border-left: 4px solid #28a745; padding: 10px; margin: 15px 0; }
-        .next-steps { background: #e7f3ff; border-left: 4px solid #007bff; padding: 10px; margin: 15px 0; }
+        h3 { font-size: 14px; font-weight: 500; margin-top: 15px; margin-bottom: 8px; }
+        code { background: rgba(0,0,0,0.08); padding: 2px 6px; border-radius: 3px; font-family: monospace; font-size: 12px; }
+        ol, ul { margin: 10px 0; padding-left: 25px; }
+        .success {
+            background: rgba(40,167,69,0.15);
+            border: 1px solid rgba(40,167,69,0.5);
+            border-left: 4px solid #28a745;
+            padding: 10px;
+            margin: 15px 0;
+        }
+        .next-steps {
+            background: rgba(0,123,255,0.15);
+            border: 1px solid rgba(0,123,255,0.5);
+            border-left: 4px solid #007bff;
+            padding: 10px;
+            margin: 15px 0;
+        }
+
+        @media (prefers-color-scheme: dark) {
+            code { background: rgba(255,255,255,0.1); }
+            .success {
+                background: rgba(40,167,69,0.2);
+                border: 1px solid rgba(40,167,69,0.4);
+                border-left: 4px solid #4caf50;
+            }
+            .next-steps {
+                background: rgba(33,150,243,0.2);
+                border: 1px solid rgba(33,150,243,0.4);
+                border-left: 4px solid #2196f3;
+            }
+        }
     </style>
 </head>
 <body>
