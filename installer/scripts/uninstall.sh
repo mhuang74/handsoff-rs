@@ -5,7 +5,7 @@
 set -e
 
 APP_NAME="HandsOff"
-APP_BUNDLE_PATH="/Applications/${APP_NAME}.app"
+APP_BUNDLE_PATH="${HOME}/Applications/${APP_NAME}.app"
 BUNDLE_ID="com.handsoff.inputlock"
 LAUNCH_AGENT_PLIST="${HOME}/Library/LaunchAgents/${BUNDLE_ID}.plist"
 LOG_FILE="${HOME}/Library/Logs/${APP_NAME}.log"
@@ -19,7 +19,7 @@ echo ""
 echo "This script will completely remove HandsOff from your system:"
 echo ""
 echo "  • Stop and remove Launch Agent"
-echo "  • Remove application from /Applications"
+echo "  • Remove application from ~/Applications"
 echo "  • Remove log files"
 echo "  • Reset Accessibility permissions"
 echo ""
@@ -80,7 +80,7 @@ if [ -d "${APP_BUNDLE_PATH}" ]; then
     else
         rm -rf "${APP_BUNDLE_PATH}"
     fi
-    echo "  ✓ Application removed from /Applications"
+    echo "  ✓ Application removed from ~/Applications"
 else
     echo "  - Application not found (already removed)"
 fi
@@ -187,7 +187,7 @@ echo "To reinstall:"
 echo "  1. Build a new package: make pkg"
 echo "  2. Install: open dist/HandsOff-v*.pkg"
 echo "  3. Grant Accessibility permissions in System Preferences"
-echo "  4. Run setup: /Applications/HandsOff.app/Contents/MacOS/setup-launch-agent.sh"
+echo "  4. Run setup: ~/Applications/HandsOff.app/Contents/MacOS/setup-launch-agent.sh"
 echo ""
 
 exit 0

@@ -8,7 +8,7 @@ APP_NAME="HandsOff"
 BUNDLE_ID="com.handsoff.inputlock"
 LAUNCH_AGENT_DIR="${HOME}/Library/LaunchAgents"
 LAUNCH_AGENT_PLIST="${LAUNCH_AGENT_DIR}/${BUNDLE_ID}.plist"
-APP_EXECUTABLE="/Applications/${APP_NAME}.app/Contents/MacOS/handsoff-tray"
+APP_EXECUTABLE="${HOME}/Applications/${APP_NAME}.app/Contents/MacOS/handsoff-tray"
 
 echo ""
 echo "========================================"
@@ -20,7 +20,7 @@ echo ""
 if [ ! -f "${APP_EXECUTABLE}" ]; then
     echo "ERROR: HandsOff not found at ${APP_EXECUTABLE}"
     echo ""
-    echo "Please install HandsOff to /Applications first."
+    echo "Please install HandsOff to ~/Applications first."
     exit 1
 fi
 
@@ -28,7 +28,7 @@ fi
 echo "Checking Accessibility permissions..."
 # Test by trying to query the TCC database for Accessibility permission
 # This is a heuristic check - we try to see if the app has been granted permissions
-APP_BUNDLE_PATH="/Applications/${APP_NAME}.app"
+APP_BUNDLE_PATH="${HOME}/Applications/${APP_NAME}.app"
 
 # Check if the app is listed in the TCC database for Accessibility
 # We use tccutil to check this (only works on newer macOS versions)

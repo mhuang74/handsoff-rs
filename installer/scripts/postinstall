@@ -6,7 +6,7 @@
 set -e
 
 APP_NAME="HandsOff"
-APP_PATH="/Applications/${APP_NAME}.app"
+APP_PATH="${HOME}/Applications/${APP_NAME}.app"
 LAUNCH_AGENT_DIR="${HOME}/Library/LaunchAgents"
 LAUNCH_AGENT_PLIST="${LAUNCH_AGENT_DIR}/com.handsoff.inputlock.plist"
 BUNDLE_ID="com.handsoff.inputlock"
@@ -18,7 +18,7 @@ echo "Installation target: ${APP_PATH}"
 echo ""
 
 # Note: We don't verify the app exists here because during pkg installation,
-# files are in a sandbox and not yet committed to /Applications.
+# files are in a sandbox and not yet committed to ~/Applications.
 # The installer will move them after this script completes.
 
 # Check if Launch Agent plist already exists
@@ -53,13 +53,13 @@ else
     echo "STEP 1: Grant Accessibility Permissions"
     echo "  Go to: System Preferences > Security & Privacy > Privacy > Accessibility"
     echo "  Click the lock to make changes"
-    echo "  Add HandsOff from /Applications/HandsOff.app"
+    echo "  Add HandsOff from ~/Applications/HandsOff.app"
     echo "  Check the box next to HandsOff"
     echo ""
     echo "STEP 2: Complete Setup"
     echo "  After granting permissions, run:"
     echo ""
-    echo "  /Applications/${APP_NAME}.app/Contents/MacOS/setup-launch-agent.sh"
+    echo "  ~/Applications/${APP_NAME}.app/Contents/MacOS/setup-launch-agent.sh"
     echo ""
     echo "  This will prompt you for your passphrase and configure"
     echo "  the app to start automatically at login."
