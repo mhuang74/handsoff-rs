@@ -26,10 +26,10 @@ fix-plist: bundle
 	@echo "Added LSUIElement to Info.plist"
 	@plutil -p $(FINAL_BUNDLE_PATH)/Contents/Info.plist | grep -E "(LSUIElement|CFBundleDisplayName)"
 
-# Sign the app (development signing)
+# Sign the app with certificate
 sign: fix-plist
-	codesign --force --deep --sign - $(FINAL_BUNDLE_PATH)
-	@echo "App signed successfully"
+	codesign --force --deep --sign "Installer Signing Self-Signed" $(FINAL_BUNDLE_PATH)
+	@echo "App signed successfully with certificate: Installer Signing Self-Signed"
 
 # Create DMG installer
 dmg: sign

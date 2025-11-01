@@ -240,18 +240,33 @@ echo ""
 echo "Step 6: Building final installer package..."
 mkdir -p "${DIST_DIR}"
 
+# Build unsigned package first
+PKG_UNSIGNED="${INSTALLER_DIR}/${APP_NAME}-v${VERSION}-unsigned.pkg"
+
 productbuild \
     --distribution "${DISTRIBUTION_XML}" \
     --package-path "${INSTALLER_DIR}" \
     --resources "${INSTALLER_DIR}" \
+    "${PKG_UNSIGNED}"
+
+echo "✓ Unsigned package created"
+
+# Sign the package
+echo "Step 6b: Signing installer package..."
+productsign \
+    --sign "Installer Signing Self-Signed" \
+    "${PKG_UNSIGNED}" \
     "${PKG_FINAL}"
 
-echo "✓ Final package created: ${PKG_FINAL}"
+# Remove unsigned package
+rm -f "${PKG_UNSIGNED}"
+
+echo "✓ Final signed package created: ${PKG_FINAL}"
 echo ""
 
-# Step 7: Verify the package
-echo "Step 7: Verifying package..."
-pkgutil --check-signature "${PKG_FINAL}" || echo "  (unsigned - this is expected for development)"
+# Step 7: Verify the package signature
+echo "Step 7: Verifying package signature..."
+pkgutil --check-signature "${PKG_FINAL}"
 echo ""
 
 # Clean up intermediate files
