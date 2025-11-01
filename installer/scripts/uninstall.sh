@@ -148,7 +148,14 @@ echo ""
 # Step 6: Advanced cleanup options
 echo "Step 6: Advanced cleanup (optional)..."
 echo ""
-read -p "Do you want to try advanced TCC database cleanup? (requires SIP disabled or Full Disk Access) (y/N): " -r
+echo "  ⚠️  WARNING: This requires either:"
+echo "     1. SIP (System Integrity Protection) disabled, OR"
+echo "     2. Terminal has Full Disk Access permission"
+echo ""
+echo "  Disabling SIP reduces system security."
+echo "  This is intended for development/testing only."
+echo ""
+read -p "Do you want to try advanced TCC database cleanup? (y/N): " -r
 echo ""
 if [[ $REPLY =~ ^[Yy]$ ]]; then
     echo "  Attempting TCC database cleanup..."
