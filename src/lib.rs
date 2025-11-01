@@ -182,6 +182,48 @@ impl HandsOffCore {
         Ok(())
     }
 
+    /// Disable HandsOff (stops event tap and hotkeys for minimal CPU usage)
+    pub fn disable(&mut self) -> Result<()> {
+        info!("Disabling HandsOff - entering minimal CPU mode");
+
+        // Set disabled flag first (background threads will become inactive)
+        self.state.set_disabled(true);
+
+        // Stop event tap
+        self.stop_event_tap();
+
+        // Unregister hotkeys
+        if let Some(ref mut manager) = self.hotkey_manager {
+            manager.unregister_all().context("Failed to unregister hotkeys")?;
+        }
+
+        // Clear input buffer for clean state
+        self.state.clear_buffer();
+
+        info!("HandsOff disabled successfully");
+        Ok(())
+    }
+
+    /// Enable HandsOff (restarts event tap and hotkeys)
+    pub fn enable(&mut self) -> Result<()> {
+        info!("Enabling HandsOff - resuming normal operation");
+
+        // Clear disabled flag first
+        self.state.set_disabled(false);
+
+        // Restart event tap (checks permissions internally)
+        self.restart_event_tap().context("Failed to restart event tap")?;
+
+        // Re-register hotkeys
+        self.start_hotkeys().context("Failed to re-register hotkeys")?;
+
+        // Reset last_input_time for fresh auto-lock countdown
+        self.state.update_input_time();
+
+        info!("HandsOff enabled successfully");
+        Ok(())
+    }
+
     /// Start the hotkey manager
     pub fn start_hotkeys(&mut self) -> Result<()> {
         let mut manager = HotkeyManager::new().context("Failed to create hotkey manager")?;
@@ -223,6 +265,11 @@ impl HandsOffCore {
         thread::spawn(move || loop {
             thread::sleep(Duration::from_secs(1));
 
+            // Skip processing when disabled
+            if state.is_disabled() {
+                continue;
+            }
+
             if state.should_reset_buffer() {
                 let buffer = state.get_buffer();
                 if !buffer.is_empty() {
@@ -240,6 +287,12 @@ impl HandsOffCore {
             let mut check_count = 0u32;
             loop {
                 thread::sleep(Duration::from_secs(5));
+
+                // Skip processing when disabled
+                if state.is_disabled() {
+                    continue;
+                }
+
                 check_count += 1;
 
                 // Log remaining time every 30 seconds (6 checks of 5 seconds each)
@@ -276,6 +329,11 @@ impl HandsOffCore {
             let receiver = GlobalHotKeyEvent::receiver();
             loop {
                 if let Ok(event) = receiver.recv() {
+                    // Skip processing when disabled
+                    if state.is_disabled() {
+                        continue;
+                    }
+
                     let event_id = event.id;
 
                     // Check if it's the lock hotkey
@@ -306,6 +364,11 @@ impl HandsOffCore {
 
                 loop {
                     thread::sleep(Duration::from_secs(10)); // Check every 10 seconds
+
+                    // Skip processing when disabled
+                    if state.is_disabled() {
+                        continue;
+                    }
 
                     if state.should_auto_unlock() {
                         warn!("Auto-unlock timeout expired - disabling input interception");
