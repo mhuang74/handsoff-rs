@@ -208,17 +208,18 @@ impl HandsOffCore {
     pub fn enable(&mut self) -> Result<()> {
         info!("Enabling HandsOff - resuming normal operation");
 
-        // Clear disabled flag first
-        self.state.set_disabled(false);
+        // Reset last_input_time for fresh auto-lock countdown
+        // Note: if don't do this first, auto-lock may kick in right after set_disabled(false)
+        self.state.update_input_time();
 
         // Restart event tap (checks permissions internally)
         self.restart_event_tap().context("Failed to restart event tap")?;
 
         // Re-register hotkeys
-        self.start_hotkeys().context("Failed to re-register hotkeys")?;
+        self.start_hotkeys()?;
 
-        // Reset last_input_time for fresh auto-lock countdown
-        self.state.update_input_time();
+        // Clear disabled flag first
+        self.state.set_disabled(false);
 
         info!("HandsOff enabled successfully");
         Ok(())
@@ -226,14 +227,22 @@ impl HandsOffCore {
 
     /// Start the hotkey manager
     pub fn start_hotkeys(&mut self) -> Result<()> {
-        let mut manager = HotkeyManager::new().context("Failed to create hotkey manager")?;
+
+        if self.hotkey_manager.is_none() {
+            let new_mgr = HotkeyManager::new().context("Failed to create hotkey manager")?;
+            info!("Instantiated new hotkey manager");
+            self.hotkey_manager = Some(new_mgr);
+        }
+
+        let manager: &mut HotkeyManager = self.hotkey_manager.as_mut().unwrap();
+
         manager
             .register_lock_hotkey()
             .context("Failed to register lock hotkey")?;
         manager
             .register_talk_hotkey()
             .context("Failed to register talk hotkey")?;
-        self.hotkey_manager = Some(manager);
+
         info!("Hotkeys registered");
         Ok(())
     }
