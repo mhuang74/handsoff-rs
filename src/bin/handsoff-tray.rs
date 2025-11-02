@@ -344,7 +344,7 @@ fn handle_reset(core: Arc<Mutex<HandsOffCore>>, passphrase: &str) {
         }
     }
 
-    info!("App state reset complete");
+    info!("Finished handling app state reset");
 }
 
 /// Show native macOS alert dialog
