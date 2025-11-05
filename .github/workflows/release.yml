@@ -63,12 +63,17 @@ jobs:
         key: ${{ runner.os }}-cargo-build-release-${{ hashFiles('**/Cargo.lock') }}
 
     - name: Setup code signing
-      if: secrets.MACOS_CERTIFICATE != ''
       env:
         MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
         MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
         MACOS_KEYCHAIN_PWD: ${{ secrets.MACOS_KEYCHAIN_PWD }}
       run: |
+        # Skip if no certificate configured
+        if [ -z "$MACOS_CERTIFICATE" ]; then
+          echo "No signing certificate configured, skipping code signing setup"
+          exit 0
+        fi
+
         # Create temporary keychain
         KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
         security create-keychain -p "$MACOS_KEYCHAIN_PWD" $KEYCHAIN_PATH
@@ -380,10 +385,13 @@ jobs:
         ls -lh "${PKG_FINAL}"
 
     - name: Cleanup keychain
-      if: always() && secrets.MACOS_CERTIFICATE != ''
+      if: always()
       run: |
+        # Clean up keychain if it exists
         KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
-        security delete-keychain $KEYCHAIN_PATH || true
+        if [ -f "$KEYCHAIN_PATH" ]; then
+          security delete-keychain $KEYCHAIN_PATH || true
+        fi
 
     - name: Generate release notes
       id: release_notes
