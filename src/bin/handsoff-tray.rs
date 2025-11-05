@@ -76,14 +76,9 @@ fn main() -> Result<()> {
 
     info!("HandsOff core components started");
 
-    // CRITICAL: Start CFRunLoop in a background thread
-    // The event tap requires CFRunLoop to be running to intercept events
-    // Without this, the event tap callback is never invoked and input blocking doesn't work
-    std::thread::spawn(|| {
-        info!("Starting CFRunLoop in background thread (required for event tap)");
-        use core_foundation::runloop::CFRunLoop;
-        CFRunLoop::run_current();
-    });
+    // NOTE: CFRunLoop thread is now managed by HandsOffCore
+    // It starts when event tap is created and stops when event tap is destroyed
+    // This eliminates the zombie CFRunLoop connection that caused WindowServer issues
 
     // Wrap core in Arc<Mutex> for event loop
     let core = Arc::new(Mutex::new(core));
@@ -131,9 +126,20 @@ fn main() -> Result<()> {
 
     // Run event loop with periodic updates
     event_loop.run(move |_event, _, control_flow| {
-        // Wait for 500ms or until an event occurs
+        // Adjust polling interval based on disabled state
+        // When disabled: 5 seconds (minimal WindowServer interaction)
+        // When enabled: 500ms (responsive UI updates)
+        let poll_interval = {
+            let core_lock = core.lock().unwrap();
+            if core_lock.state.is_disabled() {
+                std::time::Duration::from_secs(5)
+            } else {
+                std::time::Duration::from_millis(500)
+            }
+        };
+
         *control_flow = ControlFlow::WaitUntil(
-            std::time::Instant::now() + std::time::Duration::from_millis(500)
+            std::time::Instant::now() + poll_interval
         );
 
         // Handle menu events

@@ -49,7 +49,8 @@ const K_CGHEAD_INSERT_EVENT_TAP: u32 = 0;
 const K_CGEVENT_TAP_OPTION_DEFAULT: u32 = 0;
 
 /// Create and enable the event tap for input blocking
-pub fn create_event_tap(state: Arc<AppState>) -> Option<CGEventTapRef> {
+/// Returns (tap, state_ptr) tuple - caller must free state_ptr when done
+pub fn create_event_tap(state: Arc<AppState>) -> Option<(CGEventTapRef, *mut c_void)> {
     info!("Creating event tap for input blocking");
 
     // Event types to monitor - create event mask
@@ -85,7 +86,7 @@ pub fn create_event_tap(state: Arc<AppState>) -> Option<CGEventTapRef> {
             return None;
         }
 
-        Some(tap)
+        Some((tap, state_ptr))
     }
 }
 
