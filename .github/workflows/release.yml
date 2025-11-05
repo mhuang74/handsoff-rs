@@ -63,7 +63,7 @@ jobs:
         key: ${{ runner.os }}-cargo-build-release-${{ hashFiles('**/Cargo.lock') }}
 
     - name: Setup code signing
-      if: ${{ secrets.MACOS_CERTIFICATE != '' }}
+      if: secrets.MACOS_CERTIFICATE != ''
       env:
         MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
         MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
