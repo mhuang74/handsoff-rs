@@ -1,0 +1,434 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release (e.g., v0.4.0)'
+        required: true
+        type: string
+
+env:
+  CARGO_TERM_COLOR: always
+  APP_NAME: HandsOff
+  BUNDLE_ID: com.handsoff.inputlock
+
+jobs:
+  build-macos-pkg:
+    runs-on: macos-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Get version from tag
+      id: version
+      run: |
+        if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          TAG="${{ inputs.tag }}"
+        else
+          TAG=${GITHUB_REF#refs/tags/}
+        fi
+        VERSION=${TAG#v}
+        echo "tag=$TAG" >> $GITHUB_OUTPUT
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        echo "Building version: $VERSION"
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: aarch64-apple-darwin
+
+    - name: Install cargo-bundle
+      run: cargo install cargo-bundle
+
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: ~/.cargo/registry
+        key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Cache cargo index
+      uses: actions/cache@v4
+      with:
+        path: ~/.cargo/git
+        key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Cache cargo build
+      uses: actions/cache@v4
+      with:
+        path: target
+        key: ${{ runner.os }}-cargo-build-release-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Setup code signing
+      if: ${{ secrets.MACOS_CERTIFICATE != '' }}
+      env:
+        MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+        MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+        MACOS_KEYCHAIN_PWD: ${{ secrets.MACOS_KEYCHAIN_PWD }}
+      run: |
+        # Create temporary keychain
+        KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+        security create-keychain -p "$MACOS_KEYCHAIN_PWD" $KEYCHAIN_PATH
+        security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
+        security unlock-keychain -p "$MACOS_KEYCHAIN_PWD" $KEYCHAIN_PATH
+
+        # Import certificate
+        echo $MACOS_CERTIFICATE | base64 --decode > certificate.p12
+        security import certificate.p12 -k $KEYCHAIN_PATH -P "$MACOS_CERTIFICATE_PWD" -T /usr/bin/codesign -T /usr/bin/productsign
+        security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$MACOS_KEYCHAIN_PWD" $KEYCHAIN_PATH
+        rm -f certificate.p12
+
+        # Set as default keychain
+        security list-keychain -d user -s $KEYCHAIN_PATH
+
+        # List available signing identities
+        echo "Available signing identities:"
+        security find-identity -v -p codesigning
+        security find-identity -v -p basic
+
+    - name: Build release binary
+      run: |
+        cargo build --release --target aarch64-apple-darwin --verbose
+
+    - name: Create app bundle
+      run: |
+        cargo bundle --release --target aarch64-apple-darwin --bin handsoff-tray
+
+        # Rename bundle to proper case if needed
+        BUNDLE_PATH="target/aarch64-apple-darwin/release/bundle/osx/handsoff.app"
+        FINAL_BUNDLE_PATH="target/aarch64-apple-darwin/release/bundle/osx/${{ env.APP_NAME }}.app"
+
+        if [ -d "$BUNDLE_PATH" ] && [ ! -d "$FINAL_BUNDLE_PATH" ]; then
+          mv "$BUNDLE_PATH" "$FINAL_BUNDLE_PATH"
+        fi
+
+        # Fix Info.plist to add LSUIElement (menu bar only app)
+        plutil -insert LSUIElement -bool true "$FINAL_BUNDLE_PATH/Contents/Info.plist"
+        echo "Added LSUIElement to Info.plist"
+        plutil -p "$FINAL_BUNDLE_PATH/Contents/Info.plist" | grep -E "(LSUIElement|CFBundleDisplayName)"
+
+    - name: Sign app bundle
+      run: |
+        FINAL_BUNDLE_PATH="target/aarch64-apple-darwin/release/bundle/osx/${{ env.APP_NAME }}.app"
+
+        if [ -n "${{ secrets.MACOS_CERTIFICATE }}" ]; then
+          # Sign with Developer ID certificate
+          IDENTITY=$(security find-identity -v -p codesigning | grep "Developer ID Application" | head -1 | awk '{print $2}')
+          if [ -z "$IDENTITY" ]; then
+            echo "Warning: No Developer ID Application certificate found, using first available identity"
+            IDENTITY=$(security find-identity -v -p codesigning | grep -v "0 valid identities found" | head -1 | awk '{print $2}')
+          fi
+          echo "Signing with identity: $IDENTITY"
+          codesign --force --deep --sign "$IDENTITY" --options runtime --timestamp "$FINAL_BUNDLE_PATH"
+          echo "App signed with Developer ID"
+        else
+          echo "No signing certificate configured, creating unsigned package"
+          echo "To enable code signing, add MACOS_CERTIFICATE, MACOS_CERTIFICATE_PWD, and MACOS_KEYCHAIN_PWD secrets"
+        fi
+
+    - name: Create PKG installer
+      run: |
+        VERSION="${{ steps.version.outputs.version }}"
+        BUNDLE_PATH="target/aarch64-apple-darwin/release/bundle/osx/${{ env.APP_NAME }}.app"
+        DIST_DIR="dist"
+        INSTALLER_DIR="installer"
+        SCRIPTS_DIR="${INSTALLER_DIR}/scripts"
+        PKG_ROOT="${INSTALLER_DIR}/pkg-root"
+        PKG_COMPONENT="${INSTALLER_DIR}/${{ env.APP_NAME }}-component.pkg"
+        PKG_UNSIGNED="${INSTALLER_DIR}/${{ env.APP_NAME }}-v${VERSION}-unsigned.pkg"
+        PKG_FINAL="${DIST_DIR}/${{ env.APP_NAME }}-v${VERSION}-arm64.pkg"
+
+        echo "Building PKG installer..."
+
+        # Prepare package root
+        rm -rf "${PKG_ROOT}"
+        mkdir -p "${PKG_ROOT}/Applications"
+
+        # Copy the app bundle
+        cp -R "${BUNDLE_PATH}" "${PKG_ROOT}/Applications/"
+
+        # Copy the setup script into the app bundle's MacOS directory
+        mkdir -p "${PKG_ROOT}/Applications/${{ env.APP_NAME }}.app/Contents/MacOS"
+        cp "${SCRIPTS_DIR}/setup-launch-agent.sh" \
+           "${PKG_ROOT}/Applications/${{ env.APP_NAME }}.app/Contents/MacOS/"
+        chmod +x "${PKG_ROOT}/Applications/${{ env.APP_NAME }}.app/Contents/MacOS/setup-launch-agent.sh"
+
+        # Create component package
+        pkgbuild \
+            --root "${PKG_ROOT}" \
+            --identifier "${{ env.BUNDLE_ID }}" \
+            --version "${VERSION}" \
+            --install-location "/" \
+            --scripts "${SCRIPTS_DIR}" \
+            "${PKG_COMPONENT}"
+
+        # Create distribution XML
+        DISTRIBUTION_XML="${INSTALLER_DIR}/distribution.xml"
+        cat > "${DISTRIBUTION_XML}" << 'EOF'
+        <?xml version="1.0" encoding="utf-8"?>
+        <installer-gui-script minSpecVersion="1">
+            <title>${{ env.APP_NAME }}</title>
+            <organization>${{ env.BUNDLE_ID }}</organization>
+            <domains enable_currentUserHome="true"/>
+            <options customize="never" require-scripts="false" hostArchitectures="arm64"/>
+
+            <welcome file="welcome.html" mime-type="text/html" />
+            <license file="LICENSE" />
+            <conclusion file="conclusion.html" mime-type="text/html" />
+
+            <pkg-ref id="${{ env.BUNDLE_ID }}">
+                <bundle-version>
+                    <bundle id="${{ env.BUNDLE_ID }}" CFBundleVersion="${VERSION}" path="Applications/${{ env.APP_NAME }}.app" />
+                </bundle-version>
+            </pkg-ref>
+
+            <choices-outline>
+                <line choice="default">
+                    <line choice="${{ env.BUNDLE_ID }}"/>
+                </line>
+            </choices-outline>
+
+            <choice id="default"/>
+            <choice id="${{ env.BUNDLE_ID }}" visible="false">
+                <pkg-ref id="${{ env.BUNDLE_ID }}"/>
+            </choice>
+
+            <pkg-ref id="${{ env.BUNDLE_ID }}" version="${VERSION}" onConclusion="none">${{ env.APP_NAME }}-component.pkg</pkg-ref>
+        </installer-gui-script>
+        EOF
+
+        # Create installer resources (welcome, conclusion HTML)
+        cp installer/scripts/../build-pkg.sh /tmp/build-pkg-temp.sh
+
+        # Extract HTML generation from build-pkg.sh
+        cat > "${INSTALLER_DIR}/welcome.html" << 'HTMLEOF'
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="UTF-8">
+            <style>
+                body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; font-size: 13px; line-height: 1.6; }
+                h1 { font-size: 24px; font-weight: 300; margin-bottom: 10px; }
+                h2 { font-size: 16px; font-weight: 500; margin-top: 20px; margin-bottom: 10px; }
+                ul { margin: 10px 0; padding-left: 25px; }
+                code { background: rgba(0,0,0,0.08); padding: 2px 6px; border-radius: 3px; font-family: monospace; font-size: 12px; }
+                .warning {
+                    background: rgba(255,193,7,0.15);
+                    border: 1px solid rgba(255,193,7,0.5);
+                    border-left: 4px solid #ffc107;
+                    padding: 10px;
+                    margin: 15px 0;
+                }
+                @media (prefers-color-scheme: dark) {
+                    code { background: rgba(255,255,255,0.1); }
+                    .warning {
+                        background: rgba(255,193,7,0.15);
+                        border: 1px solid rgba(255,193,7,0.4);
+                        border-left: 4px solid #ffc107;
+                    }
+                }
+            </style>
+        </head>
+        <body>
+            <h1>Welcome to HandsOff</h1>
+            <p>This installer will install HandsOff, a macOS utility to block unsolicited input during video calls, presentations, or when leaving your laptop unattended.</p>
+            <h2>What This Installer Does</h2>
+            <ul>
+                <li>Installs HandsOff.app to ~/Applications (your user Applications folder)</li>
+                <li>Includes setup script for Launch Agent configuration</li>
+                <li>No administrator password required</li>
+            </ul>
+            <h2>After Installation</h2>
+            <p>You will need to complete setup by running:</p>
+            <p><code>~/Applications/HandsOff.app/Contents/MacOS/setup-launch-agent.sh</code></p>
+            <p>This setup script will:</p>
+            <ul>
+                <li>Prompt you for your secret passphrase</li>
+                <li>Configure HandsOff to start automatically at login</li>
+                <li>Launch the application</li>
+            </ul>
+            <div class="warning">
+                <strong>Important:</strong> HandsOff requires Accessibility permissions to function. You will be prompted to grant these permissions on first launch.
+            </div>
+        </body>
+        </html>
+        HTMLEOF
+
+        cat > "${INSTALLER_DIR}/conclusion.html" << 'HTMLEOF'
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="UTF-8">
+            <style>
+                body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; font-size: 13px; line-height: 1.6; }
+                h1 { font-size: 24px; font-weight: 300; margin-bottom: 10px; }
+                h2 { font-size: 16px; font-weight: 500; margin-top: 20px; margin-bottom: 10px; }
+                h3 { font-size: 14px; font-weight: 500; margin-top: 15px; margin-bottom: 8px; }
+                code { background: rgba(0,0,0,0.08); padding: 2px 6px; border-radius: 3px; font-family: monospace; font-size: 12px; }
+                ol, ul { margin: 10px 0; padding-left: 25px; }
+                .success {
+                    background: rgba(40,167,69,0.15);
+                    border: 1px solid rgba(40,167,69,0.5);
+                    border-left: 4px solid #28a745;
+                    padding: 10px;
+                    margin: 15px 0;
+                }
+                .next-steps {
+                    background: rgba(0,123,255,0.15);
+                    border: 1px solid rgba(0,123,255,0.5);
+                    border-left: 4px solid #007bff;
+                    padding: 10px;
+                    margin: 15px 0;
+                }
+                @media (prefers-color-scheme: dark) {
+                    code { background: rgba(255,255,255,0.1); }
+                    .success {
+                        background: rgba(40,167,69,0.2);
+                        border: 1px solid rgba(40,167,69,0.4);
+                        border-left: 4px solid #4caf50;
+                    }
+                    .next-steps {
+                        background: rgba(33,150,243,0.2);
+                        border: 1px solid rgba(33,150,243,0.4);
+                        border-left: 4px solid #2196f3;
+                    }
+                }
+            </style>
+        </head>
+        <body>
+            <h1>Installation Complete!</h1>
+            <div class="success">
+                HandsOff has been installed to ~/Applications/HandsOff.app
+            </div>
+            <div class="next-steps">
+                <h2>Next Steps: Complete Setup</h2>
+                <h3>STEP 1: Grant Accessibility Permissions</h3>
+                <p>Before running the setup script, you must grant Accessibility permissions:</p>
+                <ol>
+                    <li>Go to: <strong>System Preferences → Security & Privacy → Privacy → Accessibility</strong></li>
+                    <li>Click the lock icon to make changes</li>
+                    <li>Click the <strong>+</strong> button and add <code>~/Applications/HandsOff.app</code></li>
+                    <li>Ensure the checkbox next to HandsOff is checked</li>
+                </ol>
+                <h3>STEP 2: Run Setup Script</h3>
+                <p>After granting permissions, open Terminal and run:</p>
+                <p><code>~/Applications/HandsOff.app/Contents/MacOS/setup-launch-agent.sh</code></p>
+                <p>This will:</p>
+                <ul>
+                    <li>Prompt you for your secret passphrase</li>
+                    <li>Configure automatic startup at login</li>
+                    <li>Launch HandsOff immediately</li>
+                </ul>
+            </div>
+            <h2>Quick Start</h2>
+            <ul>
+                <li><strong>Lock:</strong> Click menu bar icon → "Lock Input" or press <code>Ctrl+Cmd+Shift+L</code></li>
+                <li><strong>Unlock:</strong> Type your passphrase</li>
+                <li><strong>Help:</strong> Click menu bar icon → "Help"</li>
+            </ul>
+            <h2>Support</h2>
+            <p>Documentation: <code>~/Applications/HandsOff.app/Contents/Resources/docs/</code></p>
+        </body>
+        </html>
+        HTMLEOF
+
+        # Copy LICENSE file
+        if [ -f "LICENSE" ]; then
+            cp LICENSE "${INSTALLER_DIR}/"
+        fi
+
+        # Build product package
+        mkdir -p "${DIST_DIR}"
+        productbuild \
+            --distribution "${DISTRIBUTION_XML}" \
+            --package-path "${INSTALLER_DIR}" \
+            --resources "${INSTALLER_DIR}" \
+            "${PKG_UNSIGNED}"
+
+        # Sign the package if certificate is available
+        if [ -n "${{ secrets.MACOS_CERTIFICATE }}" ]; then
+          IDENTITY=$(security find-identity -v -p basic | grep "Developer ID Installer" | head -1 | awk '{print $2}')
+          if [ -z "$IDENTITY" ]; then
+            echo "Warning: No Developer ID Installer certificate found, using first available identity"
+            IDENTITY=$(security find-identity -v -p basic | grep -v "0 valid identities found" | head -1 | awk '{print $2}')
+          fi
+          echo "Signing package with identity: $IDENTITY"
+          productsign --sign "$IDENTITY" "${PKG_UNSIGNED}" "${PKG_FINAL}"
+          rm -f "${PKG_UNSIGNED}"
+
+          # Verify signature
+          echo "Verifying package signature:"
+          pkgutil --check-signature "${PKG_FINAL}"
+        else
+          # No certificate, use unsigned package
+          mv "${PKG_UNSIGNED}" "${PKG_FINAL}"
+          echo "Package created (unsigned)"
+        fi
+
+        # Clean up intermediate files
+        rm -rf "${PKG_ROOT}"
+        rm -f "${PKG_COMPONENT}"
+        rm -f "${DISTRIBUTION_XML}"
+        rm -f "${INSTALLER_DIR}/welcome.html"
+        rm -f "${INSTALLER_DIR}/conclusion.html"
+        rm -f "${INSTALLER_DIR}/LICENSE"
+
+        echo "PKG installer created at: ${PKG_FINAL}"
+        ls -lh "${PKG_FINAL}"
+
+    - name: Cleanup keychain
+      if: always() && secrets.MACOS_CERTIFICATE != ''
+      run: |
+        KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+        security delete-keychain $KEYCHAIN_PATH || true
+
+    - name: Generate release notes
+      id: release_notes
+      run: |
+        VERSION="${{ steps.version.outputs.version }}"
+        cat > release_notes.md << 'EOF'
+        ## HandsOff v${{ steps.version.outputs.version }}
+
+        ### Installation
+
+        Download the PKG installer below and run it. After installation, you'll need to:
+        1. Grant Accessibility permissions in System Preferences
+        2. Run the setup script: `~/Applications/HandsOff.app/Contents/MacOS/setup-launch-agent.sh`
+
+        ### Requirements
+        - macOS 10.11 or later
+        - Apple Silicon (ARM64) Mac
+
+        ### What's New
+
+        See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for details.
+
+        ---
+
+        **Note:** This package is built for Apple Silicon (ARM64) Macs only.
+        EOF
+
+        cat release_notes.md
+
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: ${{ steps.version.outputs.tag }}
+        name: Release ${{ steps.version.outputs.tag }}
+        body_path: release_notes.md
+        draft: false
+        prerelease: false
+        files: |
+          dist/${{ env.APP_NAME }}-v${{ steps.version.outputs.version }}-arm64.pkg
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Upload PKG as artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: handsoff-pkg-macos-arm64
+        path: dist/${{ env.APP_NAME }}-v${{ steps.version.outputs.version }}-arm64.pkg
+        retention-days: 30
