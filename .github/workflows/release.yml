@@ -183,11 +183,6 @@ jobs:
         # Copy the app bundle
         cp -R "${BUNDLE_PATH}" "${PKG_ROOT}/Applications/"
 
-        # Copy the setup script into the app bundle's MacOS directory
-        mkdir -p "${PKG_ROOT}/Applications/${{ env.APP_NAME }}.app/Contents/MacOS"
-        cp "${SCRIPTS_DIR}/setup-launch-agent.sh" \
-           "${PKG_ROOT}/Applications/${{ env.APP_NAME }}.app/Contents/MacOS/"
-        chmod +x "${PKG_ROOT}/Applications/${{ env.APP_NAME }}.app/Contents/MacOS/setup-launch-agent.sh"
 
         # Create component package
         pkgbuild \
@@ -255,6 +250,7 @@ jobs:
                     padding: 10px;
                     margin: 15px 0;
                 }
+
                 @media (prefers-color-scheme: dark) {
                     code { background: rgba(255,255,255,0.1); }
                     .warning {
@@ -268,21 +264,29 @@ jobs:
         <body>
             <h1>Welcome to HandsOff</h1>
             <p>This installer will install HandsOff, a macOS utility to block unsolicited input during video calls, presentations, or when leaving your laptop unattended.</p>
+
             <h2>What This Installer Does</h2>
             <ul>
                 <li>Installs HandsOff.app to ~/Applications (your user Applications folder)</li>
-                <li>Includes setup script for Launch Agent configuration</li>
+                <li>Automatically configures Launch Agent for startup at login</li>
                 <li>No administrator password required</li>
             </ul>
+
             <h2>After Installation</h2>
-            <p>You will need to complete setup by running:</p>
-            <p><code>~/Applications/HandsOff.app/Contents/MacOS/setup-launch-agent.sh</code></p>
-            <p>This setup script will:</p>
+            <p>You will need to complete two steps:</p>
+            <ol>
+                <li>Grant Accessibility permissions in System Preferences</li>
+                <li>Run the setup command to configure your passphrase:
+                    <br><code>~/Applications/HandsOff.app/Contents/MacOS/handsoff-tray --setup</code>
+                </li>
+            </ol>
+            <p>The setup wizard will prompt you for:</p>
             <ul>
-                <li>Prompt you for your secret passphrase</li>
-                <li>Configure HandsOff to start automatically at login</li>
-                <li>Launch the application</li>
+                <li>Secret passphrase (typing hidden for security)</li>
+                <li>Auto-lock timeout (default: 30 seconds)</li>
+                <li>Auto-unlock timeout (default: 60 seconds)</li>
             </ul>
+
             <div class="warning">
                 <strong>Important:</strong> HandsOff requires Accessibility permissions to function. You will be prompted to grant these permissions on first launch.
             </div>
@@ -316,6 +320,7 @@ jobs:
                     padding: 10px;
                     margin: 15px 0;
                 }
+
                 @media (prefers-color-scheme: dark) {
                     code { background: rgba(255,255,255,0.1); }
                     .success {
@@ -333,35 +338,42 @@ jobs:
         </head>
         <body>
             <h1>Installation Complete!</h1>
+
             <div class="success">
                 HandsOff has been installed to ~/Applications/HandsOff.app
             </div>
+
             <div class="next-steps">
                 <h2>Next Steps: Complete Setup</h2>
+
                 <h3>STEP 1: Grant Accessibility Permissions</h3>
-                <p>Before running the setup script, you must grant Accessibility permissions:</p>
+                <p>You must grant Accessibility permissions for HandsOff to function:</p>
                 <ol>
                     <li>Go to: <strong>System Preferences → Security & Privacy → Privacy → Accessibility</strong></li>
                     <li>Click the lock icon to make changes</li>
                     <li>Click the <strong>+</strong> button and add <code>~/Applications/HandsOff.app</code></li>
                     <li>Ensure the checkbox next to HandsOff is checked</li>
                 </ol>
-                <h3>STEP 2: Run Setup Script</h3>
+
+                <h3>STEP 2: Configure Your Passphrase</h3>
                 <p>After granting permissions, open Terminal and run:</p>
-                <p><code>~/Applications/HandsOff.app/Contents/MacOS/setup-launch-agent.sh</code></p>
-                <p>This will:</p>
+                <p><code>~/Applications/HandsOff.app/Contents/MacOS/handsoff-tray --setup</code></p>
+                <p>The setup wizard will prompt you for:</p>
                 <ul>
-                    <li>Prompt you for your secret passphrase</li>
-                    <li>Configure automatic startup at login</li>
-                    <li>Launch HandsOff immediately</li>
+                    <li>Secret passphrase (typing hidden for security)</li>
+                    <li>Auto-lock timeout (default: 30 seconds)</li>
+                    <li>Auto-unlock timeout (default: 60 seconds)</li>
                 </ul>
+                <p>After setup, start the app with: <code>launchctl start com.handsoff.inputlock</code></p>
             </div>
+
             <h2>Quick Start</h2>
             <ul>
                 <li><strong>Lock:</strong> Click menu bar icon → "Lock Input" or press <code>Ctrl+Cmd+Shift+L</code></li>
                 <li><strong>Unlock:</strong> Type your passphrase</li>
                 <li><strong>Help:</strong> Click menu bar icon → "Help"</li>
             </ul>
+
             <h2>Support</h2>
             <p>Documentation: <code>~/Applications/HandsOff.app/Contents/Resources/docs/</code></p>
         </body>
@@ -428,39 +440,10 @@ jobs:
         cat > release_notes.md << 'EOF'
         ## HandsOff v${{ steps.version.outputs.version }}
 
-        ### Installation
-
-        **Two installation options available:**
-
-        #### Option 1: Tray App (Recommended for most users)
-        Download `HandsOff-v${{ steps.version.outputs.version }}-arm64.pkg` and run the installer.
-
-        After installation:
-        1. Grant Accessibility permissions in System Preferences
-        2. Run the setup script: `~/Applications/HandsOff.app/Contents/MacOS/setup-launch-agent.sh`
-        3. The app will start automatically at login with your passphrase embedded in the launch agent
-
-        #### Option 2: CLI (Advanced users)
-        Download `handsoff-cli-v${{ steps.version.outputs.version }}-arm64.tar.gz` and extract it.
-
-        ```bash
-        tar -xzf handsoff-cli-v${{ steps.version.outputs.version }}-arm64.tar.gz
-        sudo mv handsoff-cli/handsoff /usr/local/bin/
-        export HANDS_OFF_SECRET_PHRASE='your-secret-passphrase'
-        handsoff
-        ```
-
-        ### Requirements
-        - macOS 10.11 or later
-        - Apple Silicon (ARM64) Mac
-
         ### What's New
 
         See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for details.
 
-        ---
-
-        **Note:** Both packages are built for Apple Silicon (ARM64) Macs only.
         EOF
 
         cat release_notes.md
