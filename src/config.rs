@@ -150,6 +150,9 @@ mod tests {
 
     #[test]
     fn test_parse_auto_unlock_invalid_values() {
+        // Clean up any previous test state first
+        env::remove_var("HANDS_OFF_AUTO_UNLOCK");
+
         // Test too low
         env::set_var("HANDS_OFF_AUTO_UNLOCK", "30");
         assert_eq!(
@@ -203,6 +206,8 @@ mod tests {
             "Should reject value with units"
         );
 
+        // Test empty string - remove first to ensure clean state
+        env::remove_var("HANDS_OFF_AUTO_UNLOCK");
         env::set_var("HANDS_OFF_AUTO_UNLOCK", "");
         assert_eq!(
             parse_auto_unlock_timeout(),
