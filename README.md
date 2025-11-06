@@ -31,7 +31,7 @@ HandsOff is available in two forms: **Tray App** (recommended for most users) an
 
 ### Option 1: Tray App (Recommended)
 
-**Download the PKG installer from [GitHub Releases](https://github.com/your-repo/handsoff-rs/releases):**
+**Download the PKG installer from [GitHub Releases](https://github.com/mhuang74/handsoff-rs/releases):**
 
 1. Download `HandsOff-v{VERSION}-arm64.pkg` from the latest release
 2. Run the installer (installs to `~/Applications/HandsOff.app`)
@@ -53,7 +53,7 @@ HandsOff is available in two forms: **Tray App** (recommended for most users) an
 
 ### Option 2: CLI (Advanced Users)
 
-**Download the CLI tarball from [GitHub Releases](https://github.com/your-repo/handsoff-rs/releases):**
+**Download the CLI tarball from [GitHub Releases](https://github.com/mhuang74/handsoff-rs/releases):**
 
 1. Download `handsoff-cli-v{VERSION}-arm64.tar.gz` from the latest release
 2. Extract and install:
