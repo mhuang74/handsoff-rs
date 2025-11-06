@@ -80,6 +80,10 @@ HandsOff is built with Rust and leverages the following libraries:
 - **`core-foundation`**: CFRunLoop integration for event tap
 - **`security-framework`**: macOS Security Framework bindings
 - **`ring`**: Cryptographic hashing (SHA-256 for passphrase verification)
+- **`aes-gcm`**: AES-256-GCM authenticated encryption for passphrase storage
+- **`sha2`**: SHA-256 for encryption key derivation
+- **`base64`**: Encoding/decoding encrypted data
+- **`getrandom`**: Cryptographically secure random number generation
 - **`parking_lot`**: Fast mutex implementation for shared state
 - **`anyhow`**: Error handling and context
 - **`log`** / **`env_logger`**: Logging infrastructure
@@ -94,6 +98,13 @@ HandsOff is built with Rust and leverages the following libraries:
 ### CLI Dependencies
 
 - **`clap`**: Command-line argument parsing
+
+### Configuration Dependencies
+
+- **`toml`**: TOML file parsing for config.toml
+- **`serde`**: Serialization/deserialization framework
+- **`dirs`**: Standard config directory paths
+- **`rpassword`**: Non-echoing password input for setup command
 
 ### Input Handling
 
@@ -114,7 +125,9 @@ src/
 ├── utils/                  # Utility modules
 │   ├── mod.rs              # SHA-256 hashing utilities
 │   └── keycode.rs          # Keycode to character mapping
-├── config.rs               # Configuration parsing
+├── config.rs               # Environment variable parsing (optional overrides)
+├── crypto.rs               # AES-256-GCM encryption/decryption
+├── config_file.rs          # Encrypted config file management
 └── bin/                    # Binary entry points
     ├── handsoff.rs         # CLI binary
     └── handsoff-tray.rs    # Tray App binary
@@ -124,6 +137,66 @@ src/
 - **Core Library** (`lib.rs`): Shared functionality (input blocking, state management, auth)
 - **CLI Binary** (`bin/handsoff.rs`): Terminal-based interface with clap argument parsing
 - **Tray App Binary** (`bin/handsoff-tray.rs`): Native macOS menu bar app with tray-icon and notifications
+
+---
+
+## Passphrase Encryption
+
+The application uses AES-256-GCM encryption to protect the passphrase stored in `config.toml`. The encryption key is derived from a static seed using SHA-256, ensuring config files remain compatible across different builds and versions.
+
+### Key Features
+
+- **Static encryption key** across all versions
+- **Config files portable** between updates
+- **No need to reconfigure** after upgrading
+- **Random nonces** for each encryption operation
+- **AES-256-GCM** provides both encryption and authentication
+
+### Implementation Details
+
+**File:** `src/crypto.rs`
+
+The encryption module uses:
+- Static seed: `com.handsoff.inputlock.config.encryption.v1`
+- Key derivation: SHA-256(seed) → 32-byte AES-256 key
+- Encryption: AES-256-GCM with random 12-byte nonces
+- Output format: Base64(nonce || ciphertext || auth_tag)
+
+**File:** `src/config_file.rs`
+
+Configuration management:
+- Location: `~/Library/Application Support/handsoff/config.toml`
+- Format: TOML with encrypted_passphrase field
+- Permissions: 600 (user read/write only)
+- Fields: encrypted_passphrase, auto_lock_timeout, auto_unlock_timeout
+
+### Security Considerations
+
+**What this protects against:**
+- ✅ Casual file inspection (cat, grep, etc.)
+- ✅ Accidental exposure in backups
+- ✅ Process listing showing plaintext environment variables
+- ✅ Other applications reading LaunchAgent plist files
+
+**What this does NOT protect against:**
+- ❌ Attacker with binary access and reverse engineering skills
+- ❌ Memory dumps while application is running
+- ❌ Root/admin access to the system
+
+**Trade-offs:**
+- **Advantage**: Config files work across all versions (no reconfiguration needed after updates)
+- **Disadvantage**: Same encryption key across all installations (not user-specific)
+- **Balance**: Provides good protection against casual threats while prioritizing user experience
+
+### Building
+
+No special build configuration required - encryption key is static and embedded at compile time:
+
+```bash
+cargo build --release
+```
+
+Config files created by one build will work with all future builds.
 
 ---
 

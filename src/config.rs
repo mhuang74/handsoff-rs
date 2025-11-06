@@ -1,7 +1,12 @@
 //! Configuration parsing for HandsOff
 //!
-//! This module handles parsing of environment variables used to configure
-//! both the CLI and Tray App binaries.
+//! This module handles parsing of environment variables that can optionally
+//! override settings from the config file. The primary configuration source
+//! is the encrypted config.toml file (see config_file module).
+//!
+//! Environment variables (all optional):
+//! - HANDS_OFF_AUTO_LOCK: Override auto-lock timeout from config file
+//! - HANDS_OFF_AUTO_UNLOCK: Override auto-unlock timeout from config file
 
 use crate::app_state::{
     AUTO_LOCK_MAX_SECONDS, AUTO_LOCK_MIN_SECONDS, AUTO_UNLOCK_MAX_SECONDS,

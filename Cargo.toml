@@ -24,6 +24,16 @@ tao = "0.28"
 notify-rust = "4"
 image = { version = "0.25", default-features = false, features = ["png"] }  # Lightweight PNG decoder
 
+# Encryption and configuration dependencies
+aes-gcm = "0.10"           # AES-GCM authenticated encryption
+rpassword = "7.3"          # Non-echoing password input
+dirs = "5.0"               # Standard config directory paths
+base64 = "0.22"            # Encode/decode encrypted data
+sha2 = "0.10"              # SHA-256 for key derivation
+getrandom = "0.2"          # Cryptographically secure random number generation
+toml = "0.8"               # TOML parsing
+serde = { version = "1.0", features = ["derive"] }
+
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.10"
 
