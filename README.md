@@ -142,16 +142,12 @@ If you installed via PKG installer, the app will start automatically at login.
 **Tray App Features:**
 - Menu bar icon color showing lock status (locked: red, unlocked/disabled: white)
 - Desktop notifications for lock/unlock events
-- Menu items: Lock Input, Disable/Enable, Reset, Version, Help, Quit
+- Menu items: Lock Input, Disable, Reset
 
 **Menu Items:**
 - **Lock Input**: Lock immediately (only functional when unlocked)
 - **Disable**: Temporarily disable HandsOff (stops event tap and hotkeys for minimal CPU usage)
-- **Enable**: Re-enable HandsOff after disabling
-- **Reset**: Restart event tap (useful if permissions were restored)
-- **Version**: Show app version
-- **Help**: Show usage instructions
-- **Quit**: Exit the application
+- **Reset**: Resets to Unlocked and restart everything
 
 **Important:** When locked, ALL mouse clicks are blocked (including clicks on the tray menu). The menu becomes inaccessible and you must type your passphrase to unlock.
 
