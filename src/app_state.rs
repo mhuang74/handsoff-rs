@@ -190,9 +190,14 @@ impl AppState {
 
             log::warn!("AUTO-UNLOCK TRIGGERED after {} seconds", elapsed);
 
+            // Reset last_input_time for fresh auto-lock countdown
+            // Note: if don't do this first, auto-lock may kick in right after unlock
+            state.last_input_time = Instant::now();
+
             state.is_locked = false;
             state.lock_start_time = None;
             state.input_buffer.clear();
+
         }
     }
 
