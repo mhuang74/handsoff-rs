@@ -9,10 +9,12 @@ FINAL_BUNDLE_PATH := target/release/bundle/osx/$(APP_NAME).app
 DIST_DIR := dist
 
 # Build the release binary
+# Intermediate target - use 'fix-plist' or 'pkg' for complete builds
 build:
 	cargo build --release
 
 # Create the .app bundle (using tray binary for menu bar icon)
+# Intermediate target - use 'fix-plist' or 'pkg' for complete builds
 bundle: build
 	cargo bundle --release --bin handsoff-tray
 	@# Rename bundle to proper case if needed
@@ -21,47 +23,30 @@ bundle: build
 	fi
 
 # Fix Info.plist to add LSUIElement (menu bar only app)
+# This is the primary build target - creates a working .app bundle
 fix-plist: bundle
 	plutil -insert LSUIElement -bool true $(FINAL_BUNDLE_PATH)/Contents/Info.plist
 	@echo "Added LSUIElement to Info.plist"
 	@plutil -p $(FINAL_BUNDLE_PATH)/Contents/Info.plist | grep -E "(LSUIElement|CFBundleDisplayName)"
 
-# Sign the app with certificate
-sign: fix-plist
-	codesign --force --deep --sign "Installer Signing Self-Signed" $(FINAL_BUNDLE_PATH)
-	@echo "App signed successfully with certificate: Installer Signing Self-Signed"
-
-# Create DMG installer
-dmg: sign
-	@mkdir -p $(DIST_DIR)
-	@mkdir -p dmg-contents
-	cp -r $(FINAL_BUNDLE_PATH) dmg-contents/
-	ln -sf /Applications dmg-contents/Applications
-	hdiutil create -volname "$(APP_NAME)" \
-		-srcfolder dmg-contents \
-		-ov -format UDZO \
-		$(DIST_DIR)/$(APP_NAME)-v$(VERSION).dmg
-	@rm -rf dmg-contents
-	@echo "DMG created at $(DIST_DIR)/$(APP_NAME)-v$(VERSION).dmg"
-
 # Create PKG installer with Launch Agent setup
+# This is the distribution target - creates the installer package
 pkg:
 	./installer/build-pkg.sh
 
 # Install to /Applications
+# Local testing only - installs the .app bundle to /Applications
 install: fix-plist
 	cp -r $(FINAL_BUNDLE_PATH) /Applications/
 	@echo "Installed to /Applications/$(APP_NAME).app"
 
-# Run tests
+# Developer tools - run these before committing
 test:
 	cargo test
 
-# Run cargo check
 check:
 	cargo check
 
-# Run clippy
 clippy:
 	cargo clippy
 
@@ -70,7 +55,6 @@ clean:
 	cargo clean
 	rm -rf target/release/bundle
 	rm -rf $(DIST_DIR)
-	rm -rf dmg-contents
 	rm -rf installer/pkg-root
 	rm -f installer/*.pkg
 	rm -f installer/distribution.xml
@@ -83,16 +67,22 @@ all: fix-plist
 # Help target
 help:
 	@echo "Available targets:"
-	@echo "  build      - Build the release binary"
-	@echo "  bundle     - Create the .app bundle"
-	@echo "  fix-plist  - Create bundle and fix Info.plist (add LSUIElement)"
-	@echo "  sign       - Build, bundle, fix, and sign the app"
-	@echo "  dmg        - Build, bundle, fix, sign, and create DMG installer"
-	@echo "  pkg        - Build and create .pkg installer with Launch Agent setup"
-	@echo "  install    - Build, bundle, fix, and install to /Applications"
+	@echo ""
+	@echo "Primary targets:"
+	@echo "  fix-plist  - Create .app bundle with LSUIElement fix (menu bar only)"
+	@echo "  pkg        - Create .pkg installer (recommended for distribution)"
+	@echo "  all        - Same as fix-plist (default)"
+	@echo ""
+	@echo "Developer tools:"
 	@echo "  test       - Run cargo tests"
 	@echo "  check      - Run cargo check"
 	@echo "  clippy     - Run cargo clippy"
 	@echo "  clean      - Remove build artifacts"
-	@echo "  all        - Build and create fixed bundle (default)"
+	@echo ""
+	@echo "Intermediate targets:"
+	@echo "  build      - Build release binary only"
+	@echo "  bundle     - Create .app bundle (without LSUIElement fix)"
+	@echo ""
+	@echo "Other:"
+	@echo "  install    - Install to /Applications (for local testing)"
 	@echo "  help       - Show this help message"

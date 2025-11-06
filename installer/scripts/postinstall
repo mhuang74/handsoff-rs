@@ -1,7 +1,6 @@
 #!/bin/bash
 # PostInstall script for HandsOff
-# This script runs during the .app installation to /Applications
-# Note: During installation, files may be in a sandbox, not yet at final location
+# Automatically sets up LaunchAgent (no user interaction needed)
 
 set -e
 
@@ -10,67 +9,71 @@ APP_PATH="${HOME}/Applications/${APP_NAME}.app"
 LAUNCH_AGENT_DIR="${HOME}/Library/LaunchAgents"
 LAUNCH_AGENT_PLIST="${LAUNCH_AGENT_DIR}/com.handsoff.inputlock.plist"
 BUNDLE_ID="com.handsoff.inputlock"
+PLIST_TEMPLATE="${APP_PATH}/Contents/Resources/com.handsoff.inputlock.plist.template"
 
 echo "HandsOff PostInstall Script"
 echo "============================"
 echo ""
-echo "Installation target: ${APP_PATH}"
-echo ""
 
-# Note: We don't verify the app exists here because during pkg installation,
-# files are in a sandbox and not yet committed to ~/Applications.
-# The installer will move them after this script completes.
+# Create LaunchAgents directory if it doesn't exist
+mkdir -p "${LAUNCH_AGENT_DIR}"
 
-# Check if Launch Agent plist already exists
+# Check if plist already exists
 if [ -f "${LAUNCH_AGENT_PLIST}" ]; then
-    echo ""
-    echo "Launch Agent already configured at:"
-    echo "  ${LAUNCH_AGENT_PLIST}"
-    echo ""
+    echo "Launch Agent already exists. Updating..."
+    # Unload existing agent
+    launchctl unload "${LAUNCH_AGENT_PLIST}" 2>/dev/null || true
+fi
 
-    # Check if it's already loaded
-    if launchctl list | grep -q "${BUNDLE_ID}"; then
-        echo "Launch Agent is already loaded and running."
-        echo ""
-        echo "To restart with new configuration:"
-        echo "  launchctl unload ${LAUNCH_AGENT_PLIST}"
-        echo "  launchctl load ${LAUNCH_AGENT_PLIST}"
-    else
-        echo "Loading Launch Agent..."
-        launchctl load "${LAUNCH_AGENT_PLIST}"
-        echo "✓ Launch Agent loaded successfully"
-    fi
+# Copy template and substitute HOME path
+if [ -f "${PLIST_TEMPLATE}" ]; then
+    sed "s|HOME_PLACEHOLDER|${HOME}|g" "${PLIST_TEMPLATE}" > "${LAUNCH_AGENT_PLIST}"
+    chmod 644 "${LAUNCH_AGENT_PLIST}"
+    echo "✓ Launch Agent plist created"
 else
-    echo ""
-    echo "=========================================="
-    echo "IMPORTANT: Configuration Required"
-    echo "=========================================="
-    echo ""
-    echo "HandsOff requires:"
-    echo "  1. Accessibility permissions"
-    echo "  2. A secret passphrase to unlock"
-    echo ""
-    echo "STEP 1: Grant Accessibility Permissions"
-    echo "  Go to: System Preferences > Security & Privacy > Privacy > Accessibility"
-    echo "  Click the lock to make changes"
-    echo "  Add HandsOff from ~/Applications/HandsOff.app"
-    echo "  Check the box next to HandsOff"
-    echo ""
-    echo "STEP 2: Complete Setup"
-    echo "  After granting permissions, run:"
-    echo ""
-    echo "  ~/Applications/${APP_NAME}.app/Contents/MacOS/setup-launch-agent.sh"
-    echo ""
-    echo "  This will prompt you for your passphrase and configure"
-    echo "  the app to start automatically at login."
-    echo ""
+    echo "⚠️  Warning: Plist template not found at ${PLIST_TEMPLATE}"
+    echo "   Launch Agent not configured."
+    exit 1
+fi
+
+# Load the launch agent
+if launchctl load "${LAUNCH_AGENT_PLIST}" 2>/dev/null; then
+    echo "✓ Launch Agent loaded successfully"
+else
+    echo "⚠️  Could not load Launch Agent (may need to grant permissions first)"
 fi
 
 echo ""
-echo "Installation complete!"
+echo "=========================================="
+echo "NEXT STEPS - Important!"
+echo "=========================================="
 echo ""
-echo "For help and documentation:"
-echo "  Open the HandsOff menu bar icon and click 'Help'"
+echo "1. Grant Accessibility Permissions:"
+echo "   Go to: System Preferences > Security & Privacy"
+echo "            > Privacy > Accessibility"
+echo "   Click the lock to make changes"
+echo "   Click '+' and add: ~/Applications/HandsOff.app"
+echo "   Check the box next to HandsOff"
+echo ""
+echo "2. Configure Your Passphrase:"
+echo "   Run this command in Terminal:"
+echo ""
+echo "   ~/Applications/HandsOff.app/Contents/MacOS/handsoff-tray --setup"
+echo ""
+echo "   This will prompt you for:"
+echo "   - Secret passphrase (typing hidden)"
+echo "   - Auto-lock timeout (default: 30s)"
+echo "   - Auto-unlock timeout (default: 60s)"
+echo ""
+echo "3. Restart the App:"
+echo "   The tray app should start automatically at login."
+echo "   To start it now:"
+echo ""
+echo "   launchctl start com.handsoff.inputlock"
+echo ""
+echo "=========================================="
+echo "Installation complete!"
+echo "=========================================="
 echo ""
 
 exit 0

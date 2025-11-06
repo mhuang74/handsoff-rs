@@ -63,11 +63,10 @@ mkdir -p "${PKG_ROOT}/Applications"
 # Copy the app bundle
 cp -R "${BUNDLE_PATH}" "${PKG_ROOT}/Applications/"
 
-# Copy the setup script into the app bundle's MacOS directory
-mkdir -p "${PKG_ROOT}/Applications/${APP_NAME}.app/Contents/MacOS"
-cp "${SCRIPTS_DIR}/setup-launch-agent.sh" \
-   "${PKG_ROOT}/Applications/${APP_NAME}.app/Contents/MacOS/"
-chmod +x "${PKG_ROOT}/Applications/${APP_NAME}.app/Contents/MacOS/setup-launch-agent.sh"
+# Copy plist template to app bundle's Resources directory
+mkdir -p "${PKG_ROOT}/Applications/${APP_NAME}.app/Contents/Resources"
+cp "${INSTALLER_DIR}/resources/com.handsoff.inputlock.plist.template" \
+   "${PKG_ROOT}/Applications/${APP_NAME}.app/Contents/Resources/"
 
 echo "✓ Package root prepared at ${PKG_ROOT}"
 echo ""
@@ -166,18 +165,23 @@ cat > "${INSTALLER_DIR}/welcome.html" << 'EOF'
     <h2>What This Installer Does</h2>
     <ul>
         <li>Installs HandsOff.app to ~/Applications (your user Applications folder)</li>
-        <li>Includes setup script for Launch Agent configuration</li>
+        <li>Automatically configures Launch Agent for startup at login</li>
         <li>No administrator password required</li>
     </ul>
 
     <h2>After Installation</h2>
-    <p>You will need to complete setup by running:</p>
-    <p><code>~/Applications/HandsOff.app/Contents/MacOS/setup-launch-agent.sh</code></p>
-    <p>This setup script will:</p>
+    <p>You will need to complete two steps:</p>
+    <ol>
+        <li>Grant Accessibility permissions in System Preferences</li>
+        <li>Run the setup command to configure your passphrase:
+            <br><code>~/Applications/HandsOff.app/Contents/MacOS/handsoff-tray --setup</code>
+        </li>
+    </ol>
+    <p>The setup wizard will prompt you for:</p>
     <ul>
-        <li>Prompt you for your secret passphrase</li>
-        <li>Configure HandsOff to start automatically at login</li>
-        <li>Launch the application</li>
+        <li>Secret passphrase (typing hidden for security)</li>
+        <li>Auto-lock timeout (default: 30 seconds)</li>
+        <li>Auto-unlock timeout (default: 60 seconds)</li>
     </ul>
 
     <div class="warning">
@@ -240,7 +244,7 @@ cat > "${INSTALLER_DIR}/conclusion.html" << 'EOF'
         <h2>Next Steps: Complete Setup</h2>
 
         <h3>STEP 1: Grant Accessibility Permissions</h3>
-        <p>Before running the setup script, you must grant Accessibility permissions:</p>
+        <p>You must grant Accessibility permissions for HandsOff to function:</p>
         <ol>
             <li>Go to: <strong>System Preferences → Security & Privacy → Privacy → Accessibility</strong></li>
             <li>Click the lock icon to make changes</li>
@@ -248,15 +252,16 @@ cat > "${INSTALLER_DIR}/conclusion.html" << 'EOF'
             <li>Ensure the checkbox next to HandsOff is checked</li>
         </ol>
 
-        <h3>STEP 2: Run Setup Script</h3>
+        <h3>STEP 2: Configure Your Passphrase</h3>
         <p>After granting permissions, open Terminal and run:</p>
-        <p><code>~/Applications/HandsOff.app/Contents/MacOS/setup-launch-agent.sh</code></p>
-        <p>This will:</p>
+        <p><code>~/Applications/HandsOff.app/Contents/MacOS/handsoff-tray --setup</code></p>
+        <p>The setup wizard will prompt you for:</p>
         <ul>
-            <li>Prompt you for your secret passphrase</li>
-            <li>Configure automatic startup at login</li>
-            <li>Launch HandsOff immediately</li>
+            <li>Secret passphrase (typing hidden for security)</li>
+            <li>Auto-lock timeout (default: 30 seconds)</li>
+            <li>Auto-unlock timeout (default: 60 seconds)</li>
         </ul>
+        <p>After setup, start the app with: <code>launchctl start com.handsoff.inputlock</code></p>
     </div>
 
     <h2>Quick Start</h2>

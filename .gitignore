@@ -27,7 +27,6 @@ target
 
 # macOS app bundle build artifacts
 dist/
-dmg-contents/
 
 # Installer intermediate files
 installer/pkg-root/

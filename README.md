@@ -31,29 +31,37 @@ HandsOff is available in two forms: **Tray App** (recommended for most users) an
 
 ### Option 1: Tray App (Recommended)
 
-**Download the PKG installer from [GitHub Releases](https://github.com/your-repo/handsoff-rs/releases):**
+**Download the PKG installer from [GitHub Releases](https://github.com/mhuang74/handsoff-rs/releases):**
 
 1. Download `HandsOff-v{VERSION}-arm64.pkg` from the latest release
-2. Run the installer (installs to `~/Applications/HandsOff.app`)
+2. Run the installer (installs to `~/Applications/HandsOff.app` and configures launch agent automatically)
 3. Grant Accessibility permissions:
    - Go to System Settings > Privacy & Security > Accessibility
    - Add HandsOff to the list of allowed apps
-4. Run the setup script to configure your passphrase and launch agent:
+4. Configure your passphrase:
    ```bash
-   ~/Applications/HandsOff.app/Contents/MacOS/setup-launch-agent.sh
+   ~/Applications/HandsOff.app/Contents/MacOS/handsoff-tray --setup
    ```
-5. The app will start automatically at login
+   This will prompt you for:
+   - Secret passphrase (typing hidden for security)
+   - Auto-lock timeout (default: 30 seconds)
+   - Auto-unlock timeout (default: 60 seconds)
+5. Start the app:
+   ```bash
+   launchctl start com.handsoff.inputlock
+   ```
+6. The app will start automatically at login
 
 **Key advantages:**
 - ✅ Native menu bar interface with notifications
 - ✅ Automatic startup at login
-- ✅ Passphrase embedded in launch agent (no environment variables needed)
+- ✅ Passphrase stored encrypted (AES-256-GCM)
 - ✅ Visual lock status indicator (locked: red)
 - ✅ One-time setup
 
 ### Option 2: CLI (Advanced Users)
 
-**Download the CLI tarball from [GitHub Releases](https://github.com/your-repo/handsoff-rs/releases):**
+**Download the CLI tarball from [GitHub Releases](https://github.com/mhuang74/handsoff-rs/releases):**
 
 1. Download `handsoff-cli-v{VERSION}-arm64.tar.gz` from the latest release
 2. Extract and install:
@@ -64,10 +72,14 @@ HandsOff is available in two forms: **Tray App** (recommended for most users) an
 3. Grant Accessibility permissions:
    - Go to System Settings > Privacy & Security > Accessibility
    - Add the `handsoff` binary to the list of allowed apps
-4. Configure environment variables (required for CLI):
+4. Run the setup command to configure your passphrase:
    ```bash
-   export HANDS_OFF_SECRET_PHRASE='your-secret-passphrase'
+   handsoff --setup
    ```
+   This will prompt you for:
+   - Secret passphrase (typing hidden for security)
+   - Auto-lock timeout (default: 30 seconds)
+   - Auto-unlock timeout (default: 60 seconds)
 5. Run the CLI:
    ```bash
    handsoff
@@ -91,44 +103,37 @@ For developers who want to build from source, see [DEVELOPER.md](DEVELOPER.md).
 
 **Configuration depends on which version you're using:**
 
-#### Tray App Configuration
+#### Shared Configuration (Both CLI and Tray App)
 
-**No environment variables needed!** The Tray App uses the launch agent for configuration.
+Both CLI and Tray App use the same encrypted configuration file:
 
-- **Secret Passphrase**: Set once during initial setup via `setup-launch-agent.sh` (embedded in launch agent plist)
-- **Auto-lock**: Defaults to 30 seconds, but may be customized.
+**Configuration file location:** `~/Library/Application Support/handsoff/config.toml`
 
-The setup script handles the Secret Passphrase configuration automatically. Auto-lock defaults to 30 seconds. Both may be changed by editing the EnvironmentVariables section of plist file.
+**Initial setup:**
+- **Tray App**: `~/Applications/HandsOff.app/Contents/MacOS/handsoff-tray --setup`
+- **CLI**: `handsoff --setup`
 
-Example Env Var Section in plist file
-```xml
-<!-- ~/Library/LaunchAgents/com.handsoff.inputlock.plist -->
-    <key>EnvironmentVariables</key>
-    <dict>
-        <key>HANDS_OFF_SECRET_PHRASE</key>
-        <string>knockknock</string>
-         <key>HANDS_OFF_AUTO_LOCK</key>
-         <string>60</string>  <!-- 60 seconds -->
-    </dict>
-</dict>
-```
+The setup wizard will prompt you for:
+- Secret passphrase (stored encrypted using AES-256-GCM)
+- Auto-lock timeout (default: 30 seconds)
+- Auto-unlock timeout (default: 60 seconds)
 
-#### CLI Configuration
+**Changing configuration:**
+Run the setup command again to reconfigure.
 
-**Environment variables required** before running the CLI:
+#### Optional Environment Variable Overrides
+
+You can optionally use environment variables to override config file settings:
 
 ```bash
-# Required: Your secret passphrase
-export HANDS_OFF_SECRET_PHRASE='your-secret-passphrase'
-
-# Optional: Auto-lock after inactivity (20-600 seconds, default: 30)
+# Optional: Override auto-lock timeout (20-600 seconds)
 export HANDS_OFF_AUTO_LOCK=60
 
-# Optional: Auto-unlock safety timeout (60-900 seconds, 0=disabled)
+# Optional: Override auto-unlock timeout (60-900 seconds, 0=disabled)
 export HANDS_OFF_AUTO_UNLOCK=300
 ```
 
-For permanent CLI configuration, add these to your `~/.zshrc` or `~/.bash_profile`.
+For permanent overrides, add these to your `~/.zshrc` or `~/.bash_profile`.
 
 ### Using the Tray App
 
@@ -169,7 +174,7 @@ handsoff --help
 **CLI Output:**
 ```
 INFO  Starting HandsOff Input Lock
-INFO  Using passphrase from HANDS_OFF_SECRET_PHRASE environment variable
+INFO  Configuration loaded from: /Users/username/Library/Application Support/handsoff/config.toml
 INFO  HandsOff is running - press Ctrl+C to quit
 INFO  STATUS: INPUT IS UNLOCKED
 INFO  - Press Ctrl+Cmd+Shift+L to lock input
@@ -208,9 +213,16 @@ When locked, press `Ctrl+Cmd+Shift+T` to temporarily pass through a spacebar key
 
 ## Security
 
-- Passphrases are currently stored as plain text [Caveat Emptor]
-- No network connections or telemetry
-- All data stays on your device
+- **Encrypted Storage**: Passphrases are stored encrypted using AES-256-GCM in `~/Library/Application Support/handsoff/config.toml`
+- **Protection Level**: Provides obfuscation against casual file inspection. Note that the encryption key is embedded in the binary and could be extracted through reverse engineering
+- **File Permissions**: Config file has 600 permissions (readable only by your user account)
+- **No Network**: No network connections or telemetry
+- **Local Only**: All data stays on your device
+
+**For maximum security:**
+- Use a strong, unique passphrase
+- Enable FileVault disk encryption on macOS
+- Keep your system and user account secure
 
 ## Compatibility
 
@@ -225,10 +237,11 @@ When locked, press `Ctrl+Cmd+Shift+T` to temporarily pass through a spacebar key
 - Restart the app after granting permissions
 
 ### Forgot passphrase
-- **Tray App**: If unlocked, run `setup-launch-agent.sh` to set a new passphrase
-- **CLI**: Update your `HANDS_OFF_SECRET_PHRASE` environment variable
-- If locked and can't unlock: Restart in Safe Mode to avoid launching HandsOff, then reconfigure
-- If remote access is enabled, ssh into host and `killall HandsOff`
+- **Both CLI and Tray App**: Run the setup command again to reconfigure:
+  - Tray App: `~/Applications/HandsOff.app/Contents/MacOS/handsoff-tray --setup`
+  - CLI: `handsoff --setup`
+- If locked and can't unlock: Restart in Safe Mode to avoid launching HandsOff, then run setup again
+- If remote access is enabled: ssh into host and `killall handsoff-tray` or `killall handsoff`
 
 ---
 

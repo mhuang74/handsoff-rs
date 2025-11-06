@@ -1,10 +1,11 @@
 // HandsOff Tray App - macOS menu bar application for input blocking
 // This binary provides a native macOS tray icon with dropdown menu
 
-use handsoff::{config, HandsOffCore};
+use handsoff::{config, config_file::Config, HandsOffCore};
 use anyhow::{Context, Result};
+use clap::Parser;
 use log::{error, info, warn};
-use std::env;
+use std::io::{self, Write};
 use std::sync::{Arc, Mutex};
 use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::TrayIconBuilder;
@@ -12,7 +13,87 @@ use tao::event_loop::{ControlFlow, EventLoopBuilder};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// HandsOff Tray App arguments
+#[derive(Parser, Debug)]
+#[command(author, version, about = "macOS menu bar app to block unsolicited input")]
+struct Args {
+    /// Run interactive setup to configure passphrase and timeouts
+    #[arg(long)]
+    setup: bool,
+}
+
+/// Helper function to prompt for a number with a default value
+fn prompt_number(prompt: &str, default: u64) -> Result<u64> {
+    print!("{}", prompt);
+    io::stdout().flush()?;
+
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    let input = input.trim();
+
+    if input.is_empty() {
+        Ok(default)
+    } else {
+        input.parse::<u64>()
+            .with_context(|| format!("Invalid number: {}", input))
+    }
+}
+
+/// Run interactive setup to configure passphrase and timeouts
+fn run_setup() -> Result<()> {
+    println!("HandsOff Setup");
+    println!("==============\n");
+
+    // Prompt for passphrase (non-echoing)
+    let passphrase = rpassword::prompt_password("Enter passphrase: ")
+        .context("Failed to read passphrase")?;
+
+    if passphrase.is_empty() {
+        anyhow::bail!("Error: Passphrase cannot be empty");
+    }
+
+    // Confirm passphrase
+    let confirm = rpassword::prompt_password("Confirm passphrase: ")
+        .context("Failed to read confirmation")?;
+
+    if passphrase != confirm {
+        anyhow::bail!("Error: Passphrases do not match");
+    }
+
+    // Prompt for timeouts
+    let auto_lock = prompt_number(
+        "Auto-lock timeout in seconds (default: 30): ",
+        30
+    )?;
+
+    let auto_unlock = prompt_number(
+        "Auto-unlock timeout in seconds (default: 60): ",
+        60
+    )?;
+
+    // Create and save config
+    let config = Config::new(&passphrase, auto_lock, auto_unlock)
+        .context("Failed to create configuration")?;
+
+    config.save()
+        .context("Failed to save configuration")?;
+
+    println!("\nConfiguration saved to: {}", Config::config_path().display());
+    println!("Setup complete!");
+    println!("\nThe tray app will use this configuration at next startup.");
+
+    Ok(())
+}
+
 fn main() -> Result<()> {
+    // Parse command-line arguments
+    let args = Args::parse();
+
+    // Handle setup command
+    if args.setup {
+        return run_setup();
+    }
+
     // Initialize logger
     env_logger::Builder::from_default_env()
         .filter_level(log::LevelFilter::Info)
@@ -34,25 +115,30 @@ fn main() -> Result<()> {
         std::process::exit(1);
     }
 
-    // Get passphrase from environment variable
-    let passphrase = match env::var("HANDS_OFF_SECRET_PHRASE") {
-        Ok(passphrase) if !passphrase.is_empty() => {
-            info!("Using passphrase from HANDS_OFF_SECRET_PHRASE environment variable");
-            passphrase
-        }
-        Ok(_) => {
-            error!("HANDS_OFF_SECRET_PHRASE is set but empty");
+    // Load configuration
+    let cfg = match Config::load() {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            error!("Failed to load configuration: {}", e);
             show_alert(
-                "Configuration Error",
-                "HANDS_OFF_SECRET_PHRASE is set but empty.\n\nPlease set a valid passphrase using:\nexport HANDS_OFF_SECRET_PHRASE='your-passphrase'"
+                "Configuration Not Found",
+                &format!("Please run setup first:\n\nOpen Terminal and run:\n~/Applications/HandsOff.app/Contents/MacOS/handsoff-tray --setup\n\nOr run:\nhandsoff --setup\n\nError: {}", e)
             );
             std::process::exit(1);
         }
-        Err(_) => {
-            error!("HANDS_OFF_SECRET_PHRASE environment variable is not set");
+    };
+
+    // Decrypt passphrase
+    let passphrase = match cfg.get_passphrase() {
+        Ok(p) => {
+            info!("Configuration loaded from: {}", Config::config_path().display());
+            p
+        }
+        Err(e) => {
+            error!("Failed to decrypt passphrase: {}", e);
             show_alert(
                 "Configuration Error",
-                "HANDS_OFF_SECRET_PHRASE environment variable is not set.\n\nPlease set your passphrase using:\nexport HANDS_OFF_SECRET_PHRASE='your-passphrase'"
+                &format!("Failed to decrypt passphrase.\nYour configuration file may be corrupted.\n\nRun setup again:\n~/Applications/HandsOff.app/Contents/MacOS/handsoff-tray --setup\n\nError: {}", e)
             );
             std::process::exit(1);
         }
@@ -61,12 +147,14 @@ fn main() -> Result<()> {
     // Create HandsOffCore instance
     let mut core = HandsOffCore::new(&passphrase).context("Failed to initialize HandsOff")?;
 
-    // Configure auto-unlock timeout (from environment)
-    let auto_unlock_timeout = config::parse_auto_unlock_timeout();
+    // Configure auto-unlock timeout (precedence: env var > config file)
+    let auto_unlock_timeout = config::parse_auto_unlock_timeout()
+        .or(Some(cfg.auto_unlock_timeout));
     core.set_auto_unlock_timeout(auto_unlock_timeout);
 
-    // Configure auto-lock timeout (from environment)
-    let auto_lock_timeout = config::parse_auto_lock_timeout();
+    // Configure auto-lock timeout (precedence: env var > config file)
+    let auto_lock_timeout = config::parse_auto_lock_timeout()
+        .or(Some(cfg.auto_lock_timeout));
     core.set_auto_lock_timeout(auto_lock_timeout);
 
     // Start core components

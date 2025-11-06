@@ -2,11 +2,11 @@
 // This binary provides a terminal-based interface with argument parsing
 
 use handsoff::app_state::{AUTO_LOCK_MAX_SECONDS, AUTO_LOCK_MIN_SECONDS};
-use handsoff::{config, HandsOffCore};
+use handsoff::{config, config_file::Config, HandsOffCore};
 use anyhow::{Context, Result};
 use clap::Parser;
 use log::{error, info, warn};
-use std::env;
+use std::io::{self, Write};
 
 /// macOS utility to block unsolicited input from unwanted hands
 #[derive(Parser, Debug)]
@@ -25,19 +25,17 @@ Blocks:
  - keypress
  - mouse/trackpad clicks
 
-ENVIRONMENT VARIABLES (Required):
-  HANDS_OFF_SECRET_PHRASE    Passphrase required to unlock input when locked
-                             Example: export HANDS_OFF_SECRET_PHRASE='my-secret'
+SETUP:
+  Before using HandsOff, run the setup command to configure your passphrase:
+    handsoff --setup
 
-ENVIRONMENT VARIABLES (Optional):
-  HANDS_OFF_AUTO_LOCK        Auto-lock timeout in seconds (20-600, default: 30)
-                             Input will lock after this period of contiguous inactivity
-                             Example: export HANDS_OFF_AUTO_LOCK=60
+  This will prompt you for:
+    - Secret passphrase (typing hidden for security)
+    - Auto-lock timeout (default: 30 seconds)
+    - Auto-unlock timeout (default: 60 seconds)
 
-  HANDS_OFF_AUTO_UNLOCK      Auto-unlock timeout in seconds (60-900, or 0 to disable)
-                             Safety feature: automatically unlocks after this duration
-                             to prevent permanent lockouts
-                             Example: export HANDS_OFF_AUTO_UNLOCK=300
+  Configuration is stored encrypted at:
+    ~/Library/Application Support/handsoff/config.toml
 
 HOTKEYS:
   Ctrl+Cmd+Shift+L          Lock input (blocks all keyboard/mouse input)
@@ -50,15 +48,87 @@ struct Args {
     #[arg(short, long)]
     locked: bool,
 
-    /// Auto-lock timeout in seconds of contiguous inactivity (20-600, default: 30, overrides HANDS_OFF_AUTO_LOCK)
+    /// Auto-lock timeout in seconds of contiguous inactivity (20-600, overrides config file)
     /// NOTE: Keep range/default values in sync with AUTO_LOCK_* constants
     #[arg(long)]
     auto_lock: Option<u64>,
+
+    /// Run interactive setup to configure passphrase and timeouts
+    #[arg(long)]
+    setup: bool,
+}
+
+/// Helper function to prompt for a number with a default value
+fn prompt_number(prompt: &str, default: u64) -> Result<u64> {
+    print!("{}", prompt);
+    io::stdout().flush()?;
+
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    let input = input.trim();
+
+    if input.is_empty() {
+        Ok(default)
+    } else {
+        input.parse::<u64>()
+            .with_context(|| format!("Invalid number: {}", input))
+    }
+}
+
+/// Run interactive setup to configure passphrase and timeouts
+fn run_setup() -> Result<()> {
+    println!("HandsOff Setup");
+    println!("==============\n");
+
+    // Prompt for passphrase (non-echoing)
+    let passphrase = rpassword::prompt_password("Enter passphrase: ")
+        .context("Failed to read passphrase")?;
+
+    if passphrase.is_empty() {
+        anyhow::bail!("Error: Passphrase cannot be empty");
+    }
+
+    // Confirm passphrase
+    let confirm = rpassword::prompt_password("Confirm passphrase: ")
+        .context("Failed to read confirmation")?;
+
+    if passphrase != confirm {
+        anyhow::bail!("Error: Passphrases do not match");
+    }
+
+    // Prompt for timeouts
+    let auto_lock = prompt_number(
+        "Auto-lock timeout in seconds (default: 30): ",
+        30
+    )?;
+
+    let auto_unlock = prompt_number(
+        "Auto-unlock timeout in seconds (default: 60): ",
+        60
+    )?;
+
+    // Create and save config
+    let config = Config::new(&passphrase, auto_lock, auto_unlock)
+        .context("Failed to create configuration")?;
+
+    config.save()
+        .context("Failed to save configuration")?;
+
+    println!("\nConfiguration saved to: {}", Config::config_path().display());
+    println!("Setup complete!");
+    println!("\nYou can now run 'handsoff' to start the application.");
+
+    Ok(())
 }
 
 fn main() -> Result<()> {
     // Parse command-line arguments
     let args = Args::parse();
+
+    // Handle setup command
+    if args.setup {
+        return run_setup();
+    }
 
     // Initialize logger
     env_logger::Builder::from_default_env()
@@ -74,21 +144,26 @@ fn main() -> Result<()> {
         std::process::exit(1);
     }
 
-    // Get passphrase from environment variable
-    let passphrase = match env::var("HANDS_OFF_SECRET_PHRASE") {
-        Ok(passphrase) if !passphrase.is_empty() => {
-            info!("Using passphrase from HANDS_OFF_SECRET_PHRASE environment variable");
-            passphrase
-        }
-        Ok(_) => {
-            error!("HANDS_OFF_SECRET_PHRASE is set but empty");
-            error!("Please set a valid passphrase using: export HANDS_OFF_SECRET_PHRASE='your-passphrase'");
+    // Load configuration
+    let cfg = match Config::load() {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            error!("Failed to load configuration: {}", e);
+            error!("\nRun 'handsoff --setup' to configure the application.");
             std::process::exit(1);
         }
-        Err(_) => {
-            error!("HANDS_OFF_SECRET_PHRASE environment variable is not set");
-            error!("Please set your passphrase using: export HANDS_OFF_SECRET_PHRASE='your-passphrase'");
-            error!("This passphrase will be required to unlock HandsOff when input is locked");
+    };
+
+    // Decrypt passphrase
+    let passphrase = match cfg.get_passphrase() {
+        Ok(p) => {
+            info!("Configuration loaded from: {}", Config::config_path().display());
+            p
+        }
+        Err(e) => {
+            error!("Failed to decrypt passphrase: {}", e);
+            error!("Your configuration file may be corrupted.");
+            error!("Run 'handsoff --setup' to reconfigure.");
             std::process::exit(1);
         }
     };
@@ -96,11 +171,12 @@ fn main() -> Result<()> {
     // Create HandsOffCore instance
     let mut core = HandsOffCore::new(&passphrase).context("Failed to initialize HandsOff")?;
 
-    // Configure auto-unlock timeout (from environment)
-    let auto_unlock_timeout = config::parse_auto_unlock_timeout();
+    // Configure auto-unlock timeout (from config file, can be overridden by env var)
+    let auto_unlock_timeout = config::parse_auto_unlock_timeout()
+        .or(Some(cfg.auto_unlock_timeout));
     core.set_auto_unlock_timeout(auto_unlock_timeout);
 
-    // Configure auto-lock timeout (command-line takes precedence over environment)
+    // Configure auto-lock timeout (precedence: CLI arg > env var > config file)
     let auto_lock_timeout = match args.auto_lock {
         Some(timeout) if (AUTO_LOCK_MIN_SECONDS..=AUTO_LOCK_MAX_SECONDS).contains(&timeout) => {
             info!("Auto-lock timeout set via --auto-lock argument: {} seconds", timeout);
@@ -108,12 +184,12 @@ fn main() -> Result<()> {
         }
         Some(timeout) => {
             warn!(
-                "Invalid --auto-lock value: {} (must be {}-{} seconds). Trying environment variable.",
+                "Invalid --auto-lock value: {} (must be {}-{} seconds). Using config file or environment variable.",
                 timeout, AUTO_LOCK_MIN_SECONDS, AUTO_LOCK_MAX_SECONDS
             );
-            config::parse_auto_lock_timeout()
+            config::parse_auto_lock_timeout().or(Some(cfg.auto_lock_timeout))
         }
-        None => config::parse_auto_lock_timeout(),
+        None => config::parse_auto_lock_timeout().or(Some(cfg.auto_lock_timeout)),
     };
     core.set_auto_lock_timeout(auto_lock_timeout);
 
