@@ -117,6 +117,32 @@ jobs:
         echo "Added LSUIElement to Info.plist"
         plutil -p "$FINAL_BUNDLE_PATH/Contents/Info.plist" | grep -E "(LSUIElement|CFBundleDisplayName)"
 
+    - name: Package CLI binary
+      run: |
+        VERSION="${{ steps.version.outputs.version }}"
+        DIST_DIR="dist"
+        CLI_DIR="handsoff-cli"
+        CLI_BINARY="target/aarch64-apple-darwin/release/handsoff"
+        TARBALL="${DIST_DIR}/handsoff-cli-v${VERSION}-arm64.tar.gz"
+
+        echo "Packaging CLI binary..."
+
+        # Create staging directory
+        mkdir -p "${CLI_DIR}"
+
+        # Copy CLI binary
+        cp "${CLI_BINARY}" "${CLI_DIR}/"
+
+        # Create tarball
+        mkdir -p "${DIST_DIR}"
+        tar -czf "${TARBALL}" "${CLI_DIR}"
+
+        # Clean up staging directory
+        rm -rf "${CLI_DIR}"
+
+        echo "CLI tarball created at: ${TARBALL}"
+        ls -lh "${TARBALL}"
+
     - name: Sign app bundle
       run: |
         FINAL_BUNDLE_PATH="target/aarch64-apple-darwin/release/bundle/osx/${{ env.APP_NAME }}.app"
@@ -404,9 +430,25 @@ jobs:
 
         ### Installation
 
-        Download the PKG installer below and run it. After installation, you'll need to:
+        **Two installation options available:**
+
+        #### Option 1: Tray App (Recommended for most users)
+        Download `HandsOff-v${{ steps.version.outputs.version }}-arm64.pkg` and run the installer.
+
+        After installation:
         1. Grant Accessibility permissions in System Preferences
         2. Run the setup script: `~/Applications/HandsOff.app/Contents/MacOS/setup-launch-agent.sh`
+        3. The app will start automatically at login with your passphrase embedded in the launch agent
+
+        #### Option 2: CLI (Advanced users)
+        Download `handsoff-cli-v${{ steps.version.outputs.version }}-arm64.tar.gz` and extract it.
+
+        ```bash
+        tar -xzf handsoff-cli-v${{ steps.version.outputs.version }}-arm64.tar.gz
+        sudo mv handsoff-cli/handsoff /usr/local/bin/
+        export HANDS_OFF_SECRET_PHRASE='your-secret-passphrase'
+        handsoff
+        ```
 
         ### Requirements
         - macOS 10.11 or later
@@ -418,7 +460,7 @@ jobs:
 
         ---
 
-        **Note:** This package is built for Apple Silicon (ARM64) Macs only.
+        **Note:** Both packages are built for Apple Silicon (ARM64) Macs only.
         EOF
 
         cat release_notes.md
@@ -433,6 +475,7 @@ jobs:
         prerelease: false
         files: |
           dist/${{ env.APP_NAME }}-v${{ steps.version.outputs.version }}-arm64.pkg
+          dist/handsoff-cli-v${{ steps.version.outputs.version }}-arm64.tar.gz
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
