@@ -554,11 +554,14 @@ impl HandsOffCore {
                     else if !last_permission_state && has_permissions {
                         info!("Accessibility permissions have been restored");
 
+                        // Request automatic restart (Tray app will handle this)
+                        state.request_start_event_tap();
+
                         #[cfg(target_os = "macos")]
                         {
                             let _ = notify_rust::Notification::new()
                                 .summary("HandsOff - Permissions Restored")
-                                .body("Accessibility permissions restored.\n\nUse Reset menu to restart event tap.")
+                                .body("Accessibility permissions restored.\n\nRestarting event tap automatically...")
                                 .timeout(notify_rust::Timeout::Milliseconds(5000))
                                 .show();
                         }

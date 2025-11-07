@@ -92,11 +92,54 @@ pub fn create_event_tap(state: Arc<AppState>) -> Option<(CGEventTapRef, *mut c_v
 
 /// Callback function for the event tap
 unsafe extern "C" fn event_tap_callback(
-    _proxy: CGEventTapRef,
+    proxy: CGEventTapRef,
     event_type: u32,
     event: CGEventRef,
     user_info: *mut c_void,
 ) -> CGEventRef {
+    // Constants for special event types that indicate the tap has been disabled
+    const K_CGEVENT_TAP_DISABLED_BY_TIMEOUT: u32 = 0xFFFFFFFE;
+    const K_CGEVENT_TAP_DISABLED_BY_USER_INPUT: u32 = 0xFFFFFFFF;
+
+    // Handle event tap disabled events FIRST (before null check)
+    // These events are sent by macOS when the tap is disabled
+    if event_type == K_CGEVENT_TAP_DISABLED_BY_TIMEOUT
+        || event_type == K_CGEVENT_TAP_DISABLED_BY_USER_INPUT
+    {
+        let reason = if event_type == K_CGEVENT_TAP_DISABLED_BY_USER_INPUT {
+            "user removed accessibility permissions"
+        } else {
+            "timeout (system was too slow)"
+        };
+
+        log::warn!(
+            "Event tap disabled by macOS (0x{:X}): {}",
+            event_type,
+            reason
+        );
+
+        // Try to re-enable the tap (may fail if permissions gone)
+        // This is a no-op if permissions were removed, but helps with timeout case
+        CGEventTapEnable(proxy, true);
+
+        // Set flag to stop event tap via main loop
+        // (only if we have valid user_info)
+        if !user_info.is_null() {
+            let state = &*(user_info as *const Arc<AppState>);
+
+            // For timeout: try to continue (tap might re-enable)
+            // For user input: definitely stop (permissions gone)
+            if event_type == K_CGEVENT_TAP_DISABLED_BY_USER_INPUT {
+                state.request_stop_event_tap();
+                state.request_exit(); // Request CLI to exit (ignored by tray app)
+                log::warn!("Requested event tap stop and CLI exit due to permission loss");
+            }
+        }
+
+        // Return event unmodified (these are system events)
+        return event;
+    }
+
     // Reconstruct the state from user_info without taking ownership
     let state = &*(user_info as *const Arc<AppState>);
 

@@ -216,12 +216,49 @@ fn main() -> Result<()> {
         info!("- Press Ctrl+Cmd+Shift+L to lock input");
     }
 
-    // Run the CFRunLoop on the main thread - this is required for event tap to work!
-    info!("Starting CFRunLoop (required for event interception)...");
-    use core_foundation::runloop::CFRunLoop;
-    CFRunLoop::run_current();
+    // Run the event loop on the main thread - this is required for event tap to work!
+    info!("Starting event loop (required for event interception)...");
+    use core_foundation::runloop::{CFRunLoop, kCFRunLoopDefaultMode};
+    use std::time::Duration;
 
-    // CFRunLoop::run_current() runs indefinitely, so this is unreachable
-    #[allow(unreachable_code)]
+    // Main event loop - polls every 500ms
+    loop {
+        // Run CFRunLoop for a brief period to process events
+        unsafe {
+            CFRunLoop::run_in_mode(
+                kCFRunLoopDefaultMode,
+                Duration::from_millis(500),
+                false  // Don't return after single source handled
+            );
+        }
+
+        // Check if we should exit (permission loss detected by event tap callback)
+        if core.state.should_exit_and_clear() {
+            warn!("Accessibility permissions lost - exiting");
+            eprintln!("\nERROR: Accessibility permissions were revoked.");
+            eprintln!("HandsOff cannot function without accessibility permissions.\n");
+            eprintln!("To restore:");
+            eprintln!("1. Open System Settings > Privacy & Security > Accessibility");
+            eprintln!("2. Enable HandsOff in the list");
+            eprintln!("3. Restart HandsOff CLI\n");
+            eprintln!("Exiting...");
+
+            // Clean shutdown
+            core.stop_event_tap();
+            break;
+        }
+
+        // Check if event tap should be stopped (fallback for permission monitor detection)
+        if core.state.should_stop_event_tap_and_clear() {
+            warn!("Stopping event tap due to permission loss (detected by monitor)");
+            core.stop_event_tap();
+
+            // For CLI, if event tap stops, we should exit
+            eprintln!("\nEvent tap stopped due to permission loss. Exiting...");
+            break;
+        }
+    }
+
+    info!("CLI shutdown complete");
     Ok(())
 }

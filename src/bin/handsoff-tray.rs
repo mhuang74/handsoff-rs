@@ -255,6 +255,43 @@ fn main() -> Result<()> {
             }
         }
 
+        // Check if event tap should be started (permission restored)
+        {
+            let mut core_lock = core.lock().unwrap();
+            if core_lock.state.should_start_event_tap_and_clear() {
+                info!("Tray: Restarting event tap - permissions restored");
+                match core_lock.restart_event_tap() {
+                    Ok(()) => {
+                        info!("Tray: Event tap restarted successfully");
+
+                        #[cfg(target_os = "macos")]
+                        {
+                            let _ = notify_rust::Notification::new()
+                                .summary("HandsOff - Event Tap Restarted")
+                                .body("Event tap restarted successfully.\nHandsOff is now active.")
+                                .timeout(notify_rust::Timeout::Milliseconds(3000))
+                                .show();
+                        }
+                    }
+                    Err(e) => {
+                        warn!("Tray: Failed to restart event tap: {}", e);
+
+                        #[cfg(target_os = "macos")]
+                        {
+                            let _ = notify_rust::Notification::new()
+                                .summary("HandsOff - Restart Failed")
+                                .body(&format!(
+                                    "Failed to restart event tap: {}\n\nUse Reset menu to try again.",
+                                    e
+                                ))
+                                .timeout(notify_rust::Timeout::Milliseconds(5000))
+                                .show();
+                        }
+                    }
+                }
+            }
+        }
+
         // Periodically check permissions and update menu state
         let core_lock = core.lock().unwrap();
         let is_locked = core_lock.is_locked();
