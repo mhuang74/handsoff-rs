@@ -6,7 +6,8 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use log::{error, info, warn};
 use std::io::{self, Write};
-use std::sync::{Arc, Mutex};
+use std::rc::Rc;
+use std::cell::RefCell;
 use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::TrayIconBuilder;
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
@@ -168,8 +169,8 @@ fn main() -> Result<()> {
     // It starts when event tap is created and stops when event tap is destroyed
     // This eliminates the zombie CFRunLoop connection that caused WindowServer issues
 
-    // Wrap core in Arc<Mutex> for event loop
-    let core = Arc::new(Mutex::new(core));
+    // Wrap core in Rc<RefCell> for event loop (single-threaded)
+    let core = Rc::new(RefCell::new(core));
 
     // Create event loop for tray app
     let event_loop = EventLoopBuilder::new().build();
@@ -218,8 +219,8 @@ fn main() -> Result<()> {
         // When disabled: 5 seconds (minimal WindowServer interaction)
         // When enabled: 500ms (responsive UI updates)
         let poll_interval = {
-            let core_lock = core.lock().unwrap();
-            if core_lock.state.is_disabled() {
+            let core_borrow = core.borrow();
+            if core_borrow.state.is_disabled() {
                 std::time::Duration::from_secs(5)
             } else {
                 std::time::Duration::from_millis(500)
@@ -247,20 +248,20 @@ fn main() -> Result<()> {
 
         // Check if event tap should be stopped (due to permission loss)
         {
-            let mut core_lock = core.lock().unwrap();
-            if core_lock.state.should_stop_event_tap_and_clear() {
+            let mut core_borrow = core.borrow_mut();
+            if core_borrow.state.should_stop_event_tap_and_clear() {
                 warn!("Tray: Stopping event tap due to permission loss");
-                core_lock.stop_event_tap();
+                core_borrow.stop_event_tap();
                 info!("Tray: Event tap stopped - normal input restored");
             }
         }
 
         // Check if event tap should be started (permission restored)
         {
-            let mut core_lock = core.lock().unwrap();
-            if core_lock.state.should_start_event_tap_and_clear() {
+            let mut core_borrow = core.borrow_mut();
+            if core_borrow.state.should_start_event_tap_and_clear() {
                 info!("Tray: Restarting event tap - permissions restored");
-                match core_lock.restart_event_tap() {
+                match core_borrow.restart_event_tap() {
                     Ok(()) => {
                         info!("Tray: Event tap restarted successfully");
 
@@ -293,10 +294,10 @@ fn main() -> Result<()> {
         }
 
         // Periodically check permissions and update menu state
-        let core_lock = core.lock().unwrap();
-        let is_locked = core_lock.is_locked();
-        let is_disabled = core_lock.state.is_disabled();
-        let current_permissions = core_lock.has_accessibility_permissions();
+        let core_borrow = core.borrow();
+        let is_locked = core_borrow.is_locked();
+        let is_disabled = core_borrow.state.is_disabled();
+        let current_permissions = core_borrow.has_accessibility_permissions();
 
         // Update Lock menu item enabled state based on permissions and disabled state
         // Only enable Lock when we have permissions AND are not already locked AND not disabled
@@ -347,7 +348,7 @@ fn main() -> Result<()> {
         }
 
         // Always update tooltip (to show live countdown and permission status)
-        let tooltip = build_tooltip(&core_lock, is_locked, is_disabled, current_permissions);
+        let tooltip = build_tooltip(&core_borrow, is_locked, is_disabled, current_permissions);
         if tooltip != last_tooltip {
             if let Err(e) = tray.set_tooltip(Some(&tooltip)) {
                 error!("Failed to update tray tooltip: {}", e);
@@ -360,8 +361,8 @@ fn main() -> Result<()> {
 /// Handle lock from menu
 /// Note: This only handles locking, not unlocking. When locked, mouse clicks are blocked,
 /// so the menu is inaccessible. Users must type their passphrase to unlock (same as CLI).
-fn handle_lock_toggle(core: Arc<Mutex<HandsOffCore>>) {
-    let core = core.lock().unwrap();
+fn handle_lock_toggle(core: Rc<RefCell<HandsOffCore>>) {
+    let core = core.borrow();
 
     if core.is_locked() {
         // Menu should not be accessible when locked (mouse clicks blocked)
@@ -380,8 +381,8 @@ fn handle_lock_toggle(core: Arc<Mutex<HandsOffCore>>) {
 
 /// Handle disable from menu
 /// Disables HandsOff by stopping event tap and hotkeys for minimal CPU usage
-fn handle_disable(core: Arc<Mutex<HandsOffCore>>) {
-    let mut core = core.lock().unwrap();
+fn handle_disable(core: Rc<RefCell<HandsOffCore>>) {
+    let mut core = core.borrow_mut();
 
     if let Err(e) = core.disable() {
         error!("Error disabling: {}", e);
@@ -402,8 +403,8 @@ fn handle_disable(core: Arc<Mutex<HandsOffCore>>) {
 /// Handle reset from menu
 /// Resets the app state to default: unlocked with all timers reset
 /// If disabled, re-enables the app. Otherwise, restarts the event tap if permissions are available
-fn handle_reset(core: Arc<Mutex<HandsOffCore>>, passphrase: &str) {
-    let mut core = core.lock().unwrap();
+fn handle_reset(core: Rc<RefCell<HandsOffCore>>, passphrase: &str) {
+    let mut core = core.borrow_mut();
 
     // Check if disabled - if so, enable instead of just restarting
     let is_disabled = core.state.is_disabled();
