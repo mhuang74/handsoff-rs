@@ -65,8 +65,19 @@ cp -R "${BUNDLE_PATH}" "${PKG_ROOT}/Applications/"
 
 # Copy plist template to app bundle's Resources directory
 mkdir -p "${PKG_ROOT}/Applications/${APP_NAME}.app/Contents/Resources"
-cp "com.handsoff.inputlock.plist.template" \
-   "${PKG_ROOT}/Applications/${APP_NAME}.app/Contents/Resources/"
+if [ -f "com.handsoff.inputlock.plist.template" ]; then
+    cp "com.handsoff.inputlock.plist.template" \
+       "${PKG_ROOT}/Applications/${APP_NAME}.app/Contents/Resources/"
+    if [ -f "${PKG_ROOT}/Applications/${APP_NAME}.app/Contents/Resources/com.handsoff.inputlock.plist.template" ]; then
+        echo "✓ Plist template copied successfully"
+    else
+        echo "✗ ERROR: Failed to copy plist template"
+        exit 1
+    fi
+else
+    echo "✗ ERROR: Plist template not found in project root"
+    exit 1
+fi
 
 echo "✓ Package root prepared at ${PKG_ROOT}"
 echo ""

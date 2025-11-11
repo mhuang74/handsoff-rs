@@ -1,6 +1,19 @@
 #!/bin/bash
 # Complete uninstall script for HandsOff
 # This removes all traces of HandsOff for clean reinstallation testing
+#
+# Features:
+#   - Unregisters package from system (pkgutil --forget)
+#   - Stops and removes Launch Agent
+#   - Removes application bundle
+#   - Removes log files, preferences, and cache files
+#   - Resets Accessibility permissions
+#   - Optional advanced TCC database cleanup
+#
+# Usage:
+#   ./uninstall.sh              # Interactive mode
+#   ./uninstall.sh --force      # Skip all prompts (for automated scripts)
+#   ./uninstall.sh --skip-advanced  # Skip advanced TCC cleanup
 
 set -e
 
@@ -11,6 +24,32 @@ LAUNCH_AGENT_PLIST="${HOME}/Library/LaunchAgents/${BUNDLE_ID}.plist"
 LOG_FILE="${HOME}/Library/Logs/${APP_NAME}.log"
 ERROR_LOG_FILE="${HOME}/Library/Logs/${APP_NAME}.error.log"
 
+# Parse command line arguments
+FORCE_MODE=0
+SKIP_ADVANCED=0
+for arg in "$@"; do
+    case $arg in
+        -f|--force)
+            FORCE_MODE=1
+            shift
+            ;;
+        --skip-advanced)
+            SKIP_ADVANCED=1
+            shift
+            ;;
+        -h|--help)
+            echo "Usage: $0 [OPTIONS]"
+            echo ""
+            echo "Options:"
+            echo "  -f, --force         Skip confirmation prompts (for automated uninstall)"
+            echo "  --skip-advanced     Skip advanced TCC cleanup (for quick uninstall)"
+            echo "  -h, --help          Show this help message"
+            echo ""
+            exit 0
+            ;;
+    esac
+done
+
 echo ""
 echo "========================================"
 echo "  HandsOff Complete Uninstall"
@@ -18,21 +57,53 @@ echo "========================================"
 echo ""
 echo "This script will completely remove HandsOff from your system:"
 echo ""
+echo "  • Unregister package from system (pkgutil)"
 echo "  • Stop and remove Launch Agent"
 echo "  • Remove application from ~/Applications"
 echo "  • Remove log files"
 echo "  • Reset Accessibility permissions"
 echo ""
 
-# Confirm before proceeding
-read -p "Do you want to completely uninstall HandsOff? (y/N): " -r
-echo ""
-if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-    echo "Cancelled."
-    exit 0
+# Confirm before proceeding (unless force mode)
+if [ $FORCE_MODE -eq 0 ]; then
+    read -p "Do you want to completely uninstall HandsOff? (y/N): " -r
+    echo ""
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        echo "Cancelled."
+        exit 0
+    fi
 fi
 
 echo "Starting uninstall..."
+echo ""
+
+# Step 0: Unregister package from system
+echo "Step 0: Unregistering package from system..."
+if pkgutil --pkgs | grep -q "^${BUNDLE_ID}$" 2>/dev/null; then
+    echo "  - Found registered package: ${BUNDLE_ID}"
+
+    # Check installed version
+    INSTALLED_VERSION=$(pkgutil --pkg-info "${BUNDLE_ID}" 2>/dev/null | grep "^version:" | awk '{print $2}')
+    if [ -n "${INSTALLED_VERSION}" ]; then
+        echo "  - Installed version: ${INSTALLED_VERSION}"
+    fi
+
+    # Try to forget the package
+    if sudo -n pkgutil --forget "${BUNDLE_ID}" 2>/dev/null; then
+        echo "  ✓ Package unregistered successfully"
+    else
+        echo "  - Attempting to forget package (may require password)..."
+        if sudo pkgutil --forget "${BUNDLE_ID}" 2>&1 | grep -q "Forgot package"; then
+            echo "  ✓ Package unregistered successfully"
+        else
+            echo "  ⚠️  Warning: Could not unregister package"
+            echo "     This may cause issues during reinstallation"
+            echo "     Try manually: sudo pkgutil --forget ${BUNDLE_ID}"
+        fi
+    fi
+else
+    echo "  - No registered package found (already removed or never installed via pkg)"
+fi
 echo ""
 
 # Step 1: Stop and unload Launch Agent
@@ -104,6 +175,39 @@ if [ $LOGS_REMOVED -eq 0 ]; then
 fi
 echo ""
 
+# Step 4b: Remove preferences and cache files
+echo "Step 4b: Removing preferences and cache files..."
+PREFS_REMOVED=0
+
+# Check for preference files
+PREF_FILE="${HOME}/Library/Preferences/${BUNDLE_ID}.plist"
+if [ -f "${PREF_FILE}" ]; then
+    rm -f "${PREF_FILE}"
+    echo "  ✓ Removed preference file"
+    PREFS_REMOVED=1
+fi
+
+# Check for Application Support directory
+APP_SUPPORT_DIR="${HOME}/Library/Application Support/HandsOff"
+if [ -d "${APP_SUPPORT_DIR}" ]; then
+    rm -rf "${APP_SUPPORT_DIR}"
+    echo "  ✓ Removed Application Support directory"
+    PREFS_REMOVED=1
+fi
+
+# Check for cache directory
+CACHE_DIR="${HOME}/Library/Caches/${BUNDLE_ID}"
+if [ -d "${CACHE_DIR}" ]; then
+    rm -rf "${CACHE_DIR}"
+    echo "  ✓ Removed cache directory"
+    PREFS_REMOVED=1
+fi
+
+if [ $PREFS_REMOVED -eq 0 ]; then
+    echo "  - No preference or cache files found"
+fi
+echo ""
+
 # Step 5: Reset Accessibility permissions
 echo "Step 5: Resetting Accessibility permissions..."
 echo ""
@@ -148,16 +252,34 @@ echo ""
 # Step 6: Advanced cleanup options
 echo "Step 6: Advanced cleanup (optional)..."
 echo ""
-echo "  ⚠️  WARNING: This requires either:"
-echo "     1. SIP (System Integrity Protection) disabled, OR"
-echo "     2. Terminal has Full Disk Access permission"
-echo ""
-echo "  Disabling SIP reduces system security."
-echo "  This is intended for development/testing only."
-echo ""
-read -p "Do you want to try advanced TCC database cleanup? (y/N): " -r
-echo ""
-if [[ $REPLY =~ ^[Yy]$ ]]; then
+
+# Skip advanced cleanup if flag is set
+if [ $SKIP_ADVANCED -eq 1 ]; then
+    echo "  - Skipping advanced TCC cleanup (--skip-advanced flag set)"
+    echo ""
+else
+    echo "  ⚠️  WARNING: This requires either:"
+    echo "     1. SIP (System Integrity Protection) disabled, OR"
+    echo "     2. Terminal has Full Disk Access permission"
+    echo ""
+    echo "  Disabling SIP reduces system security."
+    echo "  This is intended for development/testing only."
+    echo ""
+
+    # Skip prompt if in force mode
+    DO_ADVANCED=0
+    if [ $FORCE_MODE -eq 1 ]; then
+        echo "  - Skipping advanced TCC cleanup (force mode)"
+        echo ""
+    else
+        read -p "Do you want to try advanced TCC database cleanup? (y/N): " -r
+        echo ""
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            DO_ADVANCED=1
+        fi
+    fi
+
+    if [ $DO_ADVANCED -eq 1 ]; then
     echo "  Attempting TCC database cleanup..."
     echo ""
 
@@ -181,6 +303,7 @@ if [[ $REPLY =~ ^[Yy]$ ]]; then
         fi
     fi
     echo ""
+    fi
 fi
 
 echo ""
@@ -190,11 +313,17 @@ echo "========================================"
 echo ""
 echo "HandsOff has been completely removed from your system."
 echo ""
-echo "To reinstall:"
-echo "  1. Build a new package: make pkg"
-echo "  2. Install: open dist/HandsOff-v*.pkg"
-echo "  3. Grant Accessibility permissions in System Preferences"
-echo "  4. Run setup: ~/Applications/HandsOff.app/Contents/MacOS/setup-launch-agent.sh"
+
+if [ $FORCE_MODE -eq 1 ]; then
+    echo "Uninstall completed in force mode (no prompts)."
+    echo "System is now ready for clean reinstallation."
+else
+    echo "To reinstall:"
+    echo "  1. Build a new package: make pkg"
+    echo "  2. Install: installer -pkg dist/HandsOff-v*.pkg -target CurrentUserHomeDirectory"
+    echo "  3. Grant Accessibility permissions in System Preferences"
+    echo "  4. Run setup: ~/Applications/HandsOff.app/Contents/MacOS/handsoff-tray --setup"
+fi
 echo ""
 
 exit 0

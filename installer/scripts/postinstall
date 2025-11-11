@@ -14,6 +14,14 @@ PLIST_TEMPLATE="${APP_PATH}/Contents/Resources/com.handsoff.inputlock.plist.temp
 echo "HandsOff PostInstall Script"
 echo "============================"
 echo ""
+echo "DEBUG: HOME=${HOME}"
+echo "DEBUG: APP_PATH=${APP_PATH}"
+echo "DEBUG: PLIST_TEMPLATE=${PLIST_TEMPLATE}"
+echo "DEBUG: Checking if app exists..."
+ls -la "${APP_PATH}" 2>&1 | head -5
+echo "DEBUG: Checking if Resources exists..."
+ls -la "${APP_PATH}/Contents/Resources" 2>&1 | head -10
+echo ""
 
 # Create LaunchAgents directory if it doesn't exist
 mkdir -p "${LAUNCH_AGENT_DIR}"
@@ -26,15 +34,26 @@ if [ -f "${LAUNCH_AGENT_PLIST}" ]; then
 fi
 
 # Copy template and substitute HOME path
-if [ -f "${PLIST_TEMPLATE}" ]; then
-    sed "s|HOME_PLACEHOLDER|${HOME}|g" "${PLIST_TEMPLATE}" > "${LAUNCH_AGENT_PLIST}"
-    chmod 644 "${LAUNCH_AGENT_PLIST}"
-    echo "✓ Launch Agent plist created"
-else
-    echo "⚠️  Warning: Plist template not found at ${PLIST_TEMPLATE}"
-    echo "   Launch Agent not configured."
-    exit 1
-fi
+# Try a few times in case of timing issues with atomic file operations
+for i in 1 2 3 4 5; do
+    if [ -f "${PLIST_TEMPLATE}" ]; then
+        sed "s|HOME_PLACEHOLDER|${HOME}|g" "${PLIST_TEMPLATE}" > "${LAUNCH_AGENT_PLIST}"
+        chmod 644 "${LAUNCH_AGENT_PLIST}"
+        echo "✓ Launch Agent plist created"
+        break
+    else
+        if [ $i -lt 5 ]; then
+            echo "Waiting for app files to be available... (attempt $i/5)"
+            sleep 1
+        else
+            echo "⚠️  Warning: Plist template not found at ${PLIST_TEMPLATE}"
+            echo "   Launch Agent not configured."
+            echo "   You can run this manually later:"
+            echo "   ~/Applications/HandsOff.app/Contents/MacOS/setup-launch-agent.sh"
+            exit 0
+        fi
+    fi
+done
 
 # Load the launch agent
 if launchctl load "${LAUNCH_AGENT_PLIST}" 2>/dev/null; then
