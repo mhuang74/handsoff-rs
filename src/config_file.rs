@@ -77,8 +77,7 @@ impl Config {
         // Check file permissions (warning if too permissive)
         #[cfg(unix)]
         {
-            let metadata = fs::metadata(&path)
-                .context("Failed to read config file metadata")?;
+            let metadata = fs::metadata(&path).context("Failed to read config file metadata")?;
             let permissions = metadata.permissions();
             let mode = permissions.mode();
 
@@ -95,8 +94,7 @@ impl Config {
         let contents = fs::read_to_string(&path)
             .with_context(|| format!("Failed to read config file: {}", path.display()))?;
 
-        let config: Config = toml::from_str(&contents)
-            .context("Failed to parse config file")?;
+        let config: Config = toml::from_str(&contents).context("Failed to parse config file")?;
 
         Ok(config)
     }
@@ -110,13 +108,11 @@ impl Config {
 
         // Create config directory if it doesn't exist
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .context("Failed to create config directory")?;
+            fs::create_dir_all(parent).context("Failed to create config directory")?;
         }
 
         // Serialize to TOML
-        let contents = toml::to_string_pretty(self)
-            .context("Failed to serialize config")?;
+        let contents = toml::to_string_pretty(self).context("Failed to serialize config")?;
 
         // Write to file
         fs::write(&path, contents)
@@ -154,8 +150,7 @@ mod tests {
 
     #[test]
     fn test_config_new() {
-        let config = Config::new("test_passphrase", 30, 60)
-            .expect("Failed to create config");
+        let config = Config::new("test_passphrase", 30, 60).expect("Failed to create config");
 
         assert_eq!(config.auto_lock_timeout, 30);
         assert_eq!(config.auto_unlock_timeout, 60);
@@ -165,11 +160,9 @@ mod tests {
     #[test]
     fn test_config_get_passphrase() {
         let original = "my_secret_password";
-        let config = Config::new(original, 30, 60)
-            .expect("Failed to create config");
+        let config = Config::new(original, 30, 60).expect("Failed to create config");
 
-        let decrypted = config.get_passphrase()
-            .expect("Failed to get passphrase");
+        let decrypted = config.get_passphrase().expect("Failed to get passphrase");
 
         assert_eq!(original, decrypted);
     }
@@ -186,21 +179,27 @@ mod tests {
         };
 
         // Save to temp file
-        let contents = toml::to_string_pretty(&original_config)
-            .expect("Failed to serialize");
-        fs::write(&temp_path, contents)
-            .expect("Failed to write temp config");
+        let contents = toml::to_string_pretty(&original_config).expect("Failed to serialize");
+        fs::write(&temp_path, contents).expect("Failed to write temp config");
 
         // Load from temp file
-        let loaded_contents = fs::read_to_string(&temp_path)
-            .expect("Failed to read temp config");
-        let loaded_config: Config = toml::from_str(&loaded_contents)
-            .expect("Failed to parse config");
+        let loaded_contents = fs::read_to_string(&temp_path).expect("Failed to read temp config");
+        let loaded_config: Config =
+            toml::from_str(&loaded_contents).expect("Failed to parse config");
 
         // Verify
-        assert_eq!(original_config.encrypted_passphrase, loaded_config.encrypted_passphrase);
-        assert_eq!(original_config.auto_lock_timeout, loaded_config.auto_lock_timeout);
-        assert_eq!(original_config.auto_unlock_timeout, loaded_config.auto_unlock_timeout);
+        assert_eq!(
+            original_config.encrypted_passphrase,
+            loaded_config.encrypted_passphrase
+        );
+        assert_eq!(
+            original_config.auto_lock_timeout,
+            loaded_config.auto_lock_timeout
+        );
+        assert_eq!(
+            original_config.auto_unlock_timeout,
+            loaded_config.auto_unlock_timeout
+        );
 
         // Cleanup
         fs::remove_file(temp_path).ok();
@@ -251,7 +250,10 @@ mod tests {
         let encrypted2 = config2.encrypted_passphrase.clone();
 
         // The encrypted values will be different (random nonces) but both should decrypt to same value
-        assert_ne!(encrypted1, encrypted2, "Encrypted values should differ due to random nonces");
+        assert_ne!(
+            encrypted1, encrypted2,
+            "Encrypted values should differ due to random nonces"
+        );
 
         let decrypted1 = config1.get_passphrase().expect("Failed to decrypt 1");
         let decrypted2 = config2.get_passphrase().expect("Failed to decrypt 2");

@@ -92,8 +92,7 @@ pub fn decrypt_passphrase(encrypted: &str) -> Result<String> {
 
     // Extract nonce (first 12 bytes) and ciphertext (rest)
     let (nonce_bytes, ciphertext) = data.split_at(12);
-    let nonce_array: [u8; 12] = nonce_bytes.try_into()
-        .context("Invalid nonce length")?;
+    let nonce_array: [u8; 12] = nonce_bytes.try_into().context("Invalid nonce length")?;
     let nonce = &nonce_array.into();
 
     // Decrypt
@@ -104,8 +103,7 @@ pub fn decrypt_passphrase(encrypted: &str) -> Result<String> {
         .map_err(|e| anyhow::anyhow!("Decryption failed: {}", e))?;
 
     // Convert to string
-    String::from_utf8(plaintext)
-        .context("Invalid UTF-8 in decrypted data")
+    String::from_utf8(plaintext).context("Invalid UTF-8 in decrypted data")
 }
 
 #[cfg(test)]

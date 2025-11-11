@@ -1,10 +1,10 @@
 // HandsOff CLI - Command-line interface for input blocking utility
 // This binary provides a terminal-based interface with argument parsing
 
-use handsoff::app_state::{AUTO_LOCK_MAX_SECONDS, AUTO_LOCK_MIN_SECONDS};
-use handsoff::{config, config_file::Config, HandsOffCore};
 use anyhow::{Context, Result};
 use clap::Parser;
+use handsoff::app_state::{AUTO_LOCK_MAX_SECONDS, AUTO_LOCK_MIN_SECONDS};
+use handsoff::{config, config_file::Config, HandsOffCore};
 use log::{error, info, warn};
 use std::io::{self, Write};
 
@@ -70,7 +70,8 @@ fn prompt_number(prompt: &str, default: u64) -> Result<u64> {
     if input.is_empty() {
         Ok(default)
     } else {
-        input.parse::<u64>()
+        input
+            .parse::<u64>()
             .with_context(|| format!("Invalid number: {}", input))
     }
 }
@@ -81,8 +82,8 @@ fn run_setup() -> Result<()> {
     println!("==============\n");
 
     // Prompt for passphrase (non-echoing)
-    let passphrase = rpassword::prompt_password("Enter passphrase: ")
-        .context("Failed to read passphrase")?;
+    let passphrase =
+        rpassword::prompt_password("Enter passphrase: ").context("Failed to read passphrase")?;
 
     if passphrase.is_empty() {
         anyhow::bail!("Error: Passphrase cannot be empty");
@@ -97,24 +98,20 @@ fn run_setup() -> Result<()> {
     }
 
     // Prompt for timeouts
-    let auto_lock = prompt_number(
-        "Auto-lock timeout in seconds (default: 30): ",
-        30
-    )?;
+    let auto_lock = prompt_number("Auto-lock timeout in seconds (default: 30): ", 30)?;
 
-    let auto_unlock = prompt_number(
-        "Auto-unlock timeout in seconds (default: 60): ",
-        60
-    )?;
+    let auto_unlock = prompt_number("Auto-unlock timeout in seconds (default: 60): ", 60)?;
 
     // Create and save config
     let config = Config::new(&passphrase, auto_lock, auto_unlock)
         .context("Failed to create configuration")?;
 
-    config.save()
-        .context("Failed to save configuration")?;
+    config.save().context("Failed to save configuration")?;
 
-    println!("\nConfiguration saved to: {}", Config::config_path().display());
+    println!(
+        "\nConfiguration saved to: {}",
+        Config::config_path().display()
+    );
     println!("Setup complete!");
     println!("\nYou can now run 'handsoff' to start the application.");
 
@@ -157,7 +154,10 @@ fn main() -> Result<()> {
     // Decrypt passphrase
     let passphrase = match cfg.get_passphrase() {
         Ok(p) => {
-            info!("Configuration loaded from: {}", Config::config_path().display());
+            info!(
+                "Configuration loaded from: {}",
+                Config::config_path().display()
+            );
             p
         }
         Err(e) => {
@@ -172,14 +172,16 @@ fn main() -> Result<()> {
     let mut core = HandsOffCore::new(&passphrase).context("Failed to initialize HandsOff")?;
 
     // Configure auto-unlock timeout (from config file, can be overridden by env var)
-    let auto_unlock_timeout = config::parse_auto_unlock_timeout()
-        .or(Some(cfg.auto_unlock_timeout));
+    let auto_unlock_timeout = config::parse_auto_unlock_timeout().or(Some(cfg.auto_unlock_timeout));
     core.set_auto_unlock_timeout(auto_unlock_timeout);
 
     // Configure auto-lock timeout (precedence: CLI arg > env var > config file)
     let auto_lock_timeout = match args.auto_lock {
         Some(timeout) if (AUTO_LOCK_MIN_SECONDS..=AUTO_LOCK_MAX_SECONDS).contains(&timeout) => {
-            info!("Auto-lock timeout set via --auto-lock argument: {} seconds", timeout);
+            info!(
+                "Auto-lock timeout set via --auto-lock argument: {} seconds",
+                timeout
+            );
             Some(timeout)
         }
         Some(timeout) => {
@@ -202,9 +204,11 @@ fn main() -> Result<()> {
     }
 
     // Start core components
-    core.start_event_tap().context("Failed to start event tap")?;
+    core.start_event_tap()
+        .context("Failed to start event tap")?;
     core.start_hotkeys().context("Failed to start hotkeys")?;
-    core.start_background_threads().context("Failed to start background threads")?;
+    core.start_background_threads()
+        .context("Failed to start background threads")?;
 
     // Display status and instructions
     info!("HandsOff is running - press Ctrl+C to quit");
@@ -218,7 +222,7 @@ fn main() -> Result<()> {
 
     // Run the event loop on the main thread - this is required for event tap to work!
     info!("Starting event loop (required for event interception)...");
-    use core_foundation::runloop::{CFRunLoop, kCFRunLoopDefaultMode};
+    use core_foundation::runloop::{kCFRunLoopDefaultMode, CFRunLoop};
     use std::time::Duration;
 
     // Main event loop - polls every 500ms
@@ -228,7 +232,7 @@ fn main() -> Result<()> {
             CFRunLoop::run_in_mode(
                 kCFRunLoopDefaultMode,
                 Duration::from_millis(500),
-                false  // Don't return after single source handled
+                false, // Don't return after single source handled
             );
         }
 

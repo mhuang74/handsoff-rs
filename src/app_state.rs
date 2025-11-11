@@ -203,7 +203,6 @@ impl AppState {
             state.is_locked = false;
             state.lock_start_time = None;
             state.input_buffer.clear();
-
         }
     }
 

@@ -154,7 +154,7 @@ impl HandsOffCore {
 
         let handle = thread::spawn(move || {
             info!("CFRunLoop thread started");
-            use core_foundation::runloop::{CFRunLoop, CFRunLoopRunResult, kCFRunLoopDefaultMode};
+            use core_foundation::runloop::{kCFRunLoopDefaultMode, CFRunLoop, CFRunLoopRunResult};
 
             loop {
                 // Run the loop for 0.5 seconds, then check for shutdown
@@ -208,9 +208,7 @@ impl HandsOffCore {
 
         let (tap, state_ptr) = event_tap::create_event_tap(self.state.clone())
             .context("Failed to create event tap")?;
-        let source = unsafe {
-            event_tap::enable_event_tap(tap)
-        };
+        let source = unsafe { event_tap::enable_event_tap(tap) };
         self.event_tap = Some(tap);
         self.run_loop_source = Some(source);
         self.event_tap_state_ptr = Some(state_ptr);
@@ -277,7 +275,9 @@ impl HandsOffCore {
 
         // Unregister hotkeys
         if let Some(ref mut manager) = self.hotkey_manager {
-            manager.unregister_all().context("Failed to unregister hotkeys")?;
+            manager
+                .unregister_all()
+                .context("Failed to unregister hotkeys")?;
         }
 
         // Clear input buffer for clean state
@@ -296,7 +296,8 @@ impl HandsOffCore {
         self.state.update_input_time();
 
         // Restart event tap (checks permissions internally)
-        self.restart_event_tap().context("Failed to restart event tap")?;
+        self.restart_event_tap()
+            .context("Failed to restart event tap")?;
 
         // Re-register hotkeys
         self.start_hotkeys()?;
@@ -310,7 +311,6 @@ impl HandsOffCore {
 
     /// Start the hotkey manager
     pub fn start_hotkeys(&mut self) -> Result<()> {
-
         if self.hotkey_manager.is_none() {
             let new_mgr = HotkeyManager::new().context("Failed to create hotkey manager")?;
             info!("Instantiated new hotkey manager");
