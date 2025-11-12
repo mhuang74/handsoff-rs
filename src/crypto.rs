@@ -5,7 +5,7 @@
 
 use aes_gcm::{
     aead::{Aead, KeyInit},
-    Aes256Gcm, Nonce,
+    Aes256Gcm,
 };
 use anyhow::{Context, Result};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
@@ -48,7 +48,7 @@ pub fn encrypt_passphrase(plaintext: &str) -> Result<String> {
     let mut nonce_bytes = [0u8; 12];
     getrandom::getrandom(&mut nonce_bytes)
         .map_err(|e| anyhow::anyhow!("Failed to generate random nonce: {:?}", e))?;
-    let nonce = Nonce::from_slice(&nonce_bytes);
+    let nonce = &nonce_bytes.into();
 
     // Encrypt (ciphertext includes authentication tag)
     let ciphertext = cipher
@@ -92,7 +92,8 @@ pub fn decrypt_passphrase(encrypted: &str) -> Result<String> {
 
     // Extract nonce (first 12 bytes) and ciphertext (rest)
     let (nonce_bytes, ciphertext) = data.split_at(12);
-    let nonce = Nonce::from_slice(nonce_bytes);
+    let nonce_array: [u8; 12] = nonce_bytes.try_into().context("Invalid nonce length")?;
+    let nonce = &nonce_array.into();
 
     // Decrypt
     let key = derive_key();
@@ -102,8 +103,7 @@ pub fn decrypt_passphrase(encrypted: &str) -> Result<String> {
         .map_err(|e| anyhow::anyhow!("Decryption failed: {}", e))?;
 
     // Convert to string
-    String::from_utf8(plaintext)
-        .context("Invalid UTF-8 in decrypted data")
+    String::from_utf8(plaintext).context("Invalid UTF-8 in decrypted data")
 }
 
 #[cfg(test)]
@@ -171,7 +171,7 @@ mod tests {
     #[test]
     fn test_too_short_data() {
         // Create valid base64 but with data < 12 bytes
-        let short_data = BASE64.encode(&[1u8, 2, 3, 4, 5]);
+        let short_data = BASE64.encode([1u8, 2, 3, 4, 5]);
         let result = decrypt_passphrase(&short_data);
         assert!(result.is_err(), "Data < 12 bytes should fail");
     }

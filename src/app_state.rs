@@ -42,6 +42,10 @@ pub struct AppStateInner {
     pub has_accessibility_permissions: bool,
     /// Flag to signal that event tap should be stopped (set by permission monitor)
     pub should_stop_event_tap: bool,
+    /// Flag to signal that event tap should be started (set by permission monitor on restoration)
+    pub should_start_event_tap: bool,
+    /// Flag to signal that app should exit (CLI only - set by event tap callback on permission loss)
+    pub should_exit: bool,
     /// Whether the app is currently disabled (minimal CPU mode)
     pub is_disabled: bool,
 }
@@ -62,6 +66,8 @@ impl AppState {
                 auto_unlock_timeout: None,
                 has_accessibility_permissions: false,
                 should_stop_event_tap: false,
+                should_start_event_tap: false,
+                should_exit: false,
                 is_disabled: false,
             })),
         }
@@ -133,7 +139,11 @@ impl AppState {
 
     pub fn should_auto_lock(&self) -> bool {
         let state = self.inner.lock();
-        !state.is_locked && state.last_input_time.elapsed().as_secs() >= state.auto_lock_timeout
+        // Only auto-lock if: not locked, timeout exceeded, AND permissions are available
+        // This prevents auto-lock from triggering when permissions are lost
+        !state.is_locked
+            && state.last_input_time.elapsed().as_secs() >= state.auto_lock_timeout
+            && state.has_accessibility_permissions
     }
 
     pub fn get_auto_lock_remaining_secs(&self) -> Option<u64> {
@@ -197,7 +207,6 @@ impl AppState {
             state.is_locked = false;
             state.lock_start_time = None;
             state.input_buffer.clear();
-
         }
     }
 
@@ -249,6 +258,32 @@ impl AppState {
         let should_stop = state.should_stop_event_tap;
         state.should_stop_event_tap = false;
         should_stop
+    }
+
+    /// Request event tap to be started (called by permission monitor when permissions restored)
+    pub fn request_start_event_tap(&self) {
+        self.inner.lock().should_start_event_tap = true;
+    }
+
+    /// Check if event tap should be started and clear the flag
+    pub fn should_start_event_tap_and_clear(&self) -> bool {
+        let mut state = self.inner.lock();
+        let should_start = state.should_start_event_tap;
+        state.should_start_event_tap = false;
+        should_start
+    }
+
+    /// Request that the application exit (CLI only)
+    pub fn request_exit(&self) {
+        self.inner.lock().should_exit = true;
+    }
+
+    /// Check if app should exit and clear the flag
+    pub fn should_exit_and_clear(&self) -> bool {
+        let mut state = self.inner.lock();
+        let should_exit = state.should_exit;
+        state.should_exit = false;
+        should_exit
     }
 
     /// Check if the app is currently disabled

@@ -9,8 +9,7 @@
 //! - HANDS_OFF_AUTO_UNLOCK: Override auto-unlock timeout from config file
 
 use crate::app_state::{
-    AUTO_LOCK_MAX_SECONDS, AUTO_LOCK_MIN_SECONDS, AUTO_UNLOCK_MAX_SECONDS,
-    AUTO_UNLOCK_MIN_SECONDS,
+    AUTO_LOCK_MAX_SECONDS, AUTO_LOCK_MIN_SECONDS, AUTO_UNLOCK_MAX_SECONDS, AUTO_UNLOCK_MIN_SECONDS,
 };
 use log::{debug, info, warn};
 use std::env;
@@ -321,11 +320,7 @@ mod tests {
     fn test_parse_auto_lock_boundary_cases() {
         // Test just below minimum
         env::set_var("HANDS_OFF_AUTO_LOCK", "19");
-        assert_eq!(
-            parse_auto_lock_timeout(),
-            None,
-            "Should reject 19 seconds"
-        );
+        assert_eq!(parse_auto_lock_timeout(), None, "Should reject 19 seconds");
 
         // Test at minimum boundary
         env::set_var("HANDS_OFF_AUTO_LOCK", "20");
@@ -345,11 +340,7 @@ mod tests {
 
         // Test just above maximum
         env::set_var("HANDS_OFF_AUTO_LOCK", "601");
-        assert_eq!(
-            parse_auto_lock_timeout(),
-            None,
-            "Should reject 601 seconds"
-        );
+        assert_eq!(parse_auto_lock_timeout(), None, "Should reject 601 seconds");
 
         // Clean up
         env::remove_var("HANDS_OFF_AUTO_LOCK");

@@ -7,7 +7,7 @@ use crate::crypto;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -66,7 +66,21 @@ impl Config {
     /// - File permissions are too permissive (warning only)
     pub fn load() -> Result<Self> {
         let path = Self::config_path();
+        Self::load_from_path(&path)
+    }
 
+    /// Load config from a specific path
+    ///
+    /// This is primarily intended for testing and advanced scenarios.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Config file doesn't exist
+    /// - Failed to read file
+    /// - TOML parsing fails
+    /// - File permissions are too permissive (warning only)
+    pub fn load_from_path(path: &Path) -> Result<Self> {
         if !path.exists() {
             anyhow::bail!(
                 "Configuration file not found at: {}\n\nRun 'handsoff --setup' to create it.",
@@ -77,8 +91,7 @@ impl Config {
         // Check file permissions (warning if too permissive)
         #[cfg(unix)]
         {
-            let metadata = fs::metadata(&path)
-                .context("Failed to read config file metadata")?;
+            let metadata = fs::metadata(path).context("Failed to read config file metadata")?;
             let permissions = metadata.permissions();
             let mode = permissions.mode();
 
@@ -92,11 +105,10 @@ impl Config {
         }
 
         // Read and parse config file
-        let contents = fs::read_to_string(&path)
+        let contents = fs::read_to_string(path)
             .with_context(|| format!("Failed to read config file: {}", path.display()))?;
 
-        let config: Config = toml::from_str(&contents)
-            .context("Failed to parse config file")?;
+        let config: Config = toml::from_str(&contents).context("Failed to parse config file")?;
 
         Ok(config)
     }
@@ -110,13 +122,11 @@ impl Config {
 
         // Create config directory if it doesn't exist
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .context("Failed to create config directory")?;
+            fs::create_dir_all(parent).context("Failed to create config directory")?;
         }
 
         // Serialize to TOML
-        let contents = toml::to_string_pretty(self)
-            .context("Failed to serialize config")?;
+        let contents = toml::to_string_pretty(self).context("Failed to serialize config")?;
 
         // Write to file
         fs::write(&path, contents)
@@ -146,16 +156,41 @@ impl Config {
 mod tests {
     use super::*;
     use std::fs;
+    use std::path::Path;
 
     fn temp_config_path() -> PathBuf {
-        let temp_dir = std::env::temp_dir();
-        temp_dir.join(format!("handsoff_test_{}.toml", std::process::id()))
+        // Use a unique, per-test path to prevent interference between tests,
+        // even when they run in parallel within the same process.
+        //
+        // Strategy:
+        // - Base: system temp dir
+        // - Subdir: "handsoff_tests/config_file"
+        // - Unique segment: high-resolution timestamp + thread ID
+        //
+        // This ensures each call gets its own directory/file instead of sharing
+        // a single path based only on PID.
+        use std::thread;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let mut base = std::env::temp_dir();
+        base.push("handsoff_tests");
+        base.push("config_file");
+
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let tid = format!("{:?}", thread::current().id());
+        base.push(format!("t_{nanos}_{tid}"));
+
+        let _ = fs::create_dir_all(&base);
+
+        base.join("config.toml")
     }
 
     #[test]
     fn test_config_new() {
-        let config = Config::new("test_passphrase", 30, 60)
-            .expect("Failed to create config");
+        let config = Config::new("test_passphrase", 30, 60).expect("Failed to create config");
 
         assert_eq!(config.auto_lock_timeout, 30);
         assert_eq!(config.auto_unlock_timeout, 60);
@@ -165,11 +200,9 @@ mod tests {
     #[test]
     fn test_config_get_passphrase() {
         let original = "my_secret_password";
-        let config = Config::new(original, 30, 60)
-            .expect("Failed to create config");
+        let config = Config::new(original, 30, 60).expect("Failed to create config");
 
-        let decrypted = config.get_passphrase()
-            .expect("Failed to get passphrase");
+        let decrypted = config.get_passphrase().expect("Failed to get passphrase");
 
         assert_eq!(original, decrypted);
     }
@@ -178,6 +211,9 @@ mod tests {
     fn test_config_save_load_roundtrip() {
         let temp_path = temp_config_path();
 
+        // Ensure clean slate
+        let _ = fs::remove_file(&temp_path);
+
         // Create config
         let original_config = Config {
             encrypted_passphrase: "test_encrypted_data".to_string(),
@@ -185,22 +221,26 @@ mod tests {
             auto_unlock_timeout: 120,
         };
 
-        // Save to temp file
-        let contents = toml::to_string_pretty(&original_config)
-            .expect("Failed to serialize");
-        fs::write(&temp_path, contents)
-            .expect("Failed to write temp config");
+        // Write to temp file
+        let contents = toml::to_string_pretty(&original_config).expect("Failed to serialize");
+        fs::write(&temp_path, contents).expect("Failed to write temp config");
 
-        // Load from temp file
-        let loaded_contents = fs::read_to_string(&temp_path)
-            .expect("Failed to read temp config");
-        let loaded_config: Config = toml::from_str(&loaded_contents)
-            .expect("Failed to parse config");
+        // Use the same logic as production via load_from_path
+        let loaded_config = Config::load_from_path(&temp_path).expect("Failed to load temp config");
 
         // Verify
-        assert_eq!(original_config.encrypted_passphrase, loaded_config.encrypted_passphrase);
-        assert_eq!(original_config.auto_lock_timeout, loaded_config.auto_lock_timeout);
-        assert_eq!(original_config.auto_unlock_timeout, loaded_config.auto_unlock_timeout);
+        assert_eq!(
+            original_config.encrypted_passphrase,
+            loaded_config.encrypted_passphrase
+        );
+        assert_eq!(
+            original_config.auto_lock_timeout,
+            loaded_config.auto_lock_timeout
+        );
+        assert_eq!(
+            original_config.auto_unlock_timeout,
+            loaded_config.auto_unlock_timeout
+        );
 
         // Cleanup
         fs::remove_file(temp_path).ok();
@@ -251,7 +291,10 @@ mod tests {
         let encrypted2 = config2.encrypted_passphrase.clone();
 
         // The encrypted values will be different (random nonces) but both should decrypt to same value
-        assert_ne!(encrypted1, encrypted2, "Encrypted values should differ due to random nonces");
+        assert_ne!(
+            encrypted1, encrypted2,
+            "Encrypted values should differ due to random nonces"
+        );
 
         let decrypted1 = config1.get_passphrase().expect("Failed to decrypt 1");
         let decrypted2 = config2.get_passphrase().expect("Failed to decrypt 2");
@@ -263,8 +306,12 @@ mod tests {
 
     #[test]
     fn test_missing_config_file() {
-        // Temporarily override config path to non-existent location
-        let result = Config::load();
+        // Use a guaranteed-nonexistent path to test missing config handling
+        let missing_path = Path::new("/tmp/handsoff_missing_config_test_config.toml");
+        // Ensure it does not exist if the test is re-run
+        let _ = fs::remove_file(missing_path);
+
+        let result = Config::load_from_path(missing_path);
 
         // Should fail with helpful error message
         assert!(result.is_err());

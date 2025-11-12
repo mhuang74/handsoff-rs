@@ -1,21 +1,26 @@
 // HandsOff Tray App - macOS menu bar application for input blocking
 // This binary provides a native macOS tray icon with dropdown menu
 
-use handsoff::{config, config_file::Config, HandsOffCore};
 use anyhow::{Context, Result};
 use clap::Parser;
+use handsoff::{config, config_file::Config, HandsOffCore};
 use log::{error, info, warn};
+use std::cell::RefCell;
 use std::io::{self, Write};
-use std::sync::{Arc, Mutex};
+use std::rc::Rc;
+use tao::event_loop::{ControlFlow, EventLoopBuilder};
 use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::TrayIconBuilder;
-use tao::event_loop::{ControlFlow, EventLoopBuilder};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// HandsOff Tray App arguments
 #[derive(Parser, Debug)]
-#[command(author, version, about = "macOS menu bar app to block unsolicited input")]
+#[command(
+    author,
+    version,
+    about = "macOS menu bar app to block unsolicited input"
+)]
 struct Args {
     /// Run interactive setup to configure passphrase and timeouts
     #[arg(long)]
@@ -34,7 +39,8 @@ fn prompt_number(prompt: &str, default: u64) -> Result<u64> {
     if input.is_empty() {
         Ok(default)
     } else {
-        input.parse::<u64>()
+        input
+            .parse::<u64>()
             .with_context(|| format!("Invalid number: {}", input))
     }
 }
@@ -45,8 +51,8 @@ fn run_setup() -> Result<()> {
     println!("==============\n");
 
     // Prompt for passphrase (non-echoing)
-    let passphrase = rpassword::prompt_password("Enter passphrase: ")
-        .context("Failed to read passphrase")?;
+    let passphrase =
+        rpassword::prompt_password("Enter passphrase: ").context("Failed to read passphrase")?;
 
     if passphrase.is_empty() {
         anyhow::bail!("Error: Passphrase cannot be empty");
@@ -61,24 +67,20 @@ fn run_setup() -> Result<()> {
     }
 
     // Prompt for timeouts
-    let auto_lock = prompt_number(
-        "Auto-lock timeout in seconds (default: 30): ",
-        30
-    )?;
+    let auto_lock = prompt_number("Auto-lock timeout in seconds (default: 30): ", 30)?;
 
-    let auto_unlock = prompt_number(
-        "Auto-unlock timeout in seconds (default: 60): ",
-        60
-    )?;
+    let auto_unlock = prompt_number("Auto-unlock timeout in seconds (default: 60): ", 60)?;
 
     // Create and save config
     let config = Config::new(&passphrase, auto_lock, auto_unlock)
         .context("Failed to create configuration")?;
 
-    config.save()
-        .context("Failed to save configuration")?;
+    config.save().context("Failed to save configuration")?;
 
-    println!("\nConfiguration saved to: {}", Config::config_path().display());
+    println!(
+        "\nConfiguration saved to: {}",
+        Config::config_path().display()
+    );
     println!("Setup complete!");
     println!("\nThe tray app will use this configuration at next startup.");
 
@@ -131,7 +133,10 @@ fn main() -> Result<()> {
     // Decrypt passphrase
     let passphrase = match cfg.get_passphrase() {
         Ok(p) => {
-            info!("Configuration loaded from: {}", Config::config_path().display());
+            info!(
+                "Configuration loaded from: {}",
+                Config::config_path().display()
+            );
             p
         }
         Err(e) => {
@@ -148,19 +153,19 @@ fn main() -> Result<()> {
     let mut core = HandsOffCore::new(&passphrase).context("Failed to initialize HandsOff")?;
 
     // Configure auto-unlock timeout (precedence: env var > config file)
-    let auto_unlock_timeout = config::parse_auto_unlock_timeout()
-        .or(Some(cfg.auto_unlock_timeout));
+    let auto_unlock_timeout = config::parse_auto_unlock_timeout().or(Some(cfg.auto_unlock_timeout));
     core.set_auto_unlock_timeout(auto_unlock_timeout);
 
     // Configure auto-lock timeout (precedence: env var > config file)
-    let auto_lock_timeout = config::parse_auto_lock_timeout()
-        .or(Some(cfg.auto_lock_timeout));
+    let auto_lock_timeout = config::parse_auto_lock_timeout().or(Some(cfg.auto_lock_timeout));
     core.set_auto_lock_timeout(auto_lock_timeout);
 
     // Start core components
-    core.start_event_tap().context("Failed to start event tap")?;
+    core.start_event_tap()
+        .context("Failed to start event tap")?;
     core.start_hotkeys().context("Failed to start hotkeys")?;
-    core.start_background_threads().context("Failed to start background threads")?;
+    core.start_background_threads()
+        .context("Failed to start background threads")?;
 
     info!("HandsOff core components started");
 
@@ -168,8 +173,8 @@ fn main() -> Result<()> {
     // It starts when event tap is created and stops when event tap is destroyed
     // This eliminates the zombie CFRunLoop connection that caused WindowServer issues
 
-    // Wrap core in Arc<Mutex> for event loop
-    let core = Arc::new(Mutex::new(core));
+    // Wrap core in Rc<RefCell> for event loop (single-threaded)
+    let core = Rc::new(RefCell::new(core));
 
     // Create event loop for tray app
     let event_loop = EventLoopBuilder::new().build();
@@ -183,10 +188,13 @@ fn main() -> Result<()> {
     let reset_item = MenuItem::new("Reset", true, None);
 
     let menu = Menu::new();
-    menu.append(&lock_item).context("Failed to add lock menu item")?;
-    menu.append(&disable_item).context("Failed to add disable menu item")?;
+    menu.append(&lock_item)
+        .context("Failed to add lock menu item")?;
+    menu.append(&disable_item)
+        .context("Failed to add disable menu item")?;
     menu.append(&separator).context("Failed to add separator")?;
-    menu.append(&reset_item).context("Failed to add reset menu item")?;
+    menu.append(&reset_item)
+        .context("Failed to add reset menu item")?;
 
     // Create tray icon
     let icon = create_icon_unlocked();
@@ -218,8 +226,8 @@ fn main() -> Result<()> {
         // When disabled: 5 seconds (minimal WindowServer interaction)
         // When enabled: 500ms (responsive UI updates)
         let poll_interval = {
-            let core_lock = core.lock().unwrap();
-            if core_lock.state.is_disabled() {
+            let core_borrow = core.borrow();
+            if core_borrow.state.is_disabled() {
                 std::time::Duration::from_secs(5)
             } else {
                 std::time::Duration::from_millis(500)
@@ -247,19 +255,56 @@ fn main() -> Result<()> {
 
         // Check if event tap should be stopped (due to permission loss)
         {
-            let mut core_lock = core.lock().unwrap();
-            if core_lock.state.should_stop_event_tap_and_clear() {
+            let mut core_borrow = core.borrow_mut();
+            if core_borrow.state.should_stop_event_tap_and_clear() {
                 warn!("Tray: Stopping event tap due to permission loss");
-                core_lock.stop_event_tap();
+                core_borrow.stop_event_tap();
                 info!("Tray: Event tap stopped - normal input restored");
             }
         }
 
+        // Check if event tap should be started (permission restored)
+        {
+            let mut core_borrow = core.borrow_mut();
+            if core_borrow.state.should_start_event_tap_and_clear() {
+                info!("Tray: Restarting event tap - permissions restored");
+                match core_borrow.restart_event_tap() {
+                    Ok(()) => {
+                        info!("Tray: Event tap restarted successfully");
+
+                        #[cfg(target_os = "macos")]
+                        {
+                            let _ = notify_rust::Notification::new()
+                                .summary("HandsOff - Event Tap Restarted")
+                                .body("Event tap restarted successfully.\nHandsOff is now active.")
+                                .timeout(notify_rust::Timeout::Milliseconds(3000))
+                                .show();
+                        }
+                    }
+                    Err(e) => {
+                        warn!("Tray: Failed to restart event tap: {}", e);
+
+                        #[cfg(target_os = "macos")]
+                        {
+                            let _ = notify_rust::Notification::new()
+                                .summary("HandsOff - Restart Failed")
+                                .body(&format!(
+                                    "Failed to restart event tap: {}\n\nUse Reset menu to try again.",
+                                    e
+                                ))
+                                .timeout(notify_rust::Timeout::Milliseconds(5000))
+                                .show();
+                        }
+                    }
+                }
+            }
+        }
+
         // Periodically check permissions and update menu state
-        let core_lock = core.lock().unwrap();
-        let is_locked = core_lock.is_locked();
-        let is_disabled = core_lock.state.is_disabled();
-        let current_permissions = core_lock.has_accessibility_permissions();
+        let core_borrow = core.borrow();
+        let is_locked = core_borrow.is_locked();
+        let is_disabled = core_borrow.state.is_disabled();
+        let current_permissions = core_borrow.has_accessibility_permissions();
 
         // Update Lock menu item enabled state based on permissions and disabled state
         // Only enable Lock when we have permissions AND are not already locked AND not disabled
@@ -310,7 +355,7 @@ fn main() -> Result<()> {
         }
 
         // Always update tooltip (to show live countdown and permission status)
-        let tooltip = build_tooltip(&core_lock, is_locked, is_disabled, current_permissions);
+        let tooltip = build_tooltip(&core_borrow, is_locked, is_disabled, current_permissions);
         if tooltip != last_tooltip {
             if let Err(e) = tray.set_tooltip(Some(&tooltip)) {
                 error!("Failed to update tray tooltip: {}", e);
@@ -323,8 +368,8 @@ fn main() -> Result<()> {
 /// Handle lock from menu
 /// Note: This only handles locking, not unlocking. When locked, mouse clicks are blocked,
 /// so the menu is inaccessible. Users must type their passphrase to unlock (same as CLI).
-fn handle_lock_toggle(core: Arc<Mutex<HandsOffCore>>) {
-    let core = core.lock().unwrap();
+fn handle_lock_toggle(core: Rc<RefCell<HandsOffCore>>) {
+    let core = core.borrow();
 
     if core.is_locked() {
         // Menu should not be accessible when locked (mouse clicks blocked)
@@ -343,8 +388,8 @@ fn handle_lock_toggle(core: Arc<Mutex<HandsOffCore>>) {
 
 /// Handle disable from menu
 /// Disables HandsOff by stopping event tap and hotkeys for minimal CPU usage
-fn handle_disable(core: Arc<Mutex<HandsOffCore>>) {
-    let mut core = core.lock().unwrap();
+fn handle_disable(core: Rc<RefCell<HandsOffCore>>) {
+    let mut core = core.borrow_mut();
 
     if let Err(e) = core.disable() {
         error!("Error disabling: {}", e);
@@ -365,8 +410,8 @@ fn handle_disable(core: Arc<Mutex<HandsOffCore>>) {
 /// Handle reset from menu
 /// Resets the app state to default: unlocked with all timers reset
 /// If disabled, re-enables the app. Otherwise, restarts the event tap if permissions are available
-fn handle_reset(core: Arc<Mutex<HandsOffCore>>, passphrase: &str) {
-    let mut core = core.lock().unwrap();
+fn handle_reset(core: Rc<RefCell<HandsOffCore>>, passphrase: &str) {
+    let mut core = core.borrow_mut();
 
     // Check if disabled - if so, enable instead of just restarting
     let is_disabled = core.state.is_disabled();
@@ -380,7 +425,10 @@ fn handle_reset(core: Arc<Mutex<HandsOffCore>>, passphrase: &str) {
             Ok(false) => {
                 // This shouldn't happen as we're using the stored passphrase
                 error!("Failed to unlock during reset: invalid passphrase");
-                show_alert("Reset Error", "Failed to unlock. This is unexpected - please check logs.");
+                show_alert(
+                    "Reset Error",
+                    "Failed to unlock. This is unexpected - please check logs.",
+                );
                 return;
             }
             Err(e) => {
@@ -453,14 +501,16 @@ fn show_alert(title: &str, message: &str) {
         message, title
     );
 
-    let _ = Command::new("osascript")
-        .arg("-e")
-        .arg(&script)
-        .output();
+    let _ = Command::new("osascript").arg("-e").arg(&script).output();
 }
 
 /// Build tooltip text based on lock state, disabled state, and permission status
-fn build_tooltip(core: &HandsOffCore, is_locked: bool, is_disabled: bool, has_permissions: bool) -> String {
+fn build_tooltip(
+    core: &HandsOffCore,
+    is_locked: bool,
+    is_disabled: bool,
+    has_permissions: bool,
+) -> String {
     let mut tooltip = String::new();
 
     // Header with version
@@ -507,7 +557,7 @@ fn build_tooltip(core: &HandsOffCore, is_locked: bool, is_disabled: bool, has_pe
     }
 
     tooltip.push_str("\n\n");
-    
+
     // Menu items
     tooltip.push_str("MENU:\n");
     tooltip.push_str("• Lock Input: Lock immediately\n");
