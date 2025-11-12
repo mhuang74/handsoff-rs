@@ -66,7 +66,21 @@ impl Config {
     /// - File permissions are too permissive (warning only)
     pub fn load() -> Result<Self> {
         let path = Self::config_path();
+        Self::load_from_path(&path)
+    }
 
+    /// Load config from a specific path
+    ///
+    /// This is primarily intended for testing and advanced scenarios.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Config file doesn't exist
+    /// - Failed to read file
+    /// - TOML parsing fails
+    /// - File permissions are too permissive (warning only)
+    pub fn load_from_path(path: &Path) -> Result<Self> {
         if !path.exists() {
             anyhow::bail!(
                 "Configuration file not found at: {}\n\nRun 'handsoff --setup' to create it.",
@@ -142,6 +156,7 @@ impl Config {
 mod tests {
     use super::*;
     use std::fs;
+    use std::path::Path;
 
     fn temp_config_path() -> PathBuf {
         let temp_dir = std::env::temp_dir();
@@ -265,8 +280,12 @@ mod tests {
 
     #[test]
     fn test_missing_config_file() {
-        // Temporarily override config path to non-existent location
-        let result = Config::load();
+        // Use a guaranteed-nonexistent path to test missing config handling
+        let missing_path = Path::new("/tmp/handsoff_missing_config_test_config.toml");
+        // Ensure it does not exist if the test is re-run
+        let _ = fs::remove_file(missing_path);
+
+        let result = Config::load_from_path(missing_path);
 
         // Should fail with helpful error message
         assert!(result.is_err());
