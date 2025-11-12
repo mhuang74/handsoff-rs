@@ -169,8 +169,8 @@ mod tests {
         //
         // This ensures each call gets its own directory/file instead of sharing
         // a single path based only on PID.
-        use std::time::{SystemTime, UNIX_EPOCH};
         use std::thread;
+        use std::time::{SystemTime, UNIX_EPOCH};
 
         let mut base = std::env::temp_dir();
         base.push("handsoff_tests");
@@ -226,8 +226,7 @@ mod tests {
         fs::write(&temp_path, contents).expect("Failed to write temp config");
 
         // Use the same logic as production via load_from_path
-        let loaded_config =
-            Config::load_from_path(&temp_path).expect("Failed to load temp config");
+        let loaded_config = Config::load_from_path(&temp_path).expect("Failed to load temp config");
 
         // Verify
         assert_eq!(
