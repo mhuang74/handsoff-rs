@@ -7,7 +7,7 @@ use crate::crypto;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -159,8 +159,33 @@ mod tests {
     use std::path::Path;
 
     fn temp_config_path() -> PathBuf {
-        let temp_dir = std::env::temp_dir();
-        temp_dir.join(format!("handsoff_test_{}.toml", std::process::id()))
+        // Use a unique, per-test path to prevent interference between tests,
+        // even when they run in parallel within the same process.
+        //
+        // Strategy:
+        // - Base: system temp dir
+        // - Subdir: "handsoff_tests/config_file"
+        // - Unique segment: high-resolution timestamp + thread ID
+        //
+        // This ensures each call gets its own directory/file instead of sharing
+        // a single path based only on PID.
+        use std::time::{SystemTime, UNIX_EPOCH};
+        use std::thread;
+
+        let mut base = std::env::temp_dir();
+        base.push("handsoff_tests");
+        base.push("config_file");
+
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let tid = format!("{:?}", thread::current().id());
+        base.push(format!("t_{nanos}_{tid}"));
+
+        let _ = fs::create_dir_all(&base);
+
+        base.join("config.toml")
     }
 
     #[test]
@@ -186,6 +211,9 @@ mod tests {
     fn test_config_save_load_roundtrip() {
         let temp_path = temp_config_path();
 
+        // Ensure clean slate
+        let _ = fs::remove_file(&temp_path);
+
         // Create config
         let original_config = Config {
             encrypted_passphrase: "test_encrypted_data".to_string(),
@@ -193,14 +221,13 @@ mod tests {
             auto_unlock_timeout: 120,
         };
 
-        // Save to temp file
+        // Write to temp file
         let contents = toml::to_string_pretty(&original_config).expect("Failed to serialize");
         fs::write(&temp_path, contents).expect("Failed to write temp config");
 
-        // Load from temp file
-        let loaded_contents = fs::read_to_string(&temp_path).expect("Failed to read temp config");
-        let loaded_config: Config =
-            toml::from_str(&loaded_contents).expect("Failed to parse config");
+        // Use the same logic as production via load_from_path
+        let loaded_config =
+            Config::load_from_path(&temp_path).expect("Failed to load temp config");
 
         // Verify
         assert_eq!(

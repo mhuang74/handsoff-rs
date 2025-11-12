@@ -55,7 +55,11 @@ fn test_buffer_reset_timing() {
 #[test]
 fn test_auto_lock_timing() {
     let state = AppState::new();
-    state.lock().auto_lock_timeout = 1; // 1 second for testing
+    {
+        let mut inner = state.lock();
+        inner.auto_lock_timeout = 1; // 1 second for testing
+        inner.has_accessibility_permissions = true; // allow auto-lock in this test
+    }
 
     assert!(!state.should_auto_lock()); // Starts unlocked
 
