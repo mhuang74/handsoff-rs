@@ -139,7 +139,11 @@ impl AppState {
 
     pub fn should_auto_lock(&self) -> bool {
         let state = self.inner.lock();
-        !state.is_locked && state.last_input_time.elapsed().as_secs() >= state.auto_lock_timeout
+        // Only auto-lock if: not locked, timeout exceeded, AND permissions are available
+        // This prevents auto-lock from triggering when permissions are lost
+        !state.is_locked
+            && state.last_input_time.elapsed().as_secs() >= state.auto_lock_timeout
+            && state.has_accessibility_permissions
     }
 
     pub fn get_auto_lock_remaining_secs(&self) -> Option<u64> {
