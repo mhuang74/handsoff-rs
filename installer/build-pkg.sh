@@ -113,11 +113,7 @@ cat > "${DISTRIBUTION_XML}" << EOF
     <conclusion file="conclusion.html" mime-type="text/html" />
 
     <!-- Define the component package -->
-    <pkg-ref id="${BUNDLE_ID}">
-        <bundle-version>
-            <bundle id="${BUNDLE_ID}" CFBundleVersion="${VERSION}" path="Applications/${APP_NAME}.app" />
-        </bundle-version>
-    </pkg-ref>
+    <pkg-ref id="${BUNDLE_ID}"/>
 
     <choices-outline>
         <line choice="default">
