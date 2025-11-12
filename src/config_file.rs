@@ -91,7 +91,7 @@ impl Config {
         // Check file permissions (warning if too permissive)
         #[cfg(unix)]
         {
-            let metadata = fs::metadata(&path).context("Failed to read config file metadata")?;
+            let metadata = fs::metadata(path).context("Failed to read config file metadata")?;
             let permissions = metadata.permissions();
             let mode = permissions.mode();
 
@@ -105,7 +105,7 @@ impl Config {
         }
 
         // Read and parse config file
-        let contents = fs::read_to_string(&path)
+        let contents = fs::read_to_string(path)
             .with_context(|| format!("Failed to read config file: {}", path.display()))?;
 
         let config: Config = toml::from_str(&contents).context("Failed to parse config file")?;
