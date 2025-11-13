@@ -68,7 +68,7 @@ fn run_setup() -> Result<()> {
 
     // Prompt for timeouts
     let auto_lock = prompt_number("Auto-lock timeout in seconds (default: 30): ", 30)?;
- 
+
     // Build-dependent default for auto-unlock:
     // - Release builds: 0 seconds (disabled by default for end users)
     // - Debug/Dev builds: 60 seconds (enabled by default for safer development)
@@ -76,8 +76,7 @@ fn run_setup() -> Result<()> {
         "Auto-unlock timeout in seconds (default: {}): ",
         AUTO_UNLOCK_DEFAULT_SECONDS
     );
-    let auto_unlock =
-        prompt_number(&auto_unlock_prompt, AUTO_UNLOCK_DEFAULT_SECONDS)?;
+    let auto_unlock = prompt_number(&auto_unlock_prompt, AUTO_UNLOCK_DEFAULT_SECONDS)?;
 
     // Create and save config
     let config = Config::new(&passphrase, auto_lock, auto_unlock)
@@ -161,7 +160,13 @@ fn main() -> Result<()> {
     let mut core = HandsOffCore::new(&passphrase).context("Failed to initialize HandsOff")?;
 
     // Configure auto-unlock timeout (precedence: env var > config file)
-    let auto_unlock_timeout = config::parse_auto_unlock_timeout().or(Some(cfg.auto_unlock_timeout));
+    // NOTE: A timeout of 0 means disabled (None)
+    let auto_unlock_timeout =
+        config::parse_auto_unlock_timeout().or(if cfg.auto_unlock_timeout == 0 {
+            None
+        } else {
+            Some(cfg.auto_unlock_timeout)
+        });
     core.set_auto_unlock_timeout(auto_unlock_timeout);
 
     // Configure auto-lock timeout (precedence: env var > config file)
