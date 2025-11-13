@@ -172,7 +172,13 @@ fn main() -> Result<()> {
     let mut core = HandsOffCore::new(&passphrase).context("Failed to initialize HandsOff")?;
 
     // Configure auto-unlock timeout (from config file, can be overridden by env var)
-    let auto_unlock_timeout = config::parse_auto_unlock_timeout().or(Some(cfg.auto_unlock_timeout));
+    // NOTE: A timeout of 0 means disabled (None)
+    let auto_unlock_timeout =
+        config::parse_auto_unlock_timeout().or(if cfg.auto_unlock_timeout == 0 {
+            None
+        } else {
+            Some(cfg.auto_unlock_timeout)
+        });
     core.set_auto_unlock_timeout(auto_unlock_timeout);
 
     // Configure auto-lock timeout (precedence: CLI arg > env var > config file)

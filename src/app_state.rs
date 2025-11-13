@@ -184,13 +184,19 @@ impl AppState {
             return false;
         }
 
+        // Get timeout value - treat 0 as disabled (safeguard against config bugs)
+        let timeout_secs = state.auto_unlock_timeout.unwrap();
+        if timeout_secs == 0 {
+            return false;
+        }
+
         // Must have recorded lock start time
         let lock_start = match state.lock_start_time {
             Some(time) => time,
             None => return false,
         };
 
-        let timeout = std::time::Duration::from_secs(state.auto_unlock_timeout.unwrap());
+        let timeout = std::time::Duration::from_secs(timeout_secs);
         lock_start.elapsed() >= timeout
     }
 
@@ -527,5 +533,35 @@ mod tests {
                 "Lock start time should be cleared on unlock"
             );
         }
+    }
+
+    #[test]
+    fn test_auto_unlock_zero_timeout_does_not_trigger() {
+        // Regression test for bug where Some(0) would cause immediate unlock
+        // A timeout of 0 should be treated as disabled (converted to None)
+        // but if accidentally set as Some(0), it should NOT trigger immediately
+        let state = AppState::new();
+
+        // This simulates the buggy scenario where config file has 0
+        // and it gets passed as Some(0) instead of None
+        state.set_auto_unlock_timeout(Some(0));
+
+        // Lock the device
+        state.set_locked(true);
+
+        // should_auto_unlock() should return false when timeout is Some(0)
+        // because Duration::from_secs(0) would make elapsed >= timeout always true
+        // This test verifies the bug is fixed at the AppState level
+        assert!(
+            !state.should_auto_unlock(),
+            "Auto-unlock with timeout=0 should not trigger (should be treated as disabled)"
+        );
+
+        // Wait a bit and verify it still doesn't trigger
+        thread::sleep(Duration::from_millis(100));
+        assert!(
+            !state.should_auto_unlock(),
+            "Auto-unlock with timeout=0 should remain disabled"
+        );
     }
 }
