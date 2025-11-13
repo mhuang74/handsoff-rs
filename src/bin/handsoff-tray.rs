@@ -3,7 +3,7 @@
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use handsoff::{config, config_file::Config, HandsOffCore};
+use handsoff::{app_state::AUTO_UNLOCK_DEFAULT_SECONDS, config, config_file::Config, HandsOffCore};
 use log::{error, info, warn};
 use std::cell::RefCell;
 use std::io::{self, Write};
@@ -68,8 +68,16 @@ fn run_setup() -> Result<()> {
 
     // Prompt for timeouts
     let auto_lock = prompt_number("Auto-lock timeout in seconds (default: 30): ", 30)?;
-
-    let auto_unlock = prompt_number("Auto-unlock timeout in seconds (default: 60): ", 60)?;
+ 
+    // Build-dependent default for auto-unlock:
+    // - Release builds: 0 seconds (disabled by default for end users)
+    // - Debug/Dev builds: 60 seconds (enabled by default for safer development)
+    let auto_unlock_prompt = format!(
+        "Auto-unlock timeout in seconds (default: {}): ",
+        AUTO_UNLOCK_DEFAULT_SECONDS
+    );
+    let auto_unlock =
+        prompt_number(&auto_unlock_prompt, AUTO_UNLOCK_DEFAULT_SECONDS)?;
 
     // Create and save config
     let config = Config::new(&passphrase, auto_lock, auto_unlock)

@@ -9,15 +9,21 @@
 //! - HANDS_OFF_AUTO_UNLOCK: Override auto-unlock timeout from config file
 
 use crate::app_state::{
-    AUTO_LOCK_MAX_SECONDS, AUTO_LOCK_MIN_SECONDS, AUTO_UNLOCK_MAX_SECONDS, AUTO_UNLOCK_MIN_SECONDS,
+    AUTO_LOCK_MAX_SECONDS, AUTO_LOCK_MIN_SECONDS, AUTO_UNLOCK_DEFAULT_SECONDS, AUTO_UNLOCK_MAX_SECONDS,
+    AUTO_UNLOCK_MIN_SECONDS,
 };
 use log::{debug, info, warn};
 use std::env;
 
 /// Parse the HANDS_OFF_AUTO_UNLOCK environment variable
 ///
-/// Returns Some(seconds) if valid timeout is configured (60-900 seconds)
-/// Returns None if disabled (0) or not set
+/// - If HANDS_OFF_AUTO_UNLOCK is set:
+///   - Returns Some(seconds) if valid timeout is configured (60-900 seconds)
+///   - Returns None if disabled (0) or invalid/out-of-range
+/// - If HANDS_OFF_AUTO_UNLOCK is NOT set:
+///   - Uses AUTO_UNLOCK_DEFAULT_SECONDS:
+///       * In release builds: 0  -> disabled (None)
+///       * In debug builds:  60 -> enabled with 60 seconds
 pub fn parse_auto_unlock_timeout() -> Option<u64> {
     match env::var("HANDS_OFF_AUTO_UNLOCK") {
         Ok(val) => match val.parse::<u64>() {
@@ -28,27 +34,36 @@ pub fn parse_auto_unlock_timeout() -> Option<u64> {
                 Some(seconds)
             }
             Ok(0) => {
-                info!("Auto-unlock disabled (value: 0)");
+                info!("Auto-unlock disabled via HANDS_OFF_AUTO_UNLOCK=0");
                 None
             }
             Ok(seconds) => {
                 warn!(
-                    "Invalid auto-unlock timeout: {} (must be {}-{} or 0). Feature disabled.",
+                    "Invalid auto-unlock timeout: {} (must be {}-{} or 0). Falling back to build default.",
                     seconds, AUTO_UNLOCK_MIN_SECONDS, AUTO_UNLOCK_MAX_SECONDS
                 );
                 None
             }
             Err(e) => {
                 warn!(
-                    "Failed to parse HANDS_OFF_AUTO_UNLOCK: {}. Feature disabled.",
+                    "Failed to parse HANDS_OFF_AUTO_UNLOCK: {}. Falling back to build default.",
                     e
                 );
                 None
             }
         },
         Err(_) => {
-            debug!("HANDS_OFF_AUTO_UNLOCK not set. Auto-unlock disabled.");
-            None
+            // Not set: use build-dependent default
+            if AUTO_UNLOCK_DEFAULT_SECONDS == 0 {
+                debug!("HANDS_OFF_AUTO_UNLOCK not set. Auto-unlock disabled by default for this build.");
+                None
+            } else {
+                info!(
+                    "HANDS_OFF_AUTO_UNLOCK not set. Auto-unlock enabled by default: {} seconds",
+                    AUTO_UNLOCK_DEFAULT_SECONDS
+                );
+                Some(AUTO_UNLOCK_DEFAULT_SECONDS)
+            }
         }
     }
 }
@@ -142,9 +157,34 @@ mod tests {
         env::remove_var("HANDS_OFF_AUTO_UNLOCK");
         assert_eq!(
             parse_auto_unlock_timeout(),
-            None,
-            "Should return None when not set"
+            Some(AUTO_UNLOCK_DEFAULT_SECONDS),
+            "Should return default auto-unlock timeout when not set"
         );
+    }
+
+    #[test]
+    fn test_parse_auto_unlock_default_behavior() {
+        // When HANDS_OFF_AUTO_UNLOCK is not set, behavior depends on AUTO_UNLOCK_DEFAULT_SECONDS.
+        env::remove_var("HANDS_OFF_AUTO_UNLOCK");
+
+        if AUTO_UNLOCK_DEFAULT_SECONDS == 0 {
+            // Release build behavior: default disabled
+            assert_eq!(
+                parse_auto_unlock_timeout(),
+                None,
+                "In release builds (AUTO_UNLOCK_DEFAULT_SECONDS=0), default should be disabled (None)"
+            );
+        } else {
+            // Dev/debug build behavior: default enabled with configured value (60s)
+            assert_eq!(
+                parse_auto_unlock_timeout(),
+                Some(AUTO_UNLOCK_DEFAULT_SECONDS),
+                "In non-release builds, default should be Some(AUTO_UNLOCK_DEFAULT_SECONDS)"
+            );
+        }
+
+        // Clean up
+        env::remove_var("HANDS_OFF_AUTO_UNLOCK");
     }
 
     #[test]

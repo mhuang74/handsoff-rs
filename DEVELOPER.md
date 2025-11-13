@@ -204,6 +204,10 @@ Config files created by one build will work with all future builds.
 
 The auto-unlock feature provides a fail-safe mechanism that automatically disables input interception after a configurable timeout. This prevents permanent lockouts due to bugs, forgotten passphrases during development, or other unexpected issues.
 
+By default:
+- Release builds: auto-unlock is disabled (0 seconds) unless explicitly enabled via config or HANDS_OFF_AUTO_UNLOCK.
+- Debug/Dev builds: auto-unlock is enabled by default with a 60-second timeout via AUTO_UNLOCK_DEFAULT_SECONDS for safer developer workflows.
+
 **⚠️ Important:** This feature is designed for **development, testing, and personal emergency use only**. It should NOT be enabled in production environments where security is critical.
 
 ### Enabling Auto-Unlock

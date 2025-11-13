@@ -79,7 +79,7 @@ HandsOff is available in two forms: **Tray App** (recommended for most users) an
    This will prompt you for:
    - Secret passphrase (typing hidden for security)
    - Auto-lock timeout (default: 30 seconds)
-   - Auto-unlock timeout (default: 60 seconds)
+   - Auto-unlock timeout (default: 0 seconds in Release builds, 60 seconds in Debug/Dev builds; can be overridden via config or HANDS_OFF_AUTO_UNLOCK)
 5. Run the CLI:
    ```bash
    handsoff
@@ -116,7 +116,7 @@ Both CLI and Tray App use the same encrypted configuration file:
 The setup wizard will prompt you for:
 - Secret passphrase (stored encrypted using AES-256-GCM)
 - Auto-lock timeout (default: 30 seconds)
-- Auto-unlock timeout (default: 60 seconds)
+- Auto-unlock timeout (default: 0 seconds in Release builds, 60 seconds in Debug/Dev builds; can be overridden via config or HANDS_OFF_AUTO_UNLOCK)
 
 **Changing configuration:**
 Run the setup command again to reconfigure.
