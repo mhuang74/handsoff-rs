@@ -45,7 +45,7 @@ HandsOff is available in two forms: **Tray App** (recommended for most users) an
    This will prompt you for:
    - Secret passphrase (typing hidden for security)
    - Auto-lock timeout (default: 30 seconds)
-   - Auto-unlock timeout (default: 60 seconds)
+   - Auto-unlock timeout (default: 0 seconds/disabled)
 5. Start the app:
    ```bash
    launchctl start com.handsoff.inputlock
