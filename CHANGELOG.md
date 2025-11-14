@@ -1,5 +1,51 @@
 # Changelog
 
+## [0.6.1] - 2025-11-13
+
+### Fixed
+- Fix auto-unlock timeout=0 causing immediate unlock instead of disabling
+- Fix typo
+
+### Changed
+- Disable Auto-Unlock by Default for Release Builds
+
+## [0.6.0] - 2025-11-12
+
+### Fixed
+- Fix critical permission loss bug that could cause system lockout (#7)
+
+## [0.5.1] - 2025-11-06
+
+### Fixed
+- Fix PKG installer postinstall script by including LaunchAgent plist template in app bundle
+
+## [0.5.0] - 2025-11-06
+
+### Added
+- Add encrypted passphrase storage with AES-256-GCM (#6)
+- Add CLI binary releases and update documentation
+
+### Changed
+- Separate developer documentation from end-user README
+- Update install help text
+- Remove deprecated menu items
+
+## [0.4.0] - 2025-11-05
+
+### Added
+- Add GitHub Actions workflow for automated macOS releases
+- Add Disable feature for minimal CPU usage
+- Add dark mode support to installer HTML
+- Convert project to produce both CLI and Tray App (#2)
+
+### Changed
+- Change installer to user-level installation (no root required)
+
+### Fixed
+- Fix WindowServer stability issues in Disabled mode
+- Fix reset after disable (#4)
+- Fix GitHub Actions workflow syntax errors
+
 ## [0.1.0] - 2025-10-22
 
 ### Initial Release

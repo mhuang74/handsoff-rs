@@ -433,6 +433,75 @@ jobs:
           security delete-keychain $KEYCHAIN_PATH || true
         fi
 
+    - name: Build Changelog
+      id: changelog
+      uses: mikepenz/release-changelog-builder-action@v5
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        configuration: |
+          {
+            "pr_template": "- #{{TITLE}} (#{{NUMBER}})",
+            "commit_template": "- #{{TITLE}}",
+            "categories": [
+              {
+                "title": "### Added",
+                "labels": ["feature", "enhancement", "added"]
+              },
+              {
+                "title": "### Fixed",
+                "labels": ["bug", "fix", "fixed"]
+              },
+              {
+                "title": "### Changed",
+                "labels": ["refactor", "chore", "changed"]
+              }
+            ],
+            "template": "#{{CHANGELOG}}",
+            "empty_template": "- No changes"
+          }
+
+    - name: Update CHANGELOG.md
+      run: |
+        VERSION="${{ steps.version.outputs.version }}"
+        DATE=$(date +%Y-%m-%d)
+
+        # Read current CHANGELOG (skip first 2 lines: title and blank line)
+        if [ -f CHANGELOG.md ]; then
+          tail -n +3 CHANGELOG.md > CHANGELOG.tmp
+        fi
+
+        # Create new CHANGELOG with new version at top
+        echo "# Changelog" > CHANGELOG.md
+        echo "" >> CHANGELOG.md
+        echo "## [${VERSION}] - ${DATE}" >> CHANGELOG.md
+        echo "" >> CHANGELOG.md
+        echo "${{steps.changelog.outputs.changelog}}" >> CHANGELOG.md
+        echo "" >> CHANGELOG.md
+
+        # Append old content
+        if [ -f CHANGELOG.tmp ]; then
+          cat CHANGELOG.tmp >> CHANGELOG.md
+          rm CHANGELOG.tmp
+        fi
+
+        echo "CHANGELOG.md updated with version ${VERSION}"
+        cat CHANGELOG.md | head -20
+
+    - name: Commit CHANGELOG.md
+      run: |
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        git add CHANGELOG.md
+
+        if git diff --staged --quiet; then
+          echo "No changes to CHANGELOG.md"
+        else
+          git commit -m "docs: update CHANGELOG.md for ${{ steps.version.outputs.tag }}"
+          git push origin main
+          echo "CHANGELOG.md committed and pushed"
+        fi
+
     - name: Generate release notes
       id: release_notes
       run: |
@@ -440,9 +509,11 @@ jobs:
         cat > release_notes.md << 'EOF'
         ## HandsOff v${{ steps.version.outputs.version }}
 
-        ### What's New
+        ${{steps.changelog.outputs.changelog}}
 
-        See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for details.
+        ---
+
+        See full [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for all versions.
 
         EOF
 
