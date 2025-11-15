@@ -1,0 +1,93 @@
+END USER LICENSE AGREEMENT FOR HANDSOFF
+
+IMPORTANT - READ CAREFULLY: This End User License Agreement ("Agreement") is a legal agreement between you (either an individual or a single entity, "You" or "Licensee") and the software developer ("Licensor") for HandsOff, a macOS menu bar application and command line utility, and any associated documentation (collectively, the "Software").
+
+BY INSTALLING, COPYING, OR OTHERWISE USING THE SOFTWARE, YOU AGREE TO BE BOUND BY THE TERMS OF THIS AGREEMENT. IF YOU DO NOT AGREE TO THE TERMS OF THIS AGREEMENT, DO NOT INSTALL OR USE THE SOFTWARE.
+
+1. GRANT OF LICENSE
+
+Subject to the terms and conditions of this Agreement, Licensor grants You a limited, non-exclusive, non-transferable, revocable license to:
+
+(a) Install and use the Software on macOS devices that You own or control;
+(b) Use the menu bar application and command line utility for personal or commercial purposes;
+(c) Make one copy of the Software solely for backup or archival purposes.
+
+2. SOURCE CODE LICENSE
+
+The source code for this Software is available under the Apache License 2.0 on GitHub. This EULA applies only to the compiled, distributed binary application provided through this installer. If You obtain the source code separately, Your use of that source code is governed by the Apache License 2.0, not this Agreement.
+
+3. RESTRICTIONS
+
+You may NOT:
+
+(a) Distribute, sublicense, rent, lease, or lend the compiled Software or installer to third parties;
+(b) Reverse engineer, decompile, or disassemble the Software, except to the extent such restriction is prohibited by applicable law;
+(c) Remove, alter, or obscure any proprietary notices (including copyright and trademark notices) on the Software;
+(d) Use the Software in any way that violates applicable local, state, national, or international law;
+(e) Use the Software to create a competing product or service.
+
+4. PAYMENT AND DONATIONS
+
+(a) This Software may be distributed as paid software, donation-supported software, or free software at Licensor's discretion;
+(b) Any payments or donations made are for the compiled Software, support, and ongoing development;
+(c) Payments and donations are non-refundable except as required by applicable law;
+(d) Licensor reserves the right to change pricing or payment models at any time.
+
+5. OWNERSHIP
+
+The Software is licensed, not sold. Licensor retains all right, title, and interest in and to the Software, including all intellectual property rights. This Agreement does not grant You any rights to trademarks or service marks of Licensor.
+
+6. UPDATES AND SUPPORT
+
+(a) Licensor may, but is not obligated to, provide updates, upgrades, or support for the Software;
+(b) Any updates or upgrades provided to You shall be governed by this Agreement unless accompanied by a separate license agreement;
+(c) Licensor may discontinue support or updates at any time without notice.
+
+7. PRIVACY AND DATA COLLECTION
+
+(a) The Software may collect anonymous usage statistics to improve functionality;
+(b) No personally identifiable information is collected without Your explicit consent;
+(c) Licensor will not sell or share Your data with third parties except as required by law.
+
+8. TERMINATION
+
+(a) This license is effective until terminated;
+(b) Your rights under this Agreement will terminate automatically without notice if You fail to comply with any term of this Agreement;
+(c) Upon termination, You must cease all use of the Software and destroy all copies in Your possession.
+
+9. DISCLAIMER OF WARRANTIES
+
+THE SOFTWARE IS PROVIDED "AS IS" WITHOUT WARRANTY OF ANY KIND. TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, LICENSOR DISCLAIMS ALL WARRANTIES, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO IMPLIED WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NON-INFRINGEMENT. LICENSOR DOES NOT WARRANT THAT THE SOFTWARE WILL MEET YOUR REQUIREMENTS OR THAT OPERATION OF THE SOFTWARE WILL BE UNINTERRUPTED OR ERROR-FREE.
+
+10. LIMITATION OF LIABILITY
+
+TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, IN NO EVENT SHALL LICENSOR BE LIABLE FOR ANY SPECIAL, INCIDENTAL, INDIRECT, OR CONSEQUENTIAL DAMAGES (INCLUDING, WITHOUT LIMITATION, DAMAGES FOR LOSS OF BUSINESS PROFITS, BUSINESS INTERRUPTION, LOSS OF BUSINESS INFORMATION, OR ANY OTHER PECUNIARY LOSS) ARISING OUT OF THE USE OF OR INABILITY TO USE THE SOFTWARE, EVEN IF LICENSOR HAS BEEN ADVISED OF THE POSSIBILITY OF SUCH DAMAGES.
+
+IN ANY CASE, LICENSOR'S ENTIRE LIABILITY UNDER THIS AGREEMENT SHALL NOT EXCEED THE AMOUNT PAID BY YOU FOR THE SOFTWARE, IF ANY.
+
+11. EXPORT RESTRICTIONS
+
+You acknowledge that the Software may be subject to export restrictions by the United States government and import restrictions by certain foreign governments. You agree to comply with all applicable export and import laws and regulations.
+
+12. GOVERNING LAW
+
+This Agreement shall be governed by and construed in accordance with the laws of the jurisdiction in which Licensor resides, without regard to its conflict of law provisions.
+
+13. ENTIRE AGREEMENT
+
+This Agreement constitutes the entire agreement between You and Licensor concerning the Software and supersedes all prior or contemporaneous oral or written communications, proposals, and representations with respect to the Software.
+
+14. SEVERABILITY
+
+If any provision of this Agreement is held to be unenforceable, such provision shall be reformed only to the extent necessary to make it enforceable, and the remaining provisions of this Agreement shall remain in full force and effect.
+
+15. CONTACT INFORMATION
+
+For questions about this Agreement or the Software, please contact:
+Michael S Huang
+mhuang74+handsoff@gmail.com
+www.michaelhuang.xyz
+
+BY CLICKING "AGREE" OR BY INSTALLING OR USING THE SOFTWARE, YOU ACKNOWLEDGE THAT YOU HAVE READ THIS AGREEMENT, UNDERSTAND IT, AND AGREE TO BE BOUND BY ITS TERMS AND CONDITIONS.
+
+Last Updated: January 2025
