@@ -117,7 +117,7 @@ fn main() -> Result<()> {
 
         // Show native alert
         show_alert(
-            "Accessibility Permissions Required",
+            "HandsOff - Accessibility Permissions Required",
             "HandsOff requires Accessibility permissions.\n\nPlease go to:\nSystem Preferences > Security & Privacy > Privacy > Accessibility\n\nand grant permissions to HandsOff."
         );
 
@@ -130,7 +130,7 @@ fn main() -> Result<()> {
         Err(e) => {
             error!("Failed to load configuration: {}", e);
             show_alert(
-                "Configuration Not Found",
+                "HandsOff - Configuration Not Found",
                 &format!("Please run setup first:\n\nOpen Terminal and run:\n~/Applications/HandsOff.app/Contents/MacOS/handsoff-tray --setup\n\nOr run:\nhandsoff --setup\n\nError: {}", e)
             );
             std::process::exit(1);
@@ -149,7 +149,7 @@ fn main() -> Result<()> {
         Err(e) => {
             error!("Failed to decrypt passphrase: {}", e);
             show_alert(
-                "Configuration Error",
+                "HandsOff - Configuration Error",
                 &format!("Failed to decrypt passphrase.\nYour configuration file may be corrupted.\n\nRun setup again:\n~/Applications/HandsOff.app/Contents/MacOS/handsoff-tray --setup\n\nError: {}", e)
             );
             std::process::exit(1);
@@ -393,7 +393,7 @@ fn handle_lock_toggle(core: Rc<RefCell<HandsOffCore>>) {
     // Lock immediately
     if let Err(e) = core.lock() {
         error!("Error locking: {}", e);
-        show_alert("Error", &format!("Failed to lock: {}", e));
+        show_alert("HandsOff - Error", &format!("Failed to lock: {}", e));
     } else {
         info!("Input locked via menu");
     }
@@ -406,7 +406,7 @@ fn handle_disable(core: Rc<RefCell<HandsOffCore>>) {
 
     if let Err(e) = core.disable() {
         error!("Error disabling: {}", e);
-        show_alert("Error", &format!("Failed to disable: {}", e));
+        show_alert("HandsOff - Error", &format!("Failed to disable: {}", e));
     } else {
         info!("HandsOff disabled - minimal CPU mode");
         #[cfg(target_os = "macos")]
@@ -439,14 +439,14 @@ fn handle_reset(core: Rc<RefCell<HandsOffCore>>, passphrase: &str) {
                 // This shouldn't happen as we're using the stored passphrase
                 error!("Failed to unlock during reset: invalid passphrase");
                 show_alert(
-                    "Reset Error",
+                    "HandsOff - Reset Error",
                     "Failed to unlock. This is unexpected - please check logs.",
                 );
                 return;
             }
             Err(e) => {
                 error!("Error during reset unlock: {}", e);
-                show_alert("Reset Error", &format!("Failed to reset: {}", e));
+                show_alert("HandsOff - Reset Error", &format!("Failed to reset: {}", e));
                 return;
             }
         }
@@ -470,7 +470,7 @@ fn handle_reset(core: Rc<RefCell<HandsOffCore>>, passphrase: &str) {
             Err(e) => {
                 warn!("Could not re-enable during reset: {}", e);
                 show_alert(
-                    "Reset Partial Success",
+                    "HandsOff - Reset Partial Success",
                     &format!("App state reset but could not re-enable:\n{}\n\nPlease check accessibility permissions.", e)
                 );
             }
@@ -492,7 +492,7 @@ fn handle_reset(core: Rc<RefCell<HandsOffCore>>, passphrase: &str) {
             Err(e) => {
                 warn!("Could not restart event tap during reset: {}", e);
                 show_alert(
-                    "Reset Partial Success",
+                    "HandsOff - Reset Partial Success",
                     &format!("App state reset but event tap could not be restarted:\n{}\n\nPlease check accessibility permissions.", e)
                 );
             }
@@ -574,6 +574,8 @@ fn build_tooltip(
     // Menu items
     tooltip.push_str("MENU:\n");
     tooltip.push_str("• Lock Input: Lock immediately\n");
+    tooltip.push_str("• Disable: Suspend Auto-Lock and minimize system resources\n");
+    tooltip.push_str("  (Use Reset to re-enable HandsOff)\n");
     tooltip.push_str("• Reset: Reset app state and restart event tap\n\n");
 
     // Instructions
