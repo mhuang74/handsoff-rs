@@ -37,27 +37,27 @@ pub fn handle_keyboard_event(event: &CGEvent, event_type: CGEventType, state: &A
     }
 
     // Check for Talk hotkey (Ctrl+Cmd+Shift+<configured key>)
-    // Track press/release state for passthrough
+    // Transform it into a spacebar event by modifying the keycode and removing modifiers
     if keycode == talk_keycode
         && flags.contains(CGEventFlags::CGEventFlagControl)
         && flags.contains(CGEventFlags::CGEventFlagCommand)
         && flags.contains(CGEventFlags::CGEventFlagShift)
     {
+        const SPACEBAR_KEYCODE: i64 = 49;
+
         if (event_type as u32) == (CGEventType::KeyDown as u32) {
-            info!("Talk key pressed - enabling spacebar passthrough");
+            info!("Talk hotkey pressed - transforming to spacebar");
             state.set_talk_key_pressed(true);
         } else if (event_type as u32) == (CGEventType::KeyUp as u32) {
-            info!("Talk key released - disabling spacebar passthrough");
+            info!("Talk hotkey released - transforming to spacebar");
             state.set_talk_key_pressed(false);
         }
-        return true; // Block the talk hotkey itself
-    }
 
-    // Allow spacebar passthrough when talk key is pressed
-    if state.is_talk_key_pressed() && keycode == 49 {
-        // Keycode 49 is spacebar
-        info!("Spacebar passthrough active (Talk key held)");
-        return false; // Allow spacebar through
+        // Transform the event: change keycode to spacebar and remove modifier flags
+        event.set_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE, SPACEBAR_KEYCODE);
+        event.set_flags(CGEventFlags::CGEventFlagNull);
+
+        return false; // Allow the transformed event to pass through
     }
 
     // If not locked, pass through all non-hotkey events
