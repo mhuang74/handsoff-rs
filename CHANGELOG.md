@@ -7,7 +7,12 @@
 - Fix Talk hotkey compatibility with Google Meet/Zoom
    - PR: #10
 
+## [0.6.2] - 2025-11-14
 
+## 📦 Uncategorized
+
+- Feature: support configurable hotkeys
+   - PR: #9
 
 ## [0.6.1] - 2025-11-13
 
