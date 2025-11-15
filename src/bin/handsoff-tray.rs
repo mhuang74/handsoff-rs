@@ -14,6 +14,7 @@ use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::TrayIconBuilder;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+const DEFAULT_PASSPHRASE: &str = "quit";
 
 /// HandsOff Tray App arguments
 #[derive(Parser, Debug)]
@@ -147,30 +148,46 @@ fn main() -> Result<()> {
 
     info!("Starting HandsOff Tray App v{}", VERSION);
 
-    // Check accessibility permissions
-    if !handsoff::input_blocking::check_accessibility_permissions() {
-        error!("Accessibility permissions not granted");
-        error!("Please grant accessibility permissions to HandsOff in System Preferences > Security & Privacy > Privacy > Accessibility");
-
-        // Show native alert
-        show_alert(
-            "HandsOff - Accessibility Permissions Required",
-            "HandsOff requires Accessibility permissions.\n\nPlease go to:\nSystem Preferences > Security & Privacy > Privacy > Accessibility\n\nand grant permissions to HandsOff."
-        );
-
-        std::process::exit(1);
+    // Check accessibility permissions (but don't exit - let app run and show status in tooltip)
+    let initial_permissions = handsoff::input_blocking::check_accessibility_permissions();
+    if !initial_permissions {
+        warn!("Accessibility permissions not granted");
+        warn!("App will start but input blocking will not work until permissions are granted");
+        info!("Please grant accessibility permissions in System Settings > Privacy & Security > Accessibility");
+    } else {
+        info!("Accessibility permissions verified");
     }
 
-    // Load configuration
+    // Load configuration, or create default if missing
     let cfg = match Config::load() {
         Ok(cfg) => cfg,
         Err(e) => {
-            error!("Failed to load configuration: {}", e);
-            show_alert(
-                "HandsOff - Configuration Not Found",
-                &format!("Please run setup first:\n\nOpen Terminal and run:\n~/Applications/HandsOff.app/Contents/MacOS/handsoff-tray --setup\n\nOr run:\nhandsoff --setup\n\nError: {}", e)
-            );
-            std::process::exit(1);
+            info!("Configuration not found, creating default config with passphrase '{}': {}", DEFAULT_PASSPHRASE, e);
+
+            // Create default config with:
+            // - passphrase: DEFAULT_PASSPHRASE
+            // - auto_lock: 120 (120 seconds)
+            // - auto_unlock: 0 (disabled)
+            // - lock_hotkey: None (defaults to L)
+            // - talk_hotkey: None (defaults to T)
+            match Config::new(DEFAULT_PASSPHRASE, 120, 0, None, None) {
+                Ok(config) => {
+                    if let Err(save_err) = config.save() {
+                        warn!("Failed to save default config: {}", save_err);
+                    } else {
+                        info!("Default configuration saved to: {}", Config::config_path().display());
+                    }
+                    config
+                }
+                Err(create_err) => {
+                    error!("Failed to create default configuration: {}", create_err);
+                    show_alert(
+                        "HandsOff - Configuration Error",
+                        &format!("Unable to create default configuration.\n\nError: {}", create_err)
+                    );
+                    std::process::exit(1);
+                }
+            }
         }
     };
 
@@ -227,14 +244,19 @@ fn main() -> Result<()> {
 
     core.set_hotkey_config(lock_key, talk_key);
 
-    // Start core components
-    core.start_event_tap()
-        .context("Failed to start input blocking")?;
-    core.start_hotkeys().context("Failed to start hotkeys")?;
+    // Start core components only if we have accessibility permissions
+    if initial_permissions {
+        core.start_event_tap()
+            .context("Failed to start input blocking")?;
+        core.start_hotkeys().context("Failed to start hotkeys")?;
+        info!("HandsOff core components started");
+    } else {
+        info!("Skipping event tap and hotkeys start - waiting for accessibility permissions");
+    }
+
+    // Always start background threads (includes permission monitoring)
     core.start_background_threads()
         .context("Failed to start background threads")?;
-
-    info!("HandsOff core components started");
 
     // NOTE: CFRunLoop thread is now managed by HandsOffCore
     // It starts when event tap is created and stops when event tap is destroyed
@@ -647,7 +669,7 @@ fn build_tooltip(
     tooltip.push_str(&format!("• Press Ctrl+Cmd+Shift+{}\n\n", lock_key));
 
     tooltip.push_str("TO UNLOCK:\n");
-    tooltip.push_str("• Type your passphrase on keyboard\n");
+    tooltip.push_str("• Type your passphrase on keyboard (Default: quit)\n");
     tooltip.push_str("• Wait 5 sec between attempts if you mistype\n\n");
 
     // Hotkeys
