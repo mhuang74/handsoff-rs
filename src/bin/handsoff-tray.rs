@@ -3,7 +3,8 @@
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use handsoff::{app_state::AUTO_UNLOCK_DEFAULT_SECONDS, config, config_file::Config, HandsOffCore};
+use handsoff::app_state::AUTO_UNLOCK_DEFAULT_SECONDS;
+use handsoff::{config, config_file::Config, HandsOffCore};
 use log::{error, info, warn};
 use std::cell::RefCell;
 use std::io::{self, Write};
@@ -195,14 +196,8 @@ fn main() -> Result<()> {
     // Create HandsOffCore instance
     let mut core = HandsOffCore::new(&passphrase).context("Failed to initialize HandsOff")?;
 
-    // Configure auto-unlock timeout (precedence: env var > config file)
-    // NOTE: A timeout of 0 means disabled (None)
-    let auto_unlock_timeout =
-        config::parse_auto_unlock_timeout().or(if cfg.auto_unlock_timeout == 0 {
-            None
-        } else {
-            Some(cfg.auto_unlock_timeout)
-        });
+    // Configure auto-unlock timeout (precedence: env var > config file > build default)
+    let auto_unlock_timeout = config::resolve_auto_unlock_timeout(cfg.auto_unlock_timeout);
     core.set_auto_unlock_timeout(auto_unlock_timeout);
 
     // Configure auto-lock timeout (precedence: env var > config file)
