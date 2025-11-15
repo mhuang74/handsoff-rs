@@ -1,6 +1,6 @@
 [package]
 name = "handsoff"
-version = "0.6.1"
+version = "0.6.2"
 edition = "2021"
 authors = ["Michael S. Huang"]
 description = "macOS utility to block unsolicited input from unwanted hands"
