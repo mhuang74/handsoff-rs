@@ -5,7 +5,7 @@ use std::time::Instant;
 // Auto-lock timeout configuration constants
 pub const AUTO_LOCK_MIN_SECONDS: u64 = 20;
 pub const AUTO_LOCK_MAX_SECONDS: u64 = 600;
-pub const AUTO_LOCK_DEFAULT_SECONDS: u64 = 30;
+pub const AUTO_LOCK_DEFAULT_SECONDS: u64 = 120;
 
 // Auto-unlock timeout configuration constants
 // In release builds, default is 0 (disabled for end users).
@@ -34,7 +34,7 @@ pub struct AppStateInner {
     pub last_input_time: Instant,
     /// Current passphrase hash (SHA-256, hex-encoded)
     pub passphrase_hash: Option<String>,
-    /// Auto-lock timeout in seconds (default: 30 seconds)
+    /// Auto-lock timeout in seconds (default: 120 seconds)
     pub auto_lock_timeout: u64,
     /// Input buffer reset timeout in seconds (default: 5)
     pub buffer_reset_timeout: u64,

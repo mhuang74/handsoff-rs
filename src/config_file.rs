@@ -18,9 +18,9 @@ use std::os::unix::fs::PermissionsExt;
 pub struct Config {
     /// Base64-encoded AES-256-GCM encrypted passphrase
     pub encrypted_passphrase: String,
-    /// Auto-lock timeout in seconds (default: 30)
+    /// Auto-lock timeout in seconds (default: 120)
     pub auto_lock_timeout: u64,
-    /// Auto-unlock timeout in seconds (default: 60)
+    /// Auto-unlock timeout in seconds (default: 0/disabled in Release, 60 in Debug)
     pub auto_unlock_timeout: u64,
     /// Lock hotkey last key (A-Z, default: L)
     #[serde(default)]

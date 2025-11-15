@@ -31,8 +31,8 @@ SETUP:
 
   This will prompt you for:
     - Secret passphrase (typing hidden for security)
-    - Auto-lock timeout (default: 30 seconds)
-    - Auto-unlock timeout (default: 60 seconds)
+    - Auto-lock timeout (default: 120 seconds)
+    - Auto-unlock timeout (default: 0 seconds/disabled)
 
   Configuration is stored encrypted at:
     ~/Library/Application Support/handsoff/config.toml
@@ -134,9 +134,9 @@ fn run_setup() -> Result<()> {
     // Prompt for timeouts
     println!("\nTimeout Configuration");
     println!("---------------------\n");
-    let auto_lock = prompt_number("Auto-lock timeout in seconds (default: 30): ", 30)?;
+    let auto_lock = prompt_number("Auto-lock timeout in seconds (default: 120): ", 120)?;
 
-    let auto_unlock = prompt_number("Auto-unlock timeout in seconds (default: 60): ", 60)?;
+    let auto_unlock = prompt_number("Auto-unlock timeout in seconds (default: 0/disabled): ", 0)?;
 
     // Create and save config
     let config = Config::new(&passphrase, auto_lock, auto_unlock, lock_key, talk_key)

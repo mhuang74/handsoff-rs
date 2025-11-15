@@ -163,8 +163,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Config {
     pub encrypted_passphrase: String,  // Base64 AES-encrypted
-    pub auto_lock_timeout: u64,        // Seconds (default: 30)
-    pub auto_unlock_timeout: u64,      // Seconds (default: 60)
+    pub auto_lock_timeout: u64,        // Seconds (default: 120)
+    pub auto_unlock_timeout: u64,      // Seconds (default: 0/disabled in Release, 60 in Debug)
 }
 
 impl Config {
@@ -197,8 +197,8 @@ impl Config {
 **Example config.toml:**
 ```toml
 encrypted_passphrase = "YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXoxMjM0NTY3ODkw..."
-auto_lock_timeout = 30
-auto_unlock_timeout = 60
+auto_lock_timeout = 120
+auto_unlock_timeout = 0  # 0 = disabled (default for Release builds)
 ```
 
 ### 4. Update CLI Binary
@@ -252,8 +252,8 @@ fn run_setup() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Prompt for timeouts
-    let auto_lock = prompt_number("Auto-lock timeout in seconds (default: 30): ", 30)?;
-    let auto_unlock = prompt_number("Auto-unlock timeout in seconds (default: 60): ", 60)?;
+    let auto_lock = prompt_number("Auto-lock timeout in seconds (default: 120): ", 120)?;
+    let auto_unlock = prompt_number("Auto-unlock timeout in seconds (default: 0/disabled): ", 0)?;
 
     // Create and save config
     let config = Config::new(&passphrase, auto_lock, auto_unlock)?;
@@ -486,8 +486,8 @@ echo "   ~/Applications/HandsOff.app/Contents/MacOS/handsoff-tray --setup"
 echo ""
 echo "   This will prompt you for:"
 echo "   - Secret passphrase (typing hidden)"
-echo "   - Auto-lock timeout (default: 30s)"
-echo "   - Auto-unlock timeout (default: 60s)"
+echo "   - Auto-lock timeout (default: 120s)"
+echo "   - Auto-unlock timeout (default: 0s/disabled)"
 echo ""
 echo "3. Restart the App:"
 echo "   The tray app should start automatically at login."
@@ -574,8 +574,8 @@ handsoff --setup
 
 The setup wizard will prompt you for:
 - Secret passphrase (typing hidden for security)
-- Auto-lock timeout (default: 30 seconds)
-- Auto-unlock timeout (default: 60 seconds)
+- Auto-lock timeout (default: 120 seconds)
+- Auto-unlock timeout (default: 0 seconds/disabled)
 
 Configuration is stored encrypted at:
 `~/Library/Application Support/handsoff/config.toml`

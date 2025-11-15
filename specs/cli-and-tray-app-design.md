@@ -213,7 +213,7 @@ All threads will be spawned by `HandsOffCore::start_background_threads()`.
 handsoff [OPTIONS]
 
 Options:
-  -a, --auto-lock <SECONDS>   Auto-lock after inactivity (20-600s, default: 30)
+  -a, --auto-lock <SECONDS>   Auto-lock after inactivity (20-600s, default: 120)
   -h, --help                  Print help
   -V, --version               Print version
 ```

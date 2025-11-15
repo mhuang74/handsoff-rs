@@ -61,8 +61,8 @@ The setup wizard prompts for:
 1. Secret passphrase (with confirmation, typing hidden)
 2. Lock hotkey - the last key for Cmd+Ctrl+Shift+? (default: L)
 3. Talk hotkey - the last key for Cmd+Ctrl+Shift+? (default: T)
-4. Auto-lock timeout (default: 30 seconds)
-5. Auto-unlock timeout (default: 60 seconds)
+4. Auto-lock timeout (default: 120 seconds)
+5. Auto-unlock timeout (default: 0 seconds/disabled)
 
 The configuration is saved to `~/Library/Application Support/handsoff/config.toml`
 

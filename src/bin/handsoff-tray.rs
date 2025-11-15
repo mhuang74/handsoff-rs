@@ -103,7 +103,7 @@ fn run_setup() -> Result<()> {
     // Prompt for timeouts
     println!("\nTimeout Configuration");
     println!("---------------------\n");
-    let auto_lock = prompt_number("Auto-lock timeout in seconds (default: 30): ", 30)?;
+    let auto_lock = prompt_number("Auto-lock timeout in seconds (default: 120): ", 120)?;
 
     // Build-dependent default for auto-unlock:
     // - Release builds: 0 seconds (disabled by default for end users)

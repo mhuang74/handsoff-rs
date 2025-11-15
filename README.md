@@ -10,7 +10,7 @@ A macOS utility that prevents accidental or unsolicited input from keyboard, tra
 
 - **Complete Input Blocking**: Blocks all keyboard, trackpad, and mouse inputs while keeping the screen visible
 - **Secure Unlocking**: Unlock via passphrase
-- **Auto-Lock**: Automatically locks after 30 seconds of inactivity (configurable)
+- **Auto-Lock**: Automatically locks after 120 seconds of inactivity (configurable)
 - **Smart Buffer Reset**: 5-second input buffer reset to handle accidental input
 - **Configurable Hotkeys**: Customize the last key while keeping `Cmd+Ctrl+Shift` modifiers
   - `Ctrl+Cmd+Shift+L` (default): Enable lock
@@ -44,7 +44,7 @@ HandsOff is available in two forms: **Tray App** (recommended for most users) an
    ```
    This will prompt you for:
    - Secret passphrase (typing hidden for security)
-   - Auto-lock timeout (default: 30 seconds)
+   - Auto-lock timeout (default: 120 seconds)
    - Auto-unlock timeout (default: 0 seconds/disabled)
 5. Start the app:
    ```bash
@@ -78,7 +78,7 @@ HandsOff is available in two forms: **Tray App** (recommended for most users) an
    ```
    This will prompt you for:
    - Secret passphrase (typing hidden for security)
-   - Auto-lock timeout (default: 30 seconds)
+   - Auto-lock timeout (default: 120 seconds)
    - Auto-unlock timeout (default: 0 seconds in Release builds, 60 seconds in Debug/Dev builds; can be overridden via config or HANDS_OFF_AUTO_UNLOCK)
 5. Run the CLI:
    ```bash
@@ -115,7 +115,7 @@ Both CLI and Tray App use the same encrypted configuration file:
 
 The setup wizard will prompt you for:
 - Secret passphrase (stored encrypted using AES-256-GCM)
-- Auto-lock timeout (default: 30 seconds)
+- Auto-lock timeout (default: 120 seconds)
 - Auto-unlock timeout (default: 0 seconds in Release builds, 60 seconds in Debug/Dev builds; can be overridden via config or HANDS_OFF_AUTO_UNLOCK)
 
 **Changing configuration:**
