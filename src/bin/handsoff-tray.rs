@@ -150,7 +150,7 @@ fn main() -> Result<()> {
             error!("Failed to decrypt passphrase: {}", e);
             show_alert(
                 "HandsOff - Configuration Error",
-                &format!("Failed to decrypt passphrase.\nYour configuration file may be corrupted.\n\nRun setup again:\n~/Applications/HandsOff.app/Contents/MacOS/handsoff-tray --setup\n\nError: {}", e)
+                &format!("Unable to read your saved passphrase.\nYour settings file may need to be recreated.\n\nRun setup again:\n~/Applications/HandsOff.app/Contents/MacOS/handsoff-tray --setup\n\nError: {}", e)
             );
             std::process::exit(1);
         }
@@ -175,7 +175,7 @@ fn main() -> Result<()> {
 
     // Start core components
     core.start_event_tap()
-        .context("Failed to start event tap")?;
+        .context("Failed to start input blocking")?;
     core.start_hotkeys().context("Failed to start hotkeys")?;
     core.start_background_threads()
         .context("Failed to start background threads")?;
@@ -270,9 +270,9 @@ fn main() -> Result<()> {
         {
             let mut core_borrow = core.borrow_mut();
             if core_borrow.state.should_stop_event_tap_and_clear() {
-                warn!("Tray: Stopping event tap due to permission loss");
+                warn!("Tray: Stopping input blocking due to permission loss");
                 core_borrow.stop_event_tap();
-                info!("Tray: Event tap stopped - normal input restored");
+                info!("Tray: Input blocking stopped - normal input restored");
             }
         }
 
@@ -280,29 +280,29 @@ fn main() -> Result<()> {
         {
             let mut core_borrow = core.borrow_mut();
             if core_borrow.state.should_start_event_tap_and_clear() {
-                info!("Tray: Restarting event tap - permissions restored");
+                info!("Tray: Restarting input blocking - permissions restored");
                 match core_borrow.restart_event_tap() {
                     Ok(()) => {
-                        info!("Tray: Event tap restarted successfully");
+                        info!("Tray: Input blocking restarted successfully");
 
                         #[cfg(target_os = "macos")]
                         {
                             let _ = notify_rust::Notification::new()
-                                .summary("HandsOff - Event Tap Restarted")
-                                .body("Event tap restarted successfully.\nHandsOff is now active.")
+                                .summary("HandsOff - Input Blocking Restarted")
+                                .body("Input blocking restarted successfully.\nHandsOff is now active.")
                                 .timeout(notify_rust::Timeout::Milliseconds(3000))
                                 .show();
                         }
                     }
                     Err(e) => {
-                        warn!("Tray: Failed to restart event tap: {}", e);
+                        warn!("Tray: Failed to restart input blocking: {}", e);
 
                         #[cfg(target_os = "macos")]
                         {
                             let _ = notify_rust::Notification::new()
                                 .summary("HandsOff - Restart Failed")
                                 .body(&format!(
-                                    "Failed to restart event tap: {}\n\nUse Reset menu to try again.",
+                                    "Failed to restart input blocking: {}\n\nUse Reset menu to try again.",
                                     e
                                 ))
                                 .timeout(notify_rust::Timeout::Milliseconds(5000))
@@ -408,12 +408,12 @@ fn handle_disable(core: Rc<RefCell<HandsOffCore>>) {
         error!("Error disabling: {}", e);
         show_alert("HandsOff - Error", &format!("Failed to disable: {}", e));
     } else {
-        info!("HandsOff disabled - minimal CPU mode");
+        info!("HandsOff disabled - low system resources mode (input blocking paused)");
         #[cfg(target_os = "macos")]
         {
             let _ = notify_rust::Notification::new()
                 .summary("HandsOff")
-                .body("Disabled - Minimal CPU mode\nUse Reset to re-enable")
+                .body("Disabled - Low system resources mode\nInput blocking paused. Use Reset to re-enable")
                 .timeout(notify_rust::Timeout::Milliseconds(3000))
                 .show();
         }
@@ -471,7 +471,7 @@ fn handle_reset(core: Rc<RefCell<HandsOffCore>>, passphrase: &str) {
                 warn!("Could not re-enable during reset: {}", e);
                 show_alert(
                     "HandsOff - Reset Partial Success",
-                    &format!("App state reset but could not re-enable:\n{}\n\nPlease check accessibility permissions.", e)
+                    &format!("Timers cleared but could not re-enable:\n{}\n\nPlease check accessibility permissions.", e)
                 );
             }
         }
@@ -479,27 +479,27 @@ fn handle_reset(core: Rc<RefCell<HandsOffCore>>, passphrase: &str) {
         // Attempt to restart event tap (will check permissions internally)
         match core.restart_event_tap() {
             Ok(()) => {
-                info!("Event tap restarted successfully during reset");
+                info!("Input blocking restarted successfully during reset");
                 #[cfg(target_os = "macos")]
                 {
                     let _ = notify_rust::Notification::new()
                         .summary("HandsOff")
-                        .body("App reset complete - Event tap restarted\nReady to use")
+                        .body("Reset complete - Input blocking restarted\nReady to use")
                         .timeout(notify_rust::Timeout::Milliseconds(3000))
                         .show();
                 }
             }
             Err(e) => {
-                warn!("Could not restart event tap during reset: {}", e);
+                warn!("Could not restart input blocking during reset: {}", e);
                 show_alert(
                     "HandsOff - Reset Partial Success",
-                    &format!("App state reset but event tap could not be restarted:\n{}\n\nPlease check accessibility permissions.", e)
+                    &format!("Timers cleared but input blocking could not be restarted:\n{}\n\nPlease check accessibility permissions.", e)
                 );
             }
         }
     }
 
-    info!("Finished handling app state reset");
+    info!("Finished handling reset");
 }
 
 /// Show native macOS alert dialog
@@ -533,7 +533,7 @@ fn build_tooltip(
     // Current status
     if is_disabled {
         tooltip.push_str("STATUS: DISABLED\n");
-        tooltip.push_str("Minimal CPU mode - all features suspended\n");
+        tooltip.push_str("Low system resources mode - all features paused\n");
         tooltip.push_str("Use Reset menu to re-enable HandsOff\n\n");
     } else if !has_permissions {
         tooltip.push_str("STATUS: NO PERMISSIONS\n");
@@ -574,9 +574,9 @@ fn build_tooltip(
     // Menu items
     tooltip.push_str("MENU:\n");
     tooltip.push_str("• Lock Input: Lock immediately\n");
-    tooltip.push_str("• Disable: Suspend Auto-Lock and minimize system resources\n");
+    tooltip.push_str("• Disable: Pause input blocking and reduce system resources\n");
     tooltip.push_str("  (Use Reset to re-enable HandsOff)\n");
-    tooltip.push_str("• Reset: Reset app state and restart event tap\n\n");
+    tooltip.push_str("• Reset: Clear all timers and restart input blocking\n\n");
 
     // Instructions
     tooltip.push_str("TO LOCK:\n");
@@ -590,7 +590,7 @@ fn build_tooltip(
     // Hotkeys
     tooltip.push_str("HOTKEYS:\n");
     tooltip.push_str("• Ctrl+Cmd+Shift+L: Lock input\n");
-    tooltip.push_str("• Ctrl+Cmd+Shift+T (hold): Talk mode\n\n");
+    tooltip.push_str("• Ctrl+Cmd+Shift+T (hold): Hotkey to Unmute (Spacebar)\n\n");
 
     // Repository info
     tooltip.push_str("Michael S. Huang\n");
