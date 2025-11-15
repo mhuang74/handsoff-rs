@@ -2,17 +2,17 @@
 
 ## The Problem We're Solving
 
-HandsOff Tray App requires a secret passphrase to unlock when input is locked. The app reads this passphrase from the `HANDS_OFF_SECRET_PHRASE` environment variable.
+HandsOff Tray App requires initial configuration including a secret passphrase, timeout settings, and hotkey preferences. This configuration must be completed before the app can function properly.
 
-**The Challenge**: When you double-click a macOS .app bundle (from Finder, Spotlight, or Login Items), it does **NOT** inherit environment variables from your shell (`.zshrc`, `.bash_profile`, etc.). This is because macOS launches GUI applications through `launchd`, which has its own minimal environment that doesn't read shell configuration files.
+**The Challenge**: After installing a macOS .app bundle, users need an easy way to configure the application with their preferences. The configuration includes sensitive data (passphrase) that shouldn't be stored in plain text or in easily accessible locations.
 
-## The Solution: PKG Installer with Launch Agent
+## The Solution: PKG Installer with Setup Wizard
 
 We've created an automated installer package (.pkg) that:
-1. Installs HandsOff.app to /Applications
-2. Includes a setup script that prompts for your passphrase
-3. Creates a Launch Agent plist with the passphrase as an environment variable
-4. Configures the app to start automatically at login with the correct environment
+1. Installs HandsOff.app to ~/Applications
+2. Provides a setup wizard (`handsoff-tray --setup`) that prompts for configuration
+3. Stores encrypted configuration in `~/Library/Application Support/handsoff/config.toml`
+4. Creates a Launch Agent to start the app automatically at login
 
 ## Building the Installer
 
@@ -54,14 +54,17 @@ The installer shows:
 After installation, the user opens Terminal and runs:
 
 ```bash
-/Applications/HandsOff.app/Contents/MacOS/setup-launch-agent.sh
+~/Applications/HandsOff.app/Contents/MacOS/handsoff-tray --setup
 ```
 
-The script:
-1. Prompts for passphrase (with confirmation)
-2. Creates `~/Library/LaunchAgents/com.handsoff.inputlock.plist`
-3. Loads the Launch Agent
-4. Starts HandsOff immediately
+The setup wizard prompts for:
+1. Secret passphrase (with confirmation, typing hidden)
+2. Lock hotkey - the last key for Cmd+Ctrl+Shift+? (default: L)
+3. Talk hotkey - the last key for Cmd+Ctrl+Shift+? (default: T)
+4. Auto-lock timeout (default: 30 seconds)
+5. Auto-unlock timeout (default: 60 seconds)
+
+The configuration is saved to `~/Library/Application Support/handsoff/config.toml`
 
 ### Step 3: Automatic Startup
 

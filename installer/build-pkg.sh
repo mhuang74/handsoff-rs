@@ -187,6 +187,8 @@ cat > "${INSTALLER_DIR}/welcome.html" << 'EOF'
     <p>The setup wizard will prompt you for:</p>
     <ul>
         <li>Secret passphrase (typing hidden for security)</li>
+        <li>Lock hotkey (default: L for Cmd+Ctrl+Shift+L)</li>
+        <li>Talk hotkey (default: T for Cmd+Ctrl+Shift+T)</li>
         <li>Auto-lock timeout (default: 30 seconds)</li>
         <li>Auto-unlock timeout (default: 60 seconds)</li>
     </ul>
@@ -259,12 +261,14 @@ cat > "${INSTALLER_DIR}/conclusion.html" << 'EOF'
             <li>Ensure the checkbox next to HandsOff is checked</li>
         </ol>
 
-        <h3>STEP 2: Configure Your Passphrase</h3>
+        <h3>STEP 2: Configure Your Settings</h3>
         <p>After granting permissions, open Terminal and run:</p>
         <p><code>~/Applications/HandsOff.app/Contents/MacOS/handsoff-tray --setup</code></p>
         <p>The setup wizard will prompt you for:</p>
         <ul>
             <li>Secret passphrase (typing hidden for security)</li>
+            <li>Lock hotkey (default: L for Cmd+Ctrl+Shift+L)</li>
+            <li>Talk hotkey (default: T for Cmd+Ctrl+Shift+T)</li>
             <li>Auto-lock timeout (default: 30 seconds)</li>
             <li>Auto-unlock timeout (default: 60 seconds)</li>
         </ul>
