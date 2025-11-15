@@ -264,7 +264,7 @@ fn main() -> Result<()> {
             core.stop_event_tap();
 
             // For CLI, if event tap stops, we should exit
-            eprintln!("\nEvent tap stopped due to permission loss. Exiting...");
+            eprintln!("\nInput blocking stopped due to permission loss. Exiting...");
             break;
         }
     }
