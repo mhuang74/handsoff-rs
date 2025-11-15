@@ -7,11 +7,14 @@
 //! Environment variables (all optional):
 //! - HANDS_OFF_AUTO_LOCK: Override auto-lock timeout from config file
 //! - HANDS_OFF_AUTO_UNLOCK: Override auto-unlock timeout from config file
+//! - HANDS_OFF_LOCK_HOTKEY: Override lock hotkey last key (A-Z)
+//! - HANDS_OFF_TALK_HOTKEY: Override talk hotkey last key (A-Z)
 
 use crate::app_state::{
     AUTO_LOCK_MAX_SECONDS, AUTO_LOCK_MIN_SECONDS, AUTO_UNLOCK_DEFAULT_SECONDS,
     AUTO_UNLOCK_MAX_SECONDS, AUTO_UNLOCK_MIN_SECONDS,
 };
+use crate::config_file::Config;
 use log::{debug, info, warn};
 use std::env;
 
@@ -96,6 +99,58 @@ pub fn parse_auto_lock_timeout() -> Option<u64> {
         },
         Err(_) => {
             debug!("HANDS_OFF_AUTO_LOCK not set.");
+            None
+        }
+    }
+}
+
+/// Parse the HANDS_OFF_LOCK_HOTKEY environment variable
+///
+/// Returns Some(key) if a valid letter A-Z is specified
+/// Returns None if not set or invalid
+pub fn parse_lock_hotkey() -> Option<String> {
+    match env::var("HANDS_OFF_LOCK_HOTKEY") {
+        Ok(val) => match Config::validate_hotkey(&val) {
+            Ok(()) => {
+                info!("Lock hotkey set via environment variable: {}", val);
+                Some(val.to_uppercase())
+            }
+            Err(e) => {
+                warn!(
+                    "Invalid lock hotkey '{}': {}. Using default.",
+                    val, e
+                );
+                None
+            }
+        },
+        Err(_) => {
+            debug!("HANDS_OFF_LOCK_HOTKEY not set.");
+            None
+        }
+    }
+}
+
+/// Parse the HANDS_OFF_TALK_HOTKEY environment variable
+///
+/// Returns Some(key) if a valid letter A-Z is specified
+/// Returns None if not set or invalid
+pub fn parse_talk_hotkey() -> Option<String> {
+    match env::var("HANDS_OFF_TALK_HOTKEY") {
+        Ok(val) => match Config::validate_hotkey(&val) {
+            Ok(()) => {
+                info!("Talk hotkey set via environment variable: {}", val);
+                Some(val.to_uppercase())
+            }
+            Err(e) => {
+                warn!(
+                    "Invalid talk hotkey '{}': {}. Using default.",
+                    val, e
+                );
+                None
+            }
+        },
+        Err(_) => {
+            debug!("HANDS_OFF_TALK_HOTKEY not set.");
             None
         }
     }

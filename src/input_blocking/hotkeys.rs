@@ -23,11 +23,15 @@ impl HotkeyManager {
         })
     }
 
-    /// Register the lock hotkey (default: Ctrl+Cmd+Shift+L)
-    pub fn register_lock_hotkey(&mut self) -> Result<()> {
+    /// Register the lock hotkey with configurable key (modifiers: Ctrl+Cmd+Shift)
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - The key code to use (e.g., Code::KeyL for Ctrl+Cmd+Shift+L)
+    pub fn register_lock_hotkey(&mut self, key: Code) -> Result<()> {
         let hotkey = HotKey::new(
             Some(Modifiers::CONTROL | Modifiers::SUPER | Modifiers::SHIFT),
-            Code::KeyL,
+            key,
         );
 
         self.manager
@@ -35,15 +39,19 @@ impl HotkeyManager {
             .context("Failed to register lock hotkey")?;
 
         self.lock_hotkey = Some(hotkey);
-        info!("Lock hotkey registered: Ctrl+Cmd+Shift+L");
+        info!("Lock hotkey registered: Ctrl+Cmd+Shift+{:?}", key);
         Ok(())
     }
 
-    /// Register the talk hotkey (default: Ctrl+Cmd+Shift+T)
-    pub fn register_talk_hotkey(&mut self) -> Result<()> {
+    /// Register the talk hotkey with configurable key (modifiers: Ctrl+Cmd+Shift)
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - The key code to use (e.g., Code::KeyT for Ctrl+Cmd+Shift+T)
+    pub fn register_talk_hotkey(&mut self, key: Code) -> Result<()> {
         let hotkey = HotKey::new(
             Some(Modifiers::CONTROL | Modifiers::SUPER | Modifiers::SHIFT),
-            Code::KeyT,
+            key,
         );
 
         self.manager
@@ -51,7 +59,7 @@ impl HotkeyManager {
             .context("Failed to register talk hotkey")?;
 
         self.talk_hotkey = Some(hotkey);
-        info!("Talk hotkey registered: Ctrl+Cmd+Shift+T");
+        info!("Talk hotkey registered: Ctrl+Cmd+Shift+{:?}", key);
         Ok(())
     }
 
