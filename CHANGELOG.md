@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.6.3] - 2025-11-15
+
+## 📦 Uncategorized
+
+- Fix Talk hotkey compatibility with Google Meet/Zoom
+   - PR: #10
+
+
+
 ## [0.6.1] - 2025-11-13
 
 ### Fixed
