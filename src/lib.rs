@@ -29,6 +29,10 @@ pub struct HandsOffCore {
     event_tap: Option<CGEventTapRef>,
     run_loop_source: Option<CFRunLoopSourceRef>,
     hotkey_manager: Option<HotkeyManager>,
+    /// Lock hotkey key code (default: Code::KeyL)
+    lock_key: global_hotkey::hotkey::Code,
+    /// Talk hotkey key code (default: Code::KeyT)
+    talk_key: global_hotkey::hotkey::Code,
     /// CFRunLoop thread handle and shutdown channel
     cfrunloop_thread: Option<(JoinHandle<()>, Sender<()>)>,
     /// State pointer passed to event tap (for cleanup)
@@ -47,9 +51,41 @@ impl HandsOffCore {
             event_tap: None,
             run_loop_source: None,
             hotkey_manager: None,
+            lock_key: global_hotkey::hotkey::Code::KeyL,
+            talk_key: global_hotkey::hotkey::Code::KeyT,
             cfrunloop_thread: None,
             event_tap_state_ptr: None,
         })
+    }
+
+    /// Set the hotkey configuration
+    ///
+    /// # Arguments
+    ///
+    /// * `lock_key` - The key code for the lock hotkey (e.g., Code::KeyL)
+    /// * `talk_key` - The key code for the talk hotkey (e.g., Code::KeyT)
+    pub fn set_hotkey_config(
+        &mut self,
+        lock_key: global_hotkey::hotkey::Code,
+        talk_key: global_hotkey::hotkey::Code,
+    ) {
+        self.lock_key = lock_key;
+        self.talk_key = talk_key;
+    }
+
+    /// Get the lock hotkey as a displayable string (e.g., "L", "M", etc.)
+    pub fn get_lock_key_display(&self) -> String {
+        Self::key_code_to_string(self.lock_key)
+    }
+
+    /// Get the talk hotkey as a displayable string (e.g., "T", "S", etc.)
+    pub fn get_talk_key_display(&self) -> String {
+        Self::key_code_to_string(self.talk_key)
+    }
+
+    /// Convert a Code enum to a displayable string
+    fn key_code_to_string(code: global_hotkey::hotkey::Code) -> String {
+        format!("{:?}", code).replace("Key", "")
     }
 
     /// Set the auto-lock timeout in seconds
@@ -309,7 +345,7 @@ impl HandsOffCore {
         Ok(())
     }
 
-    /// Start the hotkey manager
+    /// Start the hotkey manager using configured keys
     pub fn start_hotkeys(&mut self) -> Result<()> {
         if self.hotkey_manager.is_none() {
             let new_mgr = HotkeyManager::new().context("Failed to create hotkey manager")?;
@@ -320,10 +356,10 @@ impl HandsOffCore {
         let manager: &mut HotkeyManager = self.hotkey_manager.as_mut().unwrap();
 
         manager
-            .register_lock_hotkey()
+            .register_lock_hotkey(self.lock_key)
             .context("Failed to register lock hotkey")?;
         manager
-            .register_talk_hotkey()
+            .register_talk_hotkey(self.talk_key)
             .context("Failed to register talk hotkey")?;
 
         info!("Hotkeys registered");

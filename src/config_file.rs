@@ -4,7 +4,8 @@
 //! which includes the encrypted passphrase and timeout settings.
 
 use crate::crypto;
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
+use global_hotkey::hotkey::Code;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -21,6 +22,12 @@ pub struct Config {
     pub auto_lock_timeout: u64,
     /// Auto-unlock timeout in seconds (default: 60)
     pub auto_unlock_timeout: u64,
+    /// Lock hotkey last key (A-Z, default: L)
+    #[serde(default)]
+    pub lock_hotkey: Option<String>,
+    /// Talk hotkey last key (A-Z, default: T)
+    #[serde(default)]
+    pub talk_hotkey: Option<String>,
 }
 
 impl Config {
@@ -31,14 +38,32 @@ impl Config {
     /// * `plaintext_passphrase` - The passphrase to encrypt and store
     /// * `auto_lock` - Auto-lock timeout in seconds
     /// * `auto_unlock` - Auto-unlock timeout in seconds
-    pub fn new(plaintext_passphrase: &str, auto_lock: u64, auto_unlock: u64) -> Result<Self> {
+    /// * `lock_key` - Optional lock hotkey (A-Z), defaults to None (which becomes L)
+    /// * `talk_key` - Optional talk hotkey (A-Z), defaults to None (which becomes T)
+    pub fn new(
+        plaintext_passphrase: &str,
+        auto_lock: u64,
+        auto_unlock: u64,
+        lock_key: Option<String>,
+        talk_key: Option<String>,
+    ) -> Result<Self> {
         let encrypted_passphrase = crypto::encrypt_passphrase(plaintext_passphrase)
             .context("Failed to encrypt passphrase")?;
+
+        // Validate hotkeys if provided
+        if let Some(ref key) = lock_key {
+            Self::validate_hotkey(key)?;
+        }
+        if let Some(ref key) = talk_key {
+            Self::validate_hotkey(key)?;
+        }
 
         Ok(Self {
             encrypted_passphrase,
             auto_lock_timeout: auto_lock,
             auto_unlock_timeout: auto_unlock,
+            lock_hotkey: lock_key,
+            talk_hotkey: talk_key,
         })
     }
 
@@ -150,6 +175,73 @@ impl Config {
         crypto::decrypt_passphrase(&self.encrypted_passphrase)
             .context("Failed to decrypt passphrase")
     }
+
+    /// Get the lock hotkey Code, defaulting to KeyL if not configured
+    pub fn get_lock_key_code(&self) -> Result<Code> {
+        self.lock_hotkey
+            .as_ref()
+            .map(|s| Self::parse_key_string(s))
+            .unwrap_or(Ok(Code::KeyL))
+    }
+
+    /// Get the talk hotkey Code, defaulting to KeyT if not configured
+    pub fn get_talk_key_code(&self) -> Result<Code> {
+        self.talk_hotkey
+            .as_ref()
+            .map(|s| Self::parse_key_string(s))
+            .unwrap_or(Ok(Code::KeyT))
+    }
+
+    /// Validate that a hotkey string is a single letter A-Z (case insensitive)
+    pub fn validate_hotkey(key: &str) -> Result<()> {
+        let key_upper = key.to_uppercase();
+        if key_upper.len() != 1 {
+            return Err(anyhow!("Hotkey must be a single character"));
+        }
+        let ch = key_upper.chars().next().unwrap();
+        if !ch.is_ascii_alphabetic() {
+            return Err(anyhow!("Hotkey must be a letter A-Z"));
+        }
+        Ok(())
+    }
+
+    /// Parse a hotkey string (A-Z) to a Code enum value
+    pub fn parse_key_string(key: &str) -> Result<Code> {
+        Self::validate_hotkey(key)?;
+
+        let key_upper = key.to_uppercase();
+        let ch = key_upper.chars().next().unwrap();
+
+        match ch {
+            'A' => Ok(Code::KeyA),
+            'B' => Ok(Code::KeyB),
+            'C' => Ok(Code::KeyC),
+            'D' => Ok(Code::KeyD),
+            'E' => Ok(Code::KeyE),
+            'F' => Ok(Code::KeyF),
+            'G' => Ok(Code::KeyG),
+            'H' => Ok(Code::KeyH),
+            'I' => Ok(Code::KeyI),
+            'J' => Ok(Code::KeyJ),
+            'K' => Ok(Code::KeyK),
+            'L' => Ok(Code::KeyL),
+            'M' => Ok(Code::KeyM),
+            'N' => Ok(Code::KeyN),
+            'O' => Ok(Code::KeyO),
+            'P' => Ok(Code::KeyP),
+            'Q' => Ok(Code::KeyQ),
+            'R' => Ok(Code::KeyR),
+            'S' => Ok(Code::KeyS),
+            'T' => Ok(Code::KeyT),
+            'U' => Ok(Code::KeyU),
+            'V' => Ok(Code::KeyV),
+            'W' => Ok(Code::KeyW),
+            'X' => Ok(Code::KeyX),
+            'Y' => Ok(Code::KeyY),
+            'Z' => Ok(Code::KeyZ),
+            _ => Err(anyhow!("Invalid hotkey: {}", ch)),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -190,7 +282,8 @@ mod tests {
 
     #[test]
     fn test_config_new() {
-        let config = Config::new("test_passphrase", 30, 60).expect("Failed to create config");
+        let config =
+            Config::new("test_passphrase", 30, 60, None, None).expect("Failed to create config");
 
         assert_eq!(config.auto_lock_timeout, 30);
         assert_eq!(config.auto_unlock_timeout, 60);
@@ -200,7 +293,7 @@ mod tests {
     #[test]
     fn test_config_get_passphrase() {
         let original = "my_secret_password";
-        let config = Config::new(original, 30, 60).expect("Failed to create config");
+        let config = Config::new(original, 30, 60, None, None).expect("Failed to create config");
 
         let decrypted = config.get_passphrase().expect("Failed to get passphrase");
 
@@ -219,6 +312,8 @@ mod tests {
             encrypted_passphrase: "test_encrypted_data".to_string(),
             auto_lock_timeout: 45,
             auto_unlock_timeout: 120,
+            lock_hotkey: None,
+            talk_hotkey: None,
         };
 
         // Write to temp file
@@ -255,6 +350,8 @@ mod tests {
             encrypted_passphrase: "test".to_string(),
             auto_lock_timeout: 30,
             auto_unlock_timeout: 60,
+            lock_hotkey: None,
+            talk_hotkey: None,
         };
 
         // Write config
@@ -283,11 +380,13 @@ mod tests {
         let passphrase = "portable_test_passphrase";
 
         // Session 1: Create and get encrypted value
-        let config1 = Config::new(passphrase, 30, 60).expect("Failed to create config 1");
+        let config1 =
+            Config::new(passphrase, 30, 60, None, None).expect("Failed to create config 1");
         let encrypted1 = config1.encrypted_passphrase.clone();
 
         // Session 2: Create another config with same passphrase
-        let config2 = Config::new(passphrase, 30, 60).expect("Failed to create config 2");
+        let config2 =
+            Config::new(passphrase, 30, 60, None, None).expect("Failed to create config 2");
         let encrypted2 = config2.encrypted_passphrase.clone();
 
         // The encrypted values will be different (random nonces) but both should decrypt to same value

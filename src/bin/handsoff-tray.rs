@@ -45,6 +45,24 @@ fn prompt_number(prompt: &str, default: u64) -> Result<u64> {
     }
 }
 
+/// Prompt for a hotkey (single letter A-Z), returns Some(key) or None for default
+fn prompt_hotkey(prompt: &str, _default: &str) -> Result<Option<String>> {
+    print!("{}", prompt);
+    io::stdout().flush()?;
+
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    let input = input.trim();
+
+    if input.is_empty() {
+        Ok(None) // Use default
+    } else {
+        // Validate the input
+        Config::validate_hotkey(input)?;
+        Ok(Some(input.to_uppercase()))
+    }
+}
+
 /// Run interactive setup to configure passphrase and timeouts
 fn run_setup() -> Result<()> {
     println!("HandsOff Setup");
@@ -78,8 +96,24 @@ fn run_setup() -> Result<()> {
     );
     let auto_unlock = prompt_number(&auto_unlock_prompt, AUTO_UNLOCK_DEFAULT_SECONDS)?;
 
+    // Prompt for hotkeys
+    println!("\nHotkey Configuration");
+    println!("--------------------");
+    println!("Configure the hotkeys (modifiers Cmd+Ctrl+Shift are mandatory, but choose the last key).");
+    println!("Enter a single letter A-Z, or press Enter to use the default.\n");
+
+    let lock_key = prompt_hotkey("Lock hotkey (default: L): ", "L")?;
+    let talk_key = prompt_hotkey("Talk hotkey (Hotkey to Unmute, default: T): ", "T")?;
+
+    // Validate that lock and talk keys are different
+    if let (Some(ref lock), Some(ref talk)) = (&lock_key, &talk_key) {
+        if lock == talk {
+            anyhow::bail!("Error: Lock and Talk hotkeys must be different");
+        }
+    }
+
     // Create and save config
-    let config = Config::new(&passphrase, auto_lock, auto_unlock)
+    let config = Config::new(&passphrase, auto_lock, auto_unlock, lock_key, talk_key)
         .context("Failed to create configuration")?;
 
     config.save().context("Failed to save configuration")?;
@@ -172,6 +206,21 @@ fn main() -> Result<()> {
     // Configure auto-lock timeout (precedence: env var > config file)
     let auto_lock_timeout = config::parse_auto_lock_timeout().or(Some(cfg.auto_lock_timeout));
     core.set_auto_lock_timeout(auto_lock_timeout);
+
+    // Configure hotkeys (precedence: env var > config file > defaults)
+    let lock_key = if let Some(key_str) = config::parse_lock_hotkey() {
+        Config::validate_hotkey(&key_str).ok();
+        Config::parse_key_string(&key_str).unwrap_or_else(|_| cfg.get_lock_key_code().unwrap())
+    } else {
+        cfg.get_lock_key_code().context("Failed to parse lock hotkey")?
+    };
+    let talk_key = if let Some(key_str) = config::parse_talk_hotkey() {
+        Config::validate_hotkey(&key_str).ok();
+        Config::parse_key_string(&key_str).unwrap_or_else(|_| cfg.get_talk_key_code().unwrap())
+    } else {
+        cfg.get_talk_key_code().context("Failed to parse talk hotkey")?
+    };
+    core.set_hotkey_config(lock_key, talk_key);
 
     // Start core components
     core.start_event_tap()
@@ -579,9 +628,12 @@ fn build_tooltip(
     tooltip.push_str("• Reset: Clear all timers and restart input blocking\n\n");
 
     // Instructions
+    let lock_key = core.get_lock_key_display();
+    let talk_key = core.get_talk_key_display();
+
     tooltip.push_str("TO LOCK:\n");
     tooltip.push_str("• Click 'Lock Input' menu, OR\n");
-    tooltip.push_str("• Press Ctrl+Cmd+Shift+L\n\n");
+    tooltip.push_str(&format!("• Press Ctrl+Cmd+Shift+{}\n\n", lock_key));
 
     tooltip.push_str("TO UNLOCK:\n");
     tooltip.push_str("• Type your passphrase on keyboard\n");
@@ -589,8 +641,11 @@ fn build_tooltip(
 
     // Hotkeys
     tooltip.push_str("HOTKEYS:\n");
-    tooltip.push_str("• Ctrl+Cmd+Shift+L: Lock input\n");
-    tooltip.push_str("• Ctrl+Cmd+Shift+T (hold): Hotkey to Unmute (Spacebar)\n\n");
+    tooltip.push_str(&format!("• Ctrl+Cmd+Shift+{}: Lock input\n", lock_key));
+    tooltip.push_str(&format!(
+        "• Ctrl+Cmd+Shift+{} (hold): Hotkey to Unmute (Spacebar)\n\n",
+        talk_key
+    ));
 
     // Repository info
     tooltip.push_str("Michael S. Huang\n");

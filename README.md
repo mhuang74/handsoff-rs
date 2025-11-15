@@ -12,9 +12,9 @@ A macOS utility that prevents accidental or unsolicited input from keyboard, tra
 - **Secure Unlocking**: Unlock via passphrase
 - **Auto-Lock**: Automatically locks after 30 seconds of inactivity (configurable)
 - **Smart Buffer Reset**: 5-second input buffer reset to handle accidental input
-- **Hotkeys**:
-  - `Ctrl+Cmd+Shift+L`: Enable lock
-  - `Ctrl+Cmd+Shift+T`: Talk hotkey (spacebar passthrough for unmuting)
+- **Configurable Hotkeys**: Customize the last key while keeping `Cmd+Ctrl+Shift` modifiers
+  - `Ctrl+Cmd+Shift+L` (default): Enable lock
+  - `Ctrl+Cmd+Shift+T` (default): Talk hotkey (spacebar passthrough for unmuting)
 - **Microphone & Camera**: Video conferencing apps continue to work normally
 - **Menu Bar Interface**: Unobtrusive menu bar icon showing lock status (locked: red)
 - **Auto-Unlock Safety Feature [CLI Only]**: Configurable timeout that automatically unlocks after a set period to prevent permanent lockouts (disabled by default)
@@ -131,6 +131,12 @@ export HANDS_OFF_AUTO_LOCK=60
 
 # Optional: Override auto-unlock timeout (60-900 seconds, 0=disabled)
 export HANDS_OFF_AUTO_UNLOCK=300
+
+# Optional: Override lock hotkey last key (A-Z)
+export HANDS_OFF_LOCK_HOTKEY=L
+
+# Optional: Override talk hotkey last key (A-Z)
+export HANDS_OFF_TALK_HOTKEY=T
 ```
 
 For permanent overrides, add these to your `~/.zshrc` or `~/.bash_profile`.
