@@ -109,7 +109,7 @@ cat > "${DISTRIBUTION_XML}" << EOF
 
     <!-- Define documents displayed at various steps -->
     <welcome file="welcome.html" mime-type="text/html" />
-    <license file="LICENSE" />
+    <license file="EULA" />
     <conclusion file="conclusion.html" mime-type="text/html" />
 
     <!-- Define the component package -->
@@ -284,10 +284,13 @@ cat > "${INSTALLER_DIR}/conclusion.html" << 'EOF'
 </html>
 EOF
 
-# Copy LICENSE file to installer directory
-if [ -f "LICENSE" ]; then
-    cp LICENSE "${INSTALLER_DIR}/"
-    echo "✓ License included"
+# Copy EULA file to installer directory
+if [ -f "EULA" ]; then
+    cp EULA "${INSTALLER_DIR}/"
+    echo "✓ EULA included"
+else
+    echo "✗ ERROR: EULA not found in project root"
+    exit 1
 fi
 
 echo "✓ Installer resources created"
@@ -333,7 +336,7 @@ rm -f "${PKG_COMPONENT}"
 rm -f "${DISTRIBUTION_XML}"
 rm -f "${INSTALLER_DIR}/welcome.html"
 rm -f "${INSTALLER_DIR}/conclusion.html"
-rm -f "${INSTALLER_DIR}/LICENSE"
+rm -f "${INSTALLER_DIR}/EULA"
 
 # Clean up build artifacts to prevent bundle relocation during testing
 echo ""
