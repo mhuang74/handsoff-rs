@@ -2,11 +2,7 @@
 
 ## [0.6.4] - 2025-11-15
 
-- no changes
-
-## [0.6.4] - 2025-11-15
-
-- no changes
+- Set default passphrase to `quit`, so user can skip setup and immediately try out HandsOff
 
 ## [0.6.3] - 2025-11-15
 
