@@ -281,6 +281,7 @@ fn main() -> Result<()> {
 
     // Track state for tooltip updates and permission state
     let mut was_locked = false;
+    let mut was_disabled = false;
     let mut last_tooltip = String::new();
     let mut has_permissions = true; // Assume true at start (already verified at startup)
 
@@ -390,11 +391,14 @@ fn main() -> Result<()> {
             has_permissions = current_permissions;
         }
 
-        // Update icon when lock state changes
-        if is_locked != was_locked {
+        // Update icon when lock state or disabled state changes
+        if is_locked != was_locked || is_disabled != was_disabled {
             was_locked = is_locked;
+            was_disabled = is_disabled;
 
-            let icon = if is_locked {
+            let icon = if is_disabled {
+                create_icon_disabled()
+            } else if is_locked {
                 create_icon_locked()
             } else {
                 create_icon_unlocked()
@@ -403,18 +407,20 @@ fn main() -> Result<()> {
                 error!("Failed to update tray icon: {}", e);
             }
 
-            // Show notification on state change
+            // Show notification on state change (but not for disabled, handled elsewhere)
             #[cfg(target_os = "macos")]
             {
-                let _ = notify_rust::Notification::new()
-                    .summary("HandsOff")
-                    .body(if is_locked {
-                        "Input locked - Type passphrase to unlock"
-                    } else {
-                        "Input unlocked"
-                    })
-                    .timeout(notify_rust::Timeout::Milliseconds(3000))
-                    .show();
+                if !is_disabled {
+                    let _ = notify_rust::Notification::new()
+                        .summary("HandsOff")
+                        .body(if is_locked {
+                            "Input locked - Type passphrase to unlock"
+                        } else {
+                            "Input unlocked"
+                        })
+                        .timeout(notify_rust::Timeout::Milliseconds(3000))
+                        .show();
+                }
             }
         }
 
@@ -680,6 +686,12 @@ fn create_icon_unlocked() -> tray_icon::Icon {
 /// Create locked icon (red circle)
 fn create_icon_locked() -> tray_icon::Icon {
     let png_data = include_bytes!("../../assets/tray_locked.png");
+    load_png_icon(png_data)
+}
+
+/// Create disabled icon
+fn create_icon_disabled() -> tray_icon::Icon {
+    let png_data = include_bytes!("../../assets/tray_disabled.png");
     load_png_icon(png_data)
 }
 
