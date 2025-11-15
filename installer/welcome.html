@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; font-size: 13px; line-height: 1.6; }
+        h1 { font-size: 24px; font-weight: 300; margin-bottom: 10px; }
+        h2 { font-size: 16px; font-weight: 500; margin-top: 20px; margin-bottom: 10px; }
+        ul { margin: 10px 0; padding-left: 25px; }
+        code { background: rgba(0,0,0,0.08); padding: 2px 6px; border-radius: 3px; font-family: monospace; font-size: 12px; }
+        .warning {
+            background: rgba(255,193,7,0.15);
+            border: 1px solid rgba(255,193,7,0.5);
+            border-left: 4px solid #ffc107;
+            padding: 10px;
+            margin: 15px 0;
+        }
+
+        @media (prefers-color-scheme: dark) {
+            code { background: rgba(255,255,255,0.1); }
+            .warning {
+                background: rgba(255,193,7,0.15);
+                border: 1px solid rgba(255,193,7,0.4);
+                border-left: 4px solid #ffc107;
+            }
+        }
+    </style>
+</head>
+<body>
+    <h1>Welcome to HandsOff</h1>
+    <p>This installer will install HandsOff, a macOS utility to block unsolicited input during video calls, presentations, or when leaving your laptop unattended.</p>
+
+    <h2>What This Installer Does</h2>
+    <ul>
+        <li>Installs HandsOff.app to ~/Applications (your user Applications folder)</li>
+        <li>Automatically configures Launch Agent for startup at login</li>
+        <li>No administrator password required</li>
+    </ul>
+
+    <h2>After Installation</h2>
+    <p>You will need to complete two steps:</p>
+    <ol>
+        <li>Grant Accessibility permissions in System Preferences</li>
+        <li>Run the setup command to configure your passphrase:
+            <br><code>~/Applications/HandsOff.app/Contents/MacOS/handsoff-tray --setup</code>
+        </li>
+    </ol>
+    <p>The setup wizard will prompt you for:</p>
+    <ul>
+        <li>Secret passphrase (typing hidden for security)</li>
+        <li>Lock hotkey (default: L for Cmd+Ctrl+Shift+L)</li>
+        <li>Talk hotkey (default: T for Cmd+Ctrl+Shift+T)</li>
+        <li>Auto-lock timeout (default: 30 seconds)</li>
+        <li>Auto-unlock timeout (default: 60 seconds)</li>
+    </ul>
+
+    <div class="warning">
+        <strong>Important:</strong> HandsOff requires Accessibility permissions to function. You will be prompted to grant these permissions on first launch.
+    </div>
+</body>
+</html>

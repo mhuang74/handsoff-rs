@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; font-size: 13px; line-height: 1.6; }
+        h1 { font-size: 24px; font-weight: 300; margin-bottom: 10px; }
+        h2 { font-size: 16px; font-weight: 500; margin-top: 20px; margin-bottom: 10px; }
+        h3 { font-size: 14px; font-weight: 500; margin-top: 15px; margin-bottom: 8px; }
+        code { background: rgba(0,0,0,0.08); padding: 2px 6px; border-radius: 3px; font-family: monospace; font-size: 12px; }
+        ol, ul { margin: 10px 0; padding-left: 25px; }
+        .success {
+            background: rgba(40,167,69,0.15);
+            border: 1px solid rgba(40,167,69,0.5);
+            border-left: 4px solid #28a745;
+            padding: 10px;
+            margin: 15px 0;
+        }
+        .next-steps {
+            background: rgba(0,123,255,0.15);
+            border: 1px solid rgba(0,123,255,0.5);
+            border-left: 4px solid #007bff;
+            padding: 10px;
+            margin: 15px 0;
+        }
+
+        @media (prefers-color-scheme: dark) {
+            code { background: rgba(255,255,255,0.1); }
+            .success {
+                background: rgba(40,167,69,0.2);
+                border: 1px solid rgba(40,167,69,0.4);
+                border-left: 4px solid #4caf50;
+            }
+            .next-steps {
+                background: rgba(33,150,243,0.2);
+                border: 1px solid rgba(33,150,243,0.4);
+                border-left: 4px solid #2196f3;
+            }
+        }
+    </style>
+</head>
+<body>
+    <h1>Installation Complete!</h1>
+
+    <div class="success">
+        HandsOff has been installed to ~/Applications/HandsOff.app
+    </div>
+
+    <div class="next-steps">
+        <h2>Next Steps: Complete Setup</h2>
+
+        <h3>STEP 1: Grant Accessibility Permissions</h3>
+        <p>You must grant Accessibility permissions for HandsOff to function:</p>
+        <ol>
+            <li>Go to: <strong>System Preferences → Security & Privacy → Privacy → Accessibility</strong></li>
+            <li>Click the lock icon to make changes</li>
+            <li>Click the <strong>+</strong> button and add <code>~/Applications/HandsOff.app</code></li>
+            <li>Ensure the checkbox next to HandsOff is checked</li>
+        </ol>
+
+        <h3>STEP 2: Configure Your Settings</h3>
+        <p>After granting permissions, open Terminal and run:</p>
+        <p><code>~/Applications/HandsOff.app/Contents/MacOS/handsoff-tray --setup</code></p>
+        <p>The setup wizard will prompt you for:</p>
+        <ul>
+            <li>Secret passphrase (typing hidden for security)</li>
+            <li>Lock hotkey (default: L for Cmd+Ctrl+Shift+L)</li>
+            <li>Talk hotkey (default: T for Cmd+Ctrl+Shift+T)</li>
+            <li>Auto-lock timeout (default: 30 seconds)</li>
+            <li>Auto-unlock timeout (default: 0 seconds/disabled)</li>
+        </ul>
+        <p>After setup, start the app with: <code>launchctl start com.handsoff.inputlock</code></p>
+    </div>
+
+    <h2>Quick Start</h2>
+    <ul>
+        <li><strong>Lock:</strong> Click menu bar icon → "Lock Input" or press <code>Ctrl+Cmd+Shift+L</code></li>
+        <li><strong>Unlock:</strong> Type your passphrase</li>
+        <li><strong>Help:</strong> Click menu bar icon → "Help"</li>
+    </ul>
+
+    <h2>Support</h2>
+    <p>Documentation: <code>~/Applications/HandsOff.app/Contents/Resources/docs/</code></p>
+</body>
+</html>
