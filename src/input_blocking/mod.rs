@@ -14,9 +14,13 @@ pub fn handle_keyboard_event(event: &CGEvent, event_type: CGEventType, state: &A
     let keycode = event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE);
     let flags = event.get_flags();
 
-    // Check for Lock hotkey (Ctrl+Cmd+Shift+L) - keycode 37 is 'L'
+    // Get configured hotkey keycodes from AppState
+    let lock_keycode = state.get_lock_keycode();
+    let talk_keycode = state.get_talk_keycode();
+
+    // Check for Lock hotkey (Ctrl+Cmd+Shift+<configured key>)
     // This only LOCKS, never unlocks (unlock requires passphrase)
-    if keycode == 37
+    if keycode == lock_keycode
         && flags.contains(CGEventFlags::CGEventFlagControl)
         && flags.contains(CGEventFlags::CGEventFlagCommand)
         && flags.contains(CGEventFlags::CGEventFlagShift)
@@ -32,9 +36,9 @@ pub fn handle_keyboard_event(event: &CGEvent, event_type: CGEventType, state: &A
         return true; // Block the hotkey itself
     }
 
-    // Check for Talk hotkey (Ctrl+Cmd+Shift+T) - keycode 17 is 'T'
+    // Check for Talk hotkey (Ctrl+Cmd+Shift+<configured key>)
     // Track press/release state for passthrough
-    if keycode == 17
+    if keycode == talk_keycode
         && flags.contains(CGEventFlags::CGEventFlagControl)
         && flags.contains(CGEventFlags::CGEventFlagCommand)
         && flags.contains(CGEventFlags::CGEventFlagShift)

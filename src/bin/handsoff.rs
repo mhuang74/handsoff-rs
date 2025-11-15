@@ -239,17 +239,40 @@ fn main() -> Result<()> {
 
     // Configure hotkeys (precedence: env var > config file > defaults)
     let lock_key = if let Some(key_str) = config::parse_lock_hotkey() {
-        Config::validate_hotkey(&key_str).ok();
-        Config::parse_key_string(&key_str).unwrap_or_else(|_| cfg.get_lock_key_code().unwrap())
+        Config::parse_key_string(&key_str).with_context(|| {
+            format!(
+                "Invalid lock hotkey from environment variable: '{}'. Must be A-Z.",
+                key_str
+            )
+        })?
     } else {
-        cfg.get_lock_key_code().context("Failed to parse lock hotkey")?
+        cfg.get_lock_key_code().with_context(|| {
+            "Failed to parse lock hotkey from config file. Run 'handsoff --setup' to reconfigure."
+        })?
     };
     let talk_key = if let Some(key_str) = config::parse_talk_hotkey() {
-        Config::validate_hotkey(&key_str).ok();
-        Config::parse_key_string(&key_str).unwrap_or_else(|_| cfg.get_talk_key_code().unwrap())
+        Config::parse_key_string(&key_str).with_context(|| {
+            format!(
+                "Invalid talk hotkey from environment variable: '{}'. Must be A-Z.",
+                key_str
+            )
+        })?
     } else {
-        cfg.get_talk_key_code().context("Failed to parse talk hotkey")?
+        cfg.get_talk_key_code().with_context(|| {
+            "Failed to parse talk hotkey from config file. Run 'handsoff --setup' to reconfigure."
+        })?
     };
+
+    // Validate that resolved hotkeys are different
+    if lock_key == talk_key {
+        error!("Lock and Talk hotkeys cannot be the same: {:?}", lock_key);
+        error!("This can happen if:");
+        error!("  1. Both environment variables are set to the same key");
+        error!("  2. The config file was manually edited with duplicate keys");
+        error!("\nPlease run 'handsoff --setup' to reconfigure or check your environment variables.");
+        std::process::exit(1);
+    }
+
     core.set_hotkey_config(lock_key, talk_key);
 
     // Set initial lock state

@@ -209,19 +209,27 @@ fn main() -> Result<()> {
     let auto_lock_timeout = config::parse_auto_lock_timeout().or(Some(cfg.auto_lock_timeout));
     core.set_auto_lock_timeout(auto_lock_timeout);
 
-    // Configure hotkeys (precedence: env var > config file > defaults)
-    let lock_key = if let Some(key_str) = config::parse_lock_hotkey() {
-        Config::validate_hotkey(&key_str).ok();
-        Config::parse_key_string(&key_str).unwrap_or_else(|_| cfg.get_lock_key_code().unwrap())
-    } else {
-        cfg.get_lock_key_code().context("Failed to parse lock hotkey")?
-    };
-    let talk_key = if let Some(key_str) = config::parse_talk_hotkey() {
-        Config::validate_hotkey(&key_str).ok();
-        Config::parse_key_string(&key_str).unwrap_or_else(|_| cfg.get_talk_key_code().unwrap())
-    } else {
-        cfg.get_talk_key_code().context("Failed to parse talk hotkey")?
-    };
+    // Configure hotkeys from config file only (tray app does not support env var overrides)
+    let lock_key = cfg.get_lock_key_code().with_context(|| {
+        "Failed to parse lock hotkey from config file. Run setup: ~/Applications/HandsOff.app/Contents/MacOS/handsoff-tray --setup"
+    })?;
+    let talk_key = cfg.get_talk_key_code().with_context(|| {
+        "Failed to parse talk hotkey from config file. Run setup: ~/Applications/HandsOff.app/Contents/MacOS/handsoff-tray --setup"
+    })?;
+
+    // Validate that configured hotkeys are different
+    if lock_key == talk_key {
+        error!("Lock and Talk hotkeys cannot be the same: {:?}", lock_key);
+        show_alert(
+            "HandsOff - Configuration Error",
+            &format!(
+                "Lock and Talk hotkeys cannot be the same.\n\nBoth are set to: {:?}\n\nThis is likely because the config file was manually edited.\n\nPlease run setup to reconfigure:\n~/Applications/HandsOff.app/Contents/MacOS/handsoff-tray --setup",
+                lock_key
+            ),
+        );
+        std::process::exit(1);
+    }
+
     core.set_hotkey_config(lock_key, talk_key);
 
     // Start core components

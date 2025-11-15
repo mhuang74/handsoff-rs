@@ -14,7 +14,7 @@ use app_state::AppState;
 use core_graphics::sys::CGEventTapRef;
 use input_blocking::event_tap;
 use input_blocking::hotkeys::HotkeyManager;
-use log::{info, warn};
+use log::{error, info, warn};
 use std::sync::mpsc::{self, Sender};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
@@ -71,6 +71,28 @@ impl HandsOffCore {
     ) {
         self.lock_key = lock_key;
         self.talk_key = talk_key;
+
+        // Convert to macOS keycodes and store in AppState so event tap can use them
+        match utils::keycode::code_to_keycode(lock_key) {
+            Some(lock_keycode) => {
+                self.state.set_lock_keycode(lock_keycode);
+                info!("Lock hotkey configured: {:?} (macOS keycode: {})", lock_key, lock_keycode);
+            }
+            None => {
+                error!("CRITICAL: Failed to convert lock hotkey {:?} to macOS keycode", lock_key);
+                error!("Lock hotkey will use default keycode (L). This is likely a bug.");
+            }
+        }
+        match utils::keycode::code_to_keycode(talk_key) {
+            Some(talk_keycode) => {
+                self.state.set_talk_keycode(talk_keycode);
+                info!("Talk hotkey configured: {:?} (macOS keycode: {})", talk_key, talk_keycode);
+            }
+            None => {
+                error!("CRITICAL: Failed to convert talk hotkey {:?} to macOS keycode", talk_key);
+                error!("Talk hotkey will use default keycode (T). This is likely a bug.");
+            }
+        }
     }
 
     /// Get the lock hotkey as a displayable string (e.g., "L", "M", etc.)
