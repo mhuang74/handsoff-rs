@@ -54,6 +54,10 @@ pub struct AppStateInner {
     pub should_exit: bool,
     /// Whether the app is currently disabled (minimal CPU mode)
     pub is_disabled: bool,
+    /// Lock hotkey keycode (macOS keycode, default: 37 for 'L')
+    pub lock_keycode: i64,
+    /// Talk hotkey keycode (macOS keycode, default: 17 for 'T')
+    pub talk_keycode: i64,
 }
 
 impl AppState {
@@ -75,6 +79,8 @@ impl AppState {
                 should_start_event_tap: false,
                 should_exit: false,
                 is_disabled: false,
+                lock_keycode: 37, // Default: 'L'
+                talk_keycode: 17, // Default: 'T'
             })),
         }
     }
@@ -306,6 +312,26 @@ impl AppState {
     /// Set the disabled state
     pub fn set_disabled(&self, disabled: bool) {
         self.inner.lock().is_disabled = disabled;
+    }
+
+    /// Set the lock hotkey keycode (macOS keycode)
+    pub fn set_lock_keycode(&self, keycode: i64) {
+        self.inner.lock().lock_keycode = keycode;
+    }
+
+    /// Set the talk hotkey keycode (macOS keycode)
+    pub fn set_talk_keycode(&self, keycode: i64) {
+        self.inner.lock().talk_keycode = keycode;
+    }
+
+    /// Get the lock hotkey keycode (macOS keycode)
+    pub fn get_lock_keycode(&self) -> i64 {
+        self.inner.lock().lock_keycode
+    }
+
+    /// Get the talk hotkey keycode (macOS keycode)
+    pub fn get_talk_keycode(&self) -> i64 {
+        self.inner.lock().talk_keycode
     }
 }
 

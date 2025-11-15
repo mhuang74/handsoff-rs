@@ -58,6 +58,13 @@ impl Config {
             Self::validate_hotkey(key)?;
         }
 
+        // Validate that lock and talk keys are different
+        if let (Some(ref lock), Some(ref talk)) = (&lock_key, &talk_key) {
+            if lock.to_uppercase() == talk.to_uppercase() {
+                return Err(anyhow!("Lock and Talk hotkeys must be different (both set to '{}')", lock));
+            }
+        }
+
         Ok(Self {
             encrypted_passphrase,
             auto_lock_timeout: auto_lock,
@@ -134,6 +141,27 @@ impl Config {
             .with_context(|| format!("Failed to read config file: {}", path.display()))?;
 
         let config: Config = toml::from_str(&contents).context("Failed to parse config file")?;
+
+        // Validate loaded config
+        // 1. Validate hotkey format if provided
+        if let Some(ref key) = config.lock_hotkey {
+            Config::validate_hotkey(key)
+                .with_context(|| format!("Invalid lock_hotkey in config file: '{}'", key))?;
+        }
+        if let Some(ref key) = config.talk_hotkey {
+            Config::validate_hotkey(key)
+                .with_context(|| format!("Invalid talk_hotkey in config file: '{}'", key))?;
+        }
+
+        // 2. Validate that lock and talk keys are different
+        if let (Some(ref lock), Some(ref talk)) = (&config.lock_hotkey, &config.talk_hotkey) {
+            if lock.to_uppercase() == talk.to_uppercase() {
+                anyhow::bail!(
+                    "Invalid config: Lock and Talk hotkeys must be different (both set to '{}'). Please run 'handsoff --setup' to reconfigure.",
+                    lock
+                );
+            }
+        }
 
         Ok(config)
     }
@@ -418,5 +446,121 @@ mod tests {
             let error_msg = format!("{:#}", e);
             assert!(error_msg.contains("not found") || error_msg.contains("--setup"));
         }
+    }
+
+    #[test]
+    fn test_duplicate_hotkeys_in_new() {
+        // Test that Config::new rejects duplicate hotkeys
+        let result = Config::new(
+            "test_passphrase",
+            30,
+            60,
+            Some("M".to_string()),
+            Some("M".to_string()),
+        );
+
+        assert!(result.is_err(), "Should reject duplicate hotkeys");
+        if let Err(e) = result {
+            let error_msg = format!("{}", e);
+            assert!(
+                error_msg.contains("must be different"),
+                "Error message should mention duplicates: {}",
+                error_msg
+            );
+        }
+    }
+
+    #[test]
+    fn test_duplicate_hotkeys_case_insensitive() {
+        // Test that duplicate detection is case-insensitive
+        let result = Config::new(
+            "test_passphrase",
+            30,
+            60,
+            Some("m".to_string()),
+            Some("M".to_string()),
+        );
+
+        assert!(result.is_err(), "Should reject duplicate hotkeys (case-insensitive)");
+    }
+
+    #[test]
+    fn test_different_hotkeys_accepted() {
+        // Test that different hotkeys are accepted
+        let result = Config::new(
+            "test_passphrase",
+            30,
+            60,
+            Some("L".to_string()),
+            Some("T".to_string()),
+        );
+
+        assert!(result.is_ok(), "Should accept different hotkeys");
+    }
+
+    #[test]
+    fn test_invalid_hotkey_in_loaded_config() {
+        // Test that loading a config with invalid hotkeys fails
+        let temp_path = temp_config_path();
+        let _ = fs::remove_file(&temp_path);
+
+        // Create config with invalid hotkey
+        let contents = r#"
+encrypted_passphrase = "test_encrypted_data"
+auto_lock_timeout = 30
+auto_unlock_timeout = 60
+lock_hotkey = "123"
+talk_hotkey = "T"
+"#;
+        fs::write(&temp_path, contents).expect("Failed to write temp config");
+
+        // Try to load
+        let result = Config::load_from_path(&temp_path);
+
+        assert!(result.is_err(), "Should reject invalid lock_hotkey");
+        if let Err(e) = result {
+            let error_msg = format!("{}", e);
+            assert!(
+                error_msg.contains("Invalid lock_hotkey") || error_msg.contains("must be a letter"),
+                "Error should mention invalid hotkey: {}",
+                error_msg
+            );
+        }
+
+        // Cleanup
+        fs::remove_file(temp_path).ok();
+    }
+
+    #[test]
+    fn test_duplicate_hotkeys_in_loaded_config() {
+        // Test that loading a config with duplicate hotkeys fails
+        let temp_path = temp_config_path();
+        let _ = fs::remove_file(&temp_path);
+
+        // Create config with duplicate hotkeys
+        let contents = r#"
+encrypted_passphrase = "test_encrypted_data"
+auto_lock_timeout = 30
+auto_unlock_timeout = 60
+lock_hotkey = "M"
+talk_hotkey = "M"
+"#;
+        fs::write(&temp_path, contents).expect("Failed to write temp config");
+
+        // Try to load
+        let result = Config::load_from_path(&temp_path);
+
+        assert!(result.is_err(), "Should reject duplicate hotkeys in loaded config");
+        if let Err(e) = result {
+            let error_msg = format!("{}", e);
+            assert!(
+                error_msg.contains("must be different"),
+                "Error should mention duplicates: {}",
+                error_msg
+            );
+        }
+
+        // Cleanup
+        fs::remove_file(temp_path).ok();
     }
 }
