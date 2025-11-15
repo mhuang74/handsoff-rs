@@ -115,11 +115,6 @@ fn run_setup() -> Result<()> {
         anyhow::bail!("Error: Passphrases do not match");
     }
 
-    // Prompt for timeouts
-    let auto_lock = prompt_number("Auto-lock timeout in seconds (default: 30): ", 30)?;
-
-    let auto_unlock = prompt_number("Auto-unlock timeout in seconds (default: 60): ", 60)?;
-
     // Prompt for hotkeys
     println!("\nHotkey Configuration");
     println!("--------------------");
@@ -135,6 +130,13 @@ fn run_setup() -> Result<()> {
             anyhow::bail!("Error: Lock and Talk hotkeys must be different");
         }
     }
+
+    // Prompt for timeouts
+    println!("\nTimeout Configuration");
+    println!("---------------------\n");
+    let auto_lock = prompt_number("Auto-lock timeout in seconds (default: 30): ", 30)?;
+
+    let auto_unlock = prompt_number("Auto-unlock timeout in seconds (default: 60): ", 60)?;
 
     // Create and save config
     let config = Config::new(&passphrase, auto_lock, auto_unlock, lock_key, talk_key)

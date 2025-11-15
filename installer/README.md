@@ -81,15 +81,21 @@ make pkg
 
 ### End User
 
-1. **Download and open** `HandsOff-v0.3.0.pkg`
+1. **Download and open** `HandsOff-v{VERSION}.pkg`
 2. **Follow installer** - click through welcome, license, install
-3. **After installation completes**, open Terminal and run:
+3. **Grant Accessibility permissions** in System Preferences > Security & Privacy > Privacy > Accessibility
+4. **After installation completes**, open Terminal and run:
    ```bash
-   /Applications/HandsOff.app/Contents/MacOS/setup-launch-agent.sh
+   ~/Applications/HandsOff.app/Contents/MacOS/handsoff-tray --setup
    ```
-4. **Enter passphrase** when prompted
-5. **HandsOff starts** automatically and appears in menu bar
-6. **At next login**, HandsOff starts automatically
+5. **Configure during setup** when prompted:
+   - Secret passphrase (typing hidden)
+   - Lock hotkey (default: L for Cmd+Ctrl+Shift+L)
+   - Talk hotkey (default: T for Cmd+Ctrl+Shift+T)
+   - Auto-lock timeout (default: 30s)
+   - Auto-unlock timeout (default: 60s)
+6. **HandsOff starts** automatically and appears in menu bar
+7. **At next login**, HandsOff starts automatically
 
 ## Launch Agent Details
 
