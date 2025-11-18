@@ -669,7 +669,7 @@ fn build_tooltip(
     tooltip.push_str(&format!("• Press Ctrl+Cmd+Shift+{}\n\n", lock_key));
 
     tooltip.push_str("TO UNLOCK:\n");
-    tooltip.push_str("• Type your passphrase on keyboard (Default: quit)\n");
+    tooltip.push_str("• Type your passphrase on keyboard (default: quit)\n");
     tooltip.push_str("• Wait 5 sec between attempts if you mistype\n\n");
 
     // Hotkeys
@@ -679,6 +679,9 @@ fn build_tooltip(
         "• Ctrl+Cmd+Shift+{} (hold): Hotkey to Unmute (Spacebar)\n\n",
         talk_key
     ));
+
+    // Setup
+    tooltip.push_str("Tip: Run ~/Applications/HandsOff.app/Contents/MacOS/handsoff-tray --setup to set passphrase and timeouts\n\n");
 
     // Repository info
     tooltip.push_str("Michael S. Huang\n");

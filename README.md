@@ -17,7 +17,7 @@ A macOS utility that prevents accidental or unsolicited input from keyboard, tra
   - `Ctrl+Cmd+Shift+T` (default): Talk hotkey (spacebar passthrough for unmuting)
 - **Microphone & Camera**: Video conferencing apps continue to work normally
 - **Menu Bar Interface**: Unobtrusive menu bar icon showing lock status (locked: red)
-- **Auto-Unlock Safety Feature [CLI Only]**: Configurable timeout that automatically unlocks after a set period to prevent permanent lockouts (disabled by default)
+- **Auto-Unlock Safety Feature**: Configurable timeout that automatically unlocks after a set period to prevent permanent lockouts (disabled by default)
 
 
 ## Requirements
