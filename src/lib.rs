@@ -633,3 +633,21 @@ impl HandsOffCore {
             .expect("Failed to spawn permission monitor thread");
     }
 }
+
+impl Drop for HandsOffCore {
+    fn drop(&mut self) {
+        info!("HandsOffCore dropping - cleaning up resources");
+
+        // Stop the event tap to release CGEventTapRef and prevent WindowServer resource leak
+        self.stop_event_tap();
+
+        // Unregister hotkeys to clean up global_hotkey resources
+        if let Some(ref mut manager) = self.hotkey_manager {
+            if let Err(e) = manager.unregister_all() {
+                warn!("Failed to unregister hotkeys during drop: {}", e);
+            }
+        }
+
+        info!("HandsOffCore cleanup complete");
+    }
+}

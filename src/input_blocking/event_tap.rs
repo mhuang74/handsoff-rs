@@ -42,6 +42,8 @@ extern "C" {
         port: CFMachPortRef,
         order: CFIndex,
     ) -> CFRunLoopSourceRef;
+
+    fn CFRelease(cf: *const c_void);
 }
 
 const K_CGSESSION_EVENT_TAP: u32 = 1;
@@ -86,6 +88,7 @@ pub fn create_event_tap(state: Arc<AppState>) -> Option<(CGEventTapRef, *mut c_v
             return None;
         }
 
+        info!("Event tap created successfully (tap: {:?})", tap);
         Some((tap, state_ptr))
     }
 }
@@ -289,7 +292,7 @@ pub unsafe fn disable_event_tap(tap: CGEventTapRef) {
 pub unsafe fn remove_event_tap_from_runloop(tap: CGEventTapRef, source: CFRunLoopSourceRef) {
     use core_foundation::base::TCFType;
 
-    info!("Removing event tap from run loop");
+    info!("Removing event tap from run loop (tap: {:?})", tap);
 
     // Disable the tap first
     CGEventTapEnable(tap, false);
@@ -300,5 +303,8 @@ pub unsafe fn remove_event_tap_from_runloop(tap: CGEventTapRef, source: CFRunLoo
     );
     CFRunLoop::get_current().remove_source(&source, kCFRunLoopCommonModes);
 
-    info!("Event tap removed from run loop");
+    // CRITICAL: Release the CGEventTapRef (CFMachPortRef) to prevent WindowServer resource leak
+    // Without this, each sleep/wake cycle accumulates zombie tap handles causing desktop stuttering
+    CFRelease(tap as *const c_void);
+    info!("Event tap released and removed from run loop");
 }

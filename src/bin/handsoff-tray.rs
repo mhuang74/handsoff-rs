@@ -14,7 +14,7 @@ use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::TrayIconBuilder;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
-const DEFAULT_PASSPHRASE: &str = "quit";
+const DEFAULT_PASSPHRASE: &str = "qwet";
 
 /// HandsOff Tray App arguments
 #[derive(Parser, Debug)]
@@ -669,7 +669,7 @@ fn build_tooltip(
     tooltip.push_str(&format!("• Press Ctrl+Cmd+Shift+{}\n\n", lock_key));
 
     tooltip.push_str("TO UNLOCK:\n");
-    tooltip.push_str("• Type your passphrase on keyboard (default: quit)\n");
+    tooltip.push_str("• Type your passphrase on keyboard (default: qwet)\n");
     tooltip.push_str("• Wait 5 sec between attempts if you mistype\n\n");
 
     // Hotkeys
