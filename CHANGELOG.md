@@ -2,6 +2,15 @@
 
 ## [0.6.5] - 2026-02-20
 
+## 📦 Uncategorized
+
+- fix: release CGEventTapRef to prevent desktop stuttering
+   - PR: #11
+
+
+
+## [0.6.5] - 2026-02-20
+
 ### Fixed
 - Fix desktop stuttering after handsoff-tray runs for extended time
   - Add CFRelease call to release CGEventTapRef and prevent WindowServer resource leak
