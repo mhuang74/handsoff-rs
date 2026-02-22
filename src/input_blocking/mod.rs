@@ -76,6 +76,14 @@ pub fn handle_keyboard_event(event: &CGEvent, event_type: CGEventType, state: &A
 
     let shift = flags.contains(CGEventFlags::CGEventFlagShift);
 
+    // Handle Escape key to immediately clear buffer
+    const ESCAPE_KEYCODE: i64 = 53;
+    if keycode == ESCAPE_KEYCODE {
+        state.clear_buffer();
+        debug!("Buffer cleared via Escape key");
+        return true; // Block the escape key event
+    }
+
     // Handle backspace
     if keycode == 51 {
         // Delete key

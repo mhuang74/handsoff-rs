@@ -413,7 +413,7 @@ impl HandsOffCore {
     fn start_buffer_reset_thread(&self) {
         let state = self.state.clone();
         thread::spawn(move || loop {
-            thread::sleep(Duration::from_secs(1));
+            thread::sleep(Duration::from_millis(250));
 
             // Skip processing when disabled
             if state.is_disabled() {

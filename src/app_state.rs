@@ -70,7 +70,7 @@ impl AppState {
                 last_input_time: Instant::now(),
                 passphrase_hash: None,
                 auto_lock_timeout: AUTO_LOCK_DEFAULT_SECONDS,
-                buffer_reset_timeout: 5,
+                buffer_reset_timeout: 3,
                 talk_key_pressed: false,
                 lock_start_time: None,
                 auto_unlock_timeout: None,
