@@ -14,6 +14,11 @@ type CFAllocatorRef = *mut c_void;
 type CFMachPortRef = *mut c_void;
 type CFIndex = i64;
 
+// CGEventTapProxy is the first parameter to the callback - it's a different type from CGEventTapRef!
+// CGEventTapProxy is `struct __CGEventTapProxy*`, while CGEventTapRef is `struct __CFMachPort*`
+// Passing CGEventTapProxy to CGEventTapEnable() causes PAC failures on ARM64e
+type CGEventTapProxy = *mut c_void;
+
 // Raw FFI bindings for private functions
 #[link(name = "CoreGraphics", kind = "framework")]
 extern "C" {
@@ -23,7 +28,7 @@ extern "C" {
         options: u32, // CGEventTapOptions
         events_of_interest: u64,
         callback: unsafe extern "C" fn(
-            proxy: CGEventTapRef,
+            proxy: CGEventTapProxy, // Note: CGEventTapProxy, NOT CGEventTapRef
             event_type: u32,
             event: CGEventRef,
             user_info: *mut c_void,
@@ -95,7 +100,7 @@ pub fn create_event_tap(state: Arc<AppState>) -> Option<(CGEventTapRef, *mut c_v
 
 /// Callback function for the event tap
 unsafe extern "C" fn event_tap_callback(
-    proxy: CGEventTapRef,
+    _proxy: CGEventTapProxy, // Note: CGEventTapProxy, NOT CGEventTapRef - cannot use for CGEventTapEnable
     event_type: u32,
     event: CGEventRef,
     user_info: *mut c_void,
@@ -104,7 +109,13 @@ unsafe extern "C" fn event_tap_callback(
     const K_CGEVENT_TAP_DISABLED_BY_TIMEOUT: u32 = 0xFFFFFFFE;
     const K_CGEVENT_TAP_DISABLED_BY_USER_INPUT: u32 = 0xFFFFFFFF;
 
-    // Handle event tap disabled events FIRST (before null check)
+    // Early null check - if user_info is null, pass through all events
+    // This can happen if callback fires during/after teardown
+    if user_info.is_null() {
+        return event;
+    }
+
+    // Handle event tap disabled events
     // These events are sent by macOS when the tap is disabled
     if event_type == K_CGEVENT_TAP_DISABLED_BY_TIMEOUT
         || event_type == K_CGEVENT_TAP_DISABLED_BY_USER_INPUT
@@ -112,7 +123,7 @@ unsafe extern "C" fn event_tap_callback(
         let reason = if event_type == K_CGEVENT_TAP_DISABLED_BY_USER_INPUT {
             "user removed accessibility permissions"
         } else {
-            "timeout (system was too slow)"
+            "timeout (callback was too slow)"
         };
 
         log::warn!(
@@ -121,22 +132,28 @@ unsafe extern "C" fn event_tap_callback(
             reason
         );
 
-        // Try to re-enable the tap (may fail if permissions gone)
-        // This is a no-op if permissions were removed, but helps with timeout case
-        CGEventTapEnable(proxy, true);
+        // IMPORTANT: Do NOT call CGEventTapEnable(proxy, ...) here!
+        // The proxy parameter is CGEventTapProxy, NOT CGEventTapRef.
+        // These are different types: CGEventTapProxy is `struct __CGEventTapProxy*`
+        // while CGEventTapRef is `struct __CFMachPort*`.
+        // On ARM64e (Apple Silicon), PAC validates pointer type context,
+        // so passing the wrong type causes a pointer authentication failure (crash).
+        // Additionally, the tap may have been freed if teardown is in progress.
+        //
+        // Instead, signal the main thread to handle tap restart/stop.
 
-        // Set flag to stop event tap via main loop
-        // (only if we have valid user_info)
-        if !user_info.is_null() {
-            let state = &*(user_info as *const Arc<AppState>);
+        let state = &*(user_info as *const Arc<AppState>);
 
-            // For timeout: try to continue (tap might re-enable)
-            // For user input: definitely stop (permissions gone)
-            if event_type == K_CGEVENT_TAP_DISABLED_BY_USER_INPUT {
-                state.request_stop_event_tap();
-                state.request_exit(); // Request CLI to exit (ignored by tray app)
-                log::warn!("Requested event tap stop and CLI exit due to permission loss");
-            }
+        if event_type == K_CGEVENT_TAP_DISABLED_BY_USER_INPUT {
+            // Permissions revoked - request stop
+            state.request_stop_event_tap();
+            state.request_exit(); // Request CLI to exit (ignored by tray app)
+            log::warn!("Requested event tap stop and CLI exit due to permission loss");
+        } else {
+            // Timeout - request restart to recover
+            // The main loop will call restart_event_tap() to create a fresh tap
+            state.request_start_event_tap();
+            log::info!("Requested event tap restart due to timeout");
         }
 
         // Return event unmodified (these are system events)

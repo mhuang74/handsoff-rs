@@ -135,6 +135,9 @@ pub fn check_accessibility_permissions() -> bool {
     use core_graphics::sys::CGEventTapRef;
     use std::ffi::c_void;
 
+    // CGEventTapProxy is the callback's first parameter - different type from CGEventTapRef
+    type CGEventTapProxy = *mut c_void;
+
     #[link(name = "CoreGraphics", kind = "framework")]
     extern "C" {
         fn CGEventTapCreate(
@@ -143,7 +146,7 @@ pub fn check_accessibility_permissions() -> bool {
             options: u32,
             events_of_interest: u64,
             callback: unsafe extern "C" fn(
-                proxy: CGEventTapRef,
+                proxy: CGEventTapProxy, // Note: CGEventTapProxy, NOT CGEventTapRef
                 event_type: u32,
                 event: core_graphics::sys::CGEventRef,
                 user_info: *mut c_void,
@@ -163,7 +166,7 @@ pub fn check_accessibility_permissions() -> bool {
     }
 
     unsafe extern "C" fn test_callback(
-        _proxy: CGEventTapRef,
+        _proxy: CGEventTapProxy,
         _event_type: u32,
         event: core_graphics::sys::CGEventRef,
         _user_info: *mut c_void,
