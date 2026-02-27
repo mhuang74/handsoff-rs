@@ -2,6 +2,7 @@
 name = "handsoff"
 version = "0.6.6"
 edition = "2021"
+rust-version = "1.80"
 authors = ["Michael S. Huang"]
 description = "macOS utility to block unsolicited input from unwanted hands"
 
