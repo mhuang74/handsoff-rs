@@ -2,20 +2,12 @@ use parking_lot::Mutex;
 use std::sync::Arc;
 use std::time::Instant;
 
-// Auto-lock timeout configuration constants
-pub const AUTO_LOCK_MIN_SECONDS: u64 = 20;
-pub const AUTO_LOCK_MAX_SECONDS: u64 = 600;
-pub const AUTO_LOCK_DEFAULT_SECONDS: u64 = 120;
-
-// Auto-unlock timeout configuration constants
-// In release builds, default is 0 (disabled for end users).
-// In debug/dev builds, default is 60 seconds for testing convenience.
-#[cfg(not(debug_assertions))]
-pub const AUTO_UNLOCK_DEFAULT_SECONDS: u64 = 0;
-#[cfg(debug_assertions)]
-pub const AUTO_UNLOCK_DEFAULT_SECONDS: u64 = 60;
-pub const AUTO_UNLOCK_MIN_SECONDS: u64 = 60;
-pub const AUTO_UNLOCK_MAX_SECONDS: u64 = 900;
+// Re-export constants for backward compatibility
+pub use crate::constants::{
+    AUTO_LOCK_DEFAULT_SECONDS, AUTO_LOCK_MAX_SECONDS, AUTO_LOCK_MIN_SECONDS,
+    AUTO_UNLOCK_DEFAULT_SECONDS, AUTO_UNLOCK_MAX_SECONDS, AUTO_UNLOCK_MIN_SECONDS,
+    BUFFER_RESET_DEFAULT_SECONDS, DEFAULT_LOCK_KEYCODE, DEFAULT_TALK_KEYCODE,
+};
 
 /// Application state shared across modules
 #[derive(Clone)]
@@ -34,9 +26,9 @@ pub struct AppStateInner {
     pub last_input_time: Instant,
     /// Current passphrase hash (SHA-256, hex-encoded)
     pub passphrase_hash: Option<String>,
-    /// Auto-lock timeout in seconds (default: 120 seconds)
+    /// Auto-lock timeout in seconds (see AUTO_LOCK_DEFAULT_SECONDS)
     pub auto_lock_timeout: u64,
-    /// Input buffer reset timeout in seconds (default: 5)
+    /// Input buffer reset timeout in seconds (see BUFFER_RESET_DEFAULT_SECONDS)
     pub buffer_reset_timeout: u64,
     /// Whether the Talk hotkey is currently pressed (for passthrough)
     pub talk_key_pressed: bool,
@@ -54,9 +46,9 @@ pub struct AppStateInner {
     pub should_exit: bool,
     /// Whether the app is currently disabled (minimal CPU mode)
     pub is_disabled: bool,
-    /// Lock hotkey keycode (macOS keycode, default: 37 for 'L')
+    /// Lock hotkey keycode (macOS keycode, see DEFAULT_LOCK_KEYCODE)
     pub lock_keycode: i64,
-    /// Talk hotkey keycode (macOS keycode, default: 17 for 'T')
+    /// Talk hotkey keycode (macOS keycode, see DEFAULT_TALK_KEYCODE)
     pub talk_keycode: i64,
 }
 
@@ -70,7 +62,7 @@ impl AppState {
                 last_input_time: Instant::now(),
                 passphrase_hash: None,
                 auto_lock_timeout: AUTO_LOCK_DEFAULT_SECONDS,
-                buffer_reset_timeout: 3,
+                buffer_reset_timeout: BUFFER_RESET_DEFAULT_SECONDS,
                 talk_key_pressed: false,
                 lock_start_time: None,
                 auto_unlock_timeout: None,
@@ -79,8 +71,8 @@ impl AppState {
                 should_start_event_tap: false,
                 should_exit: false,
                 is_disabled: false,
-                lock_keycode: 37, // Default: 'L'
-                talk_keycode: 17, // Default: 'T'
+                lock_keycode: DEFAULT_LOCK_KEYCODE,
+                talk_keycode: DEFAULT_TALK_KEYCODE,
             })),
         }
     }

@@ -3,6 +3,7 @@ pub mod hotkeys;
 
 use crate::app_state::AppState;
 use crate::auth;
+use crate::constants::BACKSPACE_KEYCODE;
 use crate::utils::keycode::keycode_to_char;
 use core_graphics::event::{CGEvent, CGEventFlags, CGEventType, EventField};
 use log::{debug, error, info};
@@ -85,8 +86,7 @@ pub fn handle_keyboard_event(event: &CGEvent, event_type: CGEventType, state: &A
     }
 
     // Handle backspace
-    if keycode == 51 {
-        // Delete key
+    if keycode == BACKSPACE_KEYCODE {
         let mut buffer = state.get_buffer();
         if !buffer.is_empty() {
             buffer.pop();

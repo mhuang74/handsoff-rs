@@ -4,6 +4,10 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use handsoff::app_state::AUTO_UNLOCK_DEFAULT_SECONDS;
+use handsoff::constants::{
+    NOTIFICATION_ERROR_TIMEOUT_MS, NOTIFICATION_TIMEOUT_MS, POLL_INTERVAL_DISABLED_SECS,
+    POLL_INTERVAL_ENABLED_MS,
+};
 use handsoff::{config, config_file::Config, HandsOffCore};
 use log::{error, info, warn};
 use std::cell::RefCell;
@@ -313,14 +317,14 @@ fn main() -> Result<()> {
     // Run event loop with periodic updates
     event_loop.run(move |_event, _, control_flow| {
         // Adjust polling interval based on disabled state
-        // When disabled: 5 seconds (minimal WindowServer interaction)
-        // When enabled: 500ms (responsive UI updates)
+        // When disabled: minimal WindowServer interaction
+        // When enabled: responsive UI updates
         let poll_interval = {
             let core_borrow = core.borrow();
             if core_borrow.state.is_disabled() {
-                std::time::Duration::from_secs(5)
+                std::time::Duration::from_secs(POLL_INTERVAL_DISABLED_SECS)
             } else {
-                std::time::Duration::from_millis(500)
+                std::time::Duration::from_millis(POLL_INTERVAL_ENABLED_MS)
             }
         };
 
@@ -367,7 +371,7 @@ fn main() -> Result<()> {
                             let _ = notify_rust::Notification::new()
                                 .summary("HandsOff - Input Blocking Restarted")
                                 .body("Input blocking restarted successfully.\nHandsOff is now active.")
-                                .timeout(notify_rust::Timeout::Milliseconds(3000))
+                                .timeout(notify_rust::Timeout::Milliseconds(NOTIFICATION_TIMEOUT_MS))
                                 .show();
                         }
                     }
@@ -382,7 +386,7 @@ fn main() -> Result<()> {
                                     "Failed to restart input blocking: {}\n\nUse Reset menu to try again.",
                                     e
                                 ))
-                                .timeout(notify_rust::Timeout::Milliseconds(5000))
+                                .timeout(notify_rust::Timeout::Milliseconds(NOTIFICATION_ERROR_TIMEOUT_MS))
                                 .show();
                         }
                     }
@@ -443,7 +447,7 @@ fn main() -> Result<()> {
                         } else {
                             "Input unlocked"
                         })
-                        .timeout(notify_rust::Timeout::Milliseconds(3000))
+                        .timeout(notify_rust::Timeout::Milliseconds(NOTIFICATION_TIMEOUT_MS))
                         .show();
                 }
             }
@@ -496,7 +500,7 @@ fn handle_disable(core: Rc<RefCell<HandsOffCore>>) {
             let _ = notify_rust::Notification::new()
                 .summary("HandsOff")
                 .body("Disabled - Low system resources mode\nInput blocking paused. Use Reset to re-enable")
-                .timeout(notify_rust::Timeout::Milliseconds(3000))
+                .timeout(notify_rust::Timeout::Milliseconds(NOTIFICATION_TIMEOUT_MS))
                 .show();
         }
     }
@@ -545,7 +549,7 @@ fn handle_reset(core: Rc<RefCell<HandsOffCore>>, passphrase: &str) {
                     let _ = notify_rust::Notification::new()
                         .summary("HandsOff")
                         .body("App reset complete - Re-enabled and ready to use")
-                        .timeout(notify_rust::Timeout::Milliseconds(3000))
+                        .timeout(notify_rust::Timeout::Milliseconds(NOTIFICATION_TIMEOUT_MS))
                         .show();
                 }
             }
@@ -567,7 +571,7 @@ fn handle_reset(core: Rc<RefCell<HandsOffCore>>, passphrase: &str) {
                     let _ = notify_rust::Notification::new()
                         .summary("HandsOff")
                         .body("Reset complete - Input blocking restarted\nReady to use")
-                        .timeout(notify_rust::Timeout::Milliseconds(3000))
+                        .timeout(notify_rust::Timeout::Milliseconds(NOTIFICATION_TIMEOUT_MS))
                         .show();
                 }
             }

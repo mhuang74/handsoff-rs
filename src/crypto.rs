@@ -3,6 +3,7 @@
 //! This module provides functions to encrypt and decrypt the secret passphrase
 //! using AES-256-GCM authenticated encryption with a statically derived key.
 
+use crate::constants::NONCE_LENGTH_BYTES;
 use aes_gcm::{
     aead::{Aead, KeyInit},
     Aes256Gcm,
@@ -35,7 +36,7 @@ fn derive_key() -> [u8; 32] {
 ///
 /// # Returns
 ///
-/// Base64-encoded string containing: nonce (12 bytes) || ciphertext || auth tag
+/// Base64-encoded string containing: nonce (NONCE_LENGTH_BYTES) || ciphertext || auth tag
 ///
 /// # Errors
 ///
@@ -44,8 +45,8 @@ pub fn encrypt_passphrase(plaintext: &str) -> Result<String> {
     let key = derive_key();
     let cipher = Aes256Gcm::new(&key.into());
 
-    // Generate random 12-byte nonce
-    let mut nonce_bytes = [0u8; 12];
+    // Generate random nonce
+    let mut nonce_bytes = [0u8; NONCE_LENGTH_BYTES];
     getrandom::getrandom(&mut nonce_bytes)
         .map_err(|e| anyhow::anyhow!("Failed to generate random nonce: {:?}", e))?;
     let nonce = &nonce_bytes.into();
@@ -78,7 +79,7 @@ pub fn encrypt_passphrase(plaintext: &str) -> Result<String> {
 ///
 /// Returns an error if:
 /// - Base64 decoding fails
-/// - Data is too short (< 12 bytes)
+/// - Data is too short (< NONCE_LENGTH_BYTES)
 /// - Decryption fails (wrong key, corrupted data, or failed authentication)
 pub fn decrypt_passphrase(encrypted: &str) -> Result<String> {
     // Decode base64
@@ -86,13 +87,14 @@ pub fn decrypt_passphrase(encrypted: &str) -> Result<String> {
         .decode(encrypted)
         .context("Failed to decode base64")?;
 
-    if data.len() < 12 {
+    if data.len() < NONCE_LENGTH_BYTES {
         anyhow::bail!("Invalid encrypted data: too short");
     }
 
-    // Extract nonce (first 12 bytes) and ciphertext (rest)
-    let (nonce_bytes, ciphertext) = data.split_at(12);
-    let nonce_array: [u8; 12] = nonce_bytes.try_into().context("Invalid nonce length")?;
+    // Extract nonce and ciphertext
+    let (nonce_bytes, ciphertext) = data.split_at(NONCE_LENGTH_BYTES);
+    let nonce_array: [u8; NONCE_LENGTH_BYTES] =
+        nonce_bytes.try_into().context("Invalid nonce length")?;
     let nonce = &nonce_array.into();
 
     // Decrypt

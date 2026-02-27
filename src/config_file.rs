@@ -3,6 +3,7 @@
 //! This module handles loading and saving the application configuration file,
 //! which includes the encrypted passphrase and timeout settings.
 
+use crate::constants::{CONFIG_FILE_PERMISSIONS, CONFIG_PERMISSION_MASK_GROUP_OTHER};
 use crate::crypto;
 use anyhow::{anyhow, Context, Result};
 use global_hotkey::hotkey::Code;
@@ -127,11 +128,12 @@ impl Config {
             let permissions = metadata.permissions();
             let mode = permissions.mode();
 
-            // Check if readable by group or others (should be 600)
-            if mode & 0o077 != 0 {
+            // Check if readable by group or others
+            if mode & CONFIG_PERMISSION_MASK_GROUP_OTHER != 0 {
                 log::warn!(
-                    "Config file has permissive permissions: {:o}. Should be 600 (user read/write only).",
-                    mode & 0o777
+                    "Config file has permissive permissions: {:o}. Should be {:o} (user read/write only).",
+                    mode & 0o777,
+                    CONFIG_FILE_PERMISSIONS
                 );
             }
         }
@@ -185,11 +187,11 @@ impl Config {
         fs::write(&path, contents)
             .with_context(|| format!("Failed to write config file: {}", path.display()))?;
 
-        // Set permissions to 600 (user read/write only)
+        // Set permissions (user read/write only)
         #[cfg(unix)]
         {
             let mut permissions = fs::metadata(&path)?.permissions();
-            permissions.set_mode(0o600);
+            permissions.set_mode(CONFIG_FILE_PERMISSIONS);
             fs::set_permissions(&path, permissions)
                 .context("Failed to set config file permissions")?;
         }
