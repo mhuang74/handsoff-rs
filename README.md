@@ -1,5 +1,11 @@
 # HandsOff - macOS Input Lock
 
+[![build rust](https://github.com/mhuang74/handsoff-rs/actions/workflows/rust.yml/badge.svg)](https://github.com/mhuang74/handsoff-rs/actions/workflows/rust.yml)
+[![Latest Release](https://img.shields.io/github/v/release/mhuang74/handsoff-rs)](https://github.com/mhuang74/handsoff-rs/releases)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+[![Rust](https://img.shields.io/badge/rust-1.70%2B-orange.svg)](https://www.rust-lang.org)
+[![Platform](https://img.shields.io/badge/platform-macOS-lightgrey.svg)](https://github.com/mhuang74/handsoff-rs)
+
 A macOS utility that prevents accidental or unsolicited input from keyboard, trackpad, and mouse devices during video conferencing, presentations, or when leaving your laptop unattended.
 
 **Available in two modes:**
