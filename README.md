@@ -11,7 +11,7 @@ A macOS utility that prevents accidental or unsolicited input from keyboard, tra
 - **Complete Input Blocking**: Blocks all keyboard, trackpad, and mouse inputs while keeping the screen visible
 - **Secure Unlocking**: Unlock via passphrase
 - **Auto-Lock**: Automatically locks after 120 seconds of inactivity (configurable)
-- **Smart Buffer Reset**: 5-second input buffer reset to handle accidental input
+- **Smart Buffer Reset**: 3-second input buffer reset to handle accidental input (or press Escape to clear immediately)
 - **Configurable Hotkeys**: Customize the last key while keeping `Cmd+Ctrl+Shift` modifiers
   - `Ctrl+Cmd+Shift+L` (default): Enable lock
   - `Ctrl+Cmd+Shift+T` (default): Talk hotkey (spacebar passthrough for unmuting)
@@ -198,11 +198,11 @@ When locked, all keyboard/mouse/trackpad input is blocked (except for Talk/Unmut
 **Both CLI and Tray App use the same unlock method:**
 
 1. Type your passphrase on the keyboard (even though you can't see the input)
-2. If you mistype, wait 5 seconds for the buffer to reset, then try again
+2. If you mistype, press **Escape** to clear the buffer immediately, or wait 3 seconds for it to reset automatically
 
 **Important for Tray App users:** You CANNOT unlock via the menu! When locked, mouse clicks are blocked by the event tap, making the tray menu inaccessible. You must type your passphrase just like CLI users.
 
-**Note:** The input buffer clears automatically after 5 seconds of inactivity to prevent multiple failed attempts from interfering with each other.
+**Note:** The input buffer clears automatically after 3 seconds of inactivity to prevent multiple failed attempts from interfering with each other. You can also press **Escape** at any time to clear the buffer instantly and retry.
 
 ### Auto-Lock
 

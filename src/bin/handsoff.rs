@@ -4,6 +4,7 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use handsoff::app_state::{AUTO_LOCK_MAX_SECONDS, AUTO_LOCK_MIN_SECONDS};
+use handsoff::constants::CFRUNLOOP_POLL_INTERVAL_MS;
 use handsoff::{config, config_file::Config, HandsOffCore};
 use log::{error, info, warn};
 use std::io::{self, Write};
@@ -305,7 +306,7 @@ fn main() -> Result<()> {
         unsafe {
             CFRunLoop::run_in_mode(
                 kCFRunLoopDefaultMode,
-                Duration::from_millis(500),
+                Duration::from_millis(CFRUNLOOP_POLL_INTERVAL_MS),
                 false, // Don't return after single source handled
             );
         }

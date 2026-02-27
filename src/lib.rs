@@ -5,12 +5,17 @@ pub mod app_state;
 pub mod auth;
 pub mod config;
 pub mod config_file;
+pub mod constants;
 pub mod crypto;
 pub mod input_blocking;
 pub mod utils;
 
 use anyhow::{Context, Result};
 use app_state::AppState;
+use constants::{
+    AUTO_LOCK_CHECK_INTERVAL_SECS, AUTO_UNLOCK_CHECK_INTERVAL_SECS,
+    BUFFER_RESET_CHECK_INTERVAL_MS, CFRUNLOOP_POLL_INTERVAL_MS, PERMISSION_CHECK_INTERVAL_SECS,
+};
 use core_graphics::sys::CGEventTapRef;
 use input_blocking::event_tap;
 use input_blocking::hotkeys::HotkeyManager;
@@ -217,7 +222,11 @@ impl HandsOffCore {
             loop {
                 // Run the loop for 0.5 seconds, then check for shutdown
                 let result = unsafe {
-                    CFRunLoop::run_in_mode(kCFRunLoopDefaultMode, Duration::from_millis(500), false)
+                    CFRunLoop::run_in_mode(
+                        kCFRunLoopDefaultMode,
+                        Duration::from_millis(CFRUNLOOP_POLL_INTERVAL_MS),
+                        false,
+                    )
                 };
 
                 // Check if shutdown requested
@@ -413,7 +422,7 @@ impl HandsOffCore {
     fn start_buffer_reset_thread(&self) {
         let state = self.state.clone();
         thread::spawn(move || loop {
-            thread::sleep(Duration::from_secs(1));
+            thread::sleep(Duration::from_millis(BUFFER_RESET_CHECK_INTERVAL_MS));
 
             // Skip processing when disabled
             if state.is_disabled() {
@@ -436,7 +445,7 @@ impl HandsOffCore {
         thread::spawn(move || {
             let mut check_count = 0u32;
             loop {
-                thread::sleep(Duration::from_secs(5));
+                thread::sleep(Duration::from_secs(AUTO_LOCK_CHECK_INTERVAL_SECS));
 
                 // Skip processing when disabled
                 if state.is_disabled() {
@@ -513,7 +522,7 @@ impl HandsOffCore {
                 info!("Auto-unlock monitoring thread started");
 
                 loop {
-                    thread::sleep(Duration::from_secs(10)); // Check every 10 seconds
+                    thread::sleep(Duration::from_secs(AUTO_UNLOCK_CHECK_INTERVAL_SECS));
 
                     // Skip processing when disabled
                     if state.is_disabled() {
@@ -540,7 +549,10 @@ impl HandsOffCore {
         thread::Builder::new()
             .name("permission-monitor".to_string())
             .spawn(move || {
-                info!("Permission monitoring thread started - will check every 15 seconds");
+                info!(
+                    "Permission monitoring thread started - will check every {} seconds",
+                    PERMISSION_CHECK_INTERVAL_SECS
+                );
 
                 // CRITICAL: Check initial permission state rather than assuming true
                 // This handles the edge case where permissions are removed before the first check
@@ -573,7 +585,7 @@ impl HandsOffCore {
                 }
 
                 loop {
-                    thread::sleep(Duration::from_secs(15)); // Check every 15 seconds
+                    thread::sleep(Duration::from_secs(PERMISSION_CHECK_INTERVAL_SECS));
 
                     // Skip permission checking when disabled (no event tap running)
                     if state.is_disabled() {

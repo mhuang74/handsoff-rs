@@ -3,6 +3,7 @@ pub mod hotkeys;
 
 use crate::app_state::AppState;
 use crate::auth;
+use crate::constants::BACKSPACE_KEYCODE;
 use crate::utils::keycode::keycode_to_char;
 use core_graphics::event::{CGEvent, CGEventFlags, CGEventType, EventField};
 use log::{debug, error, info};
@@ -76,9 +77,16 @@ pub fn handle_keyboard_event(event: &CGEvent, event_type: CGEventType, state: &A
 
     let shift = flags.contains(CGEventFlags::CGEventFlagShift);
 
+    // Handle Escape key to immediately clear buffer
+    const ESCAPE_KEYCODE: i64 = 53;
+    if keycode == ESCAPE_KEYCODE {
+        state.clear_buffer();
+        debug!("Buffer cleared via Escape key");
+        return true; // Block the escape key event
+    }
+
     // Handle backspace
-    if keycode == 51 {
-        // Delete key
+    if keycode == BACKSPACE_KEYCODE {
         let mut buffer = state.get_buffer();
         if !buffer.is_empty() {
             buffer.pop();
@@ -127,6 +135,9 @@ pub fn check_accessibility_permissions() -> bool {
     use core_graphics::sys::CGEventTapRef;
     use std::ffi::c_void;
 
+    // CGEventTapProxy is the callback's first parameter - different type from CGEventTapRef
+    type CGEventTapProxy = *mut c_void;
+
     #[link(name = "CoreGraphics", kind = "framework")]
     extern "C" {
         fn CGEventTapCreate(
@@ -135,7 +146,7 @@ pub fn check_accessibility_permissions() -> bool {
             options: u32,
             events_of_interest: u64,
             callback: unsafe extern "C" fn(
-                proxy: CGEventTapRef,
+                proxy: CGEventTapProxy, // Note: CGEventTapProxy, NOT CGEventTapRef
                 event_type: u32,
                 event: core_graphics::sys::CGEventRef,
                 user_info: *mut c_void,
@@ -155,7 +166,7 @@ pub fn check_accessibility_permissions() -> bool {
     }
 
     unsafe extern "C" fn test_callback(
-        _proxy: CGEventTapRef,
+        _proxy: CGEventTapProxy,
         _event_type: u32,
         event: core_graphics::sys::CGEventRef,
         _user_info: *mut c_void,
