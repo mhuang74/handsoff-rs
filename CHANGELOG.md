@@ -2,6 +2,15 @@
 
 ## [0.6.6] - 2026-02-27
 
+## 📦 Uncategorized
+
+- feat: reduce passphrase retry delay and add Escape key
+   - PR: #12
+
+
+
+## [0.6.6] - 2026-02-27
+
 ### Added
 - Add badges to README.md for build status, releases, license, Rust version, and platform
 
