@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.6.6] - 2026-02-27
+
+### Added
+- Add badges to README.md for build status, releases, license, Rust version, and platform
+
+### Changed
+- Reduce passphrase retry delay from 5s to 3s (fc49ba3)
+- Add Escape key to immediately clear passphrase input buffer (fc49ba3)
+
 ## [0.6.5] - 2026-02-20
 
 ## 📦 Uncategorized
