@@ -357,6 +357,21 @@ fn main() -> Result<()> {
             }
         }
 
+        // Check if existing event tap should be re-enabled (post sleep/wake timeout recovery).
+        // This reuses the same CGEventTapRef — no new WindowServer connection is created,
+        // which prevents zombie Mach port accumulation across sleep/wake cycles.
+        {
+            let mut core_borrow = core.borrow_mut();
+            if core_borrow.state.should_reenable_event_tap_and_clear() {
+                info!("Tray: Re-enabling existing event tap after sleep/wake timeout");
+                if let Err(e) = core_borrow.reenable_event_tap() {
+                    warn!("Tray: Failed to re-enable event tap: {} — will attempt full restart", e);
+                    // reenable_event_tap already falls back to restart internally,
+                    // but log the failure so it's visible in telemetry
+                }
+            }
+        }
+
         // Check if event tap should be started (permission restored)
         {
             let mut core_borrow = core.borrow_mut();

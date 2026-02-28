@@ -42,6 +42,10 @@ pub struct AppStateInner {
     pub should_stop_event_tap: bool,
     /// Flag to signal that event tap should be started (set by permission monitor on restoration)
     pub should_start_event_tap: bool,
+    /// Flag to signal that the existing event tap should be re-enabled (set on DISABLED_BY_TIMEOUT)
+    /// This is different from should_start_event_tap: re-enable reuses the existing tap handle
+    /// rather than destroying and creating a new WindowServer connection.
+    pub should_reenable_event_tap: bool,
     /// Flag to signal that app should exit (CLI only - set by event tap callback on permission loss)
     pub should_exit: bool,
     /// Whether the app is currently disabled (minimal CPU mode)
@@ -69,6 +73,7 @@ impl AppState {
                 has_accessibility_permissions: false,
                 should_stop_event_tap: false,
                 should_start_event_tap: false,
+                should_reenable_event_tap: false,
                 should_exit: false,
                 is_disabled: false,
                 lock_keycode: DEFAULT_LOCK_KEYCODE,
@@ -281,6 +286,22 @@ impl AppState {
         let should_start = state.should_start_event_tap;
         state.should_start_event_tap = false;
         should_start
+    }
+
+    /// Request that the existing event tap be re-enabled without creating a new one.
+    /// Called when macOS disables the tap due to callback timeout (e.g. after sleep/wake).
+    /// Unlike request_start_event_tap, this reuses the existing CGEventTapRef so no new
+    /// WindowServer connection is created — avoiding zombie Mach port accumulation.
+    pub fn request_reenable_event_tap(&self) {
+        self.inner.lock().should_reenable_event_tap = true;
+    }
+
+    /// Check if the existing event tap should be re-enabled and clear the flag
+    pub fn should_reenable_event_tap_and_clear(&self) -> bool {
+        let mut state = self.inner.lock();
+        let should_reenable = state.should_reenable_event_tap;
+        state.should_reenable_event_tap = false;
+        should_reenable
     }
 
     /// Request that the application exit (CLI only)
