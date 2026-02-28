@@ -93,6 +93,13 @@ pub const POLL_INTERVAL_DISABLED_SECS: u64 = 5;
 /// Recommended range: 100-1000 (same as CFRUNLOOP_POLL_INTERVAL_MS)
 pub const POLL_INTERVAL_ENABLED_MS: u64 = 500;
 
+/// Delay between disabling an event tap and releasing its CFMachPortRef.
+/// Gives the kernel time to flush in-flight callbacks so WindowServer can release
+/// its send right before we drop our receive right, reducing zombie Mach port lifetime.
+/// Unit: milliseconds
+/// Recommended range: 10-50 (short enough to be imperceptible, long enough to drain)
+pub const EVENT_TAP_DRAIN_DELAY_MS: u64 = 20;
+
 // ============================================================================
 // NOTIFICATION TIMEOUTS
 // ============================================================================

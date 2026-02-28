@@ -23,7 +23,21 @@ use log::{error, info, warn};
 use std::sync::mpsc::{self, Sender};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+/// Return current wall-clock time as a human-readable string for correlation with external logs.
+fn wall_clock_now() -> String {
+    match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(d) => {
+            let secs = d.as_secs();
+            let h = (secs / 3600) % 24;
+            let m = (secs / 60) % 60;
+            let s = secs % 60;
+            format!("{:02}:{:02}:{:02} UTC", h, m, s)
+        }
+        Err(_) => "unknown".to_string(),
+    }
+}
 
 // Type alias for CFRunLoopSourceRef (from event_tap.rs)
 type CFRunLoopSourceRef = *mut std::ffi::c_void;
@@ -273,6 +287,7 @@ impl HandsOffCore {
         // Start CFRunLoop thread first (required for event tap)
         self.start_cfrunloop_thread();
 
+        info!("[tap-lifecycle] Starting event tap at {}", wall_clock_now());
         let (tap, state_ptr) = event_tap::create_event_tap(self.state.clone())
             .context("Failed to create event tap")?;
         let source = unsafe { event_tap::enable_event_tap(tap) };
@@ -287,7 +302,7 @@ impl HandsOffCore {
     /// This should be called when permissions are lost to stop blocking input
     pub fn stop_event_tap(&mut self) {
         if let (Some(tap), Some(source)) = (self.event_tap, self.run_loop_source) {
-            warn!("Stopping event tap and removing from run loop");
+            warn!("[tap-lifecycle] Stopping event tap at {}", wall_clock_now());
             unsafe {
                 event_tap::remove_event_tap_from_runloop(tap, source);
             }
@@ -328,6 +343,37 @@ impl HandsOffCore {
         self.start_event_tap()?;
         info!("Event tap restarted successfully");
         Ok(())
+    }
+
+    /// Re-enable the existing event tap without creating a new WindowServer connection.
+    ///
+    /// Called after macOS disables the tap due to callback timeout (typically on sleep/wake).
+    /// The tap handle is still valid — we just need to call CGEventTapEnable again.
+    /// This avoids the zombie Mach port accumulation caused by creating a new tap each wake.
+    ///
+    /// If no tap is currently held (e.g. it was stopped due to permission loss), falls back
+    /// to a full restart so the caller never needs to distinguish the two cases.
+    pub fn reenable_event_tap(&mut self) -> Result<()> {
+        match self.event_tap {
+            Some(tap) => {
+                info!(
+                    "[tap-lifecycle] Re-enabling existing event tap at {} (reusing WindowServer connection, no new Mach port)",
+                    wall_clock_now()
+                );
+                event_tap::log_mach_port_count("before reenable_event_tap");
+                unsafe { event_tap::reenable_existing_tap(tap) };
+                event_tap::log_mach_port_count("after reenable_event_tap");
+                info!("[tap-lifecycle] Event tap re-enabled successfully");
+                Ok(())
+            }
+            None => {
+                warn!(
+                    "[tap-lifecycle] Re-enable requested but no tap handle held — falling back to full restart at {}",
+                    wall_clock_now()
+                );
+                self.restart_event_tap()
+            }
+        }
     }
 
     /// Disable HandsOff (stops event tap and hotkeys for minimal CPU usage)
