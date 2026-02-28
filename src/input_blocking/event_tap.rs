@@ -376,7 +376,7 @@ pub unsafe fn remove_event_tap_from_runloop(tap: CGEventTapRef, source: CFRunLoo
     // that were already queued before the disable. Without this, WindowServer may hold
     // a send right to the Mach port while we release our receive right, leaving a zombie
     // port until WindowServer drains its queue and releases its send rights.
-std::thread::sleep(std::time::Duration::from_millis(crate::constants::EVENT_TAP_DRAIN_DELAY_MS));
+    std::thread::sleep(std::time::Duration::from_millis(crate::constants::EVENT_TAP_DRAIN_DELAY_MS));
 
     // Convert the source ref back to CFRunLoopSource and remove it from the run loop
     let source = core_foundation::runloop::CFRunLoopSource::wrap_under_get_rule(
