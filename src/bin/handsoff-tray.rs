@@ -18,6 +18,7 @@ use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::TrayIconBuilder;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+const GIT_HASH: &str = env!("GIT_COMMIT_HASH");
 const DEFAULT_PASSPHRASE: &str = "qwet";
 
 /// HandsOff Tray App arguments
@@ -628,7 +629,7 @@ fn build_tooltip(
     let mut tooltip = String::new();
 
     // Header with version
-    tooltip.push_str(&format!("HandsOff v{}\n", VERSION));
+    tooltip.push_str(&format!("HandsOff v{} ({})\n", VERSION, GIT_HASH));
     tooltip.push_str("A macOS utility to block unsolicited input\n\n");
 
     // Current status
