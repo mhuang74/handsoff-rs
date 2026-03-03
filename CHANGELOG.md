@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.6.7] - 2026-03-03
+
+### Added
+- Add sleep/wake stutter telemetry (#13)
+- Include git hash in mouseover to identify release
+
+### Fixed
+- Fix zombie Mach port accumulation (#13)
+
+### Changed
+- Set MSRV to 1.80 (Cargo.toml, README badge)
+
 ## [0.6.6] - 2026-02-27
 
 ## 📦 Uncategorized
