@@ -4,9 +4,44 @@ use core_foundation::runloop::{kCFRunLoopCommonModes, CFRunLoop};
 use core_graphics::event::CGEventType;
 use core_graphics::sys::{CGEventRef, CGEventTapRef};
 use foreign_types::ForeignType;
-use log::{error, info};
+use log::{error, info, warn};
 use std::ffi::c_void;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
+
+/// Counts total CGEventTap handles created since process start.
+/// Compared with TAPS_DESTROYED to detect accumulation across sleep/wake cycles.
+pub static TAPS_CREATED: AtomicU32 = AtomicU32::new(0);
+/// Counts total CGEventTap handles released since process start.
+pub static TAPS_DESTROYED: AtomicU32 = AtomicU32::new(0);
+
+/// Log the current process Mach port count via lsof (telemetry only — not in hot path).
+/// Returns None if lsof is unavailable or parsing fails.
+pub fn log_mach_port_count(context: &str) {
+    let pid = std::process::id();
+    match std::process::Command::new("lsof")
+        .args(["-p", &pid.to_string()])
+        .output()
+    {
+        Ok(output) => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let mach_count = stdout.lines().filter(|l| l.contains("MACH")).count();
+            let created = TAPS_CREATED.load(Ordering::Relaxed);
+            let destroyed = TAPS_DESTROYED.load(Ordering::Relaxed);
+            info!(
+                "[telemetry] {} — Mach ports (lsof): {}, taps created: {}, taps destroyed: {}, live taps: {}",
+                context,
+                mach_count,
+                created,
+                destroyed,
+                created.saturating_sub(destroyed)
+            );
+        }
+        Err(e) => {
+            warn!("[telemetry] {} — could not run lsof for Mach port count: {}", context, e);
+        }
+    }
+}
 
 // Type alias for CFRunLoopSourceRef
 type CFRunLoopSourceRef = *mut c_void;
@@ -93,7 +128,9 @@ pub fn create_event_tap(state: Arc<AppState>) -> Option<(CGEventTapRef, *mut c_v
             return None;
         }
 
-        info!("Event tap created successfully (tap: {:?})", tap);
+        let count = TAPS_CREATED.fetch_add(1, Ordering::Relaxed) + 1;
+        info!("Event tap created successfully (tap: {:?}, lifetime tap #{} created)", tap, count);
+        log_mach_port_count("after create_event_tap");
         Some((tap, state_ptr))
     }
 }
@@ -145,15 +182,25 @@ unsafe extern "C" fn event_tap_callback(
         let state = &*(user_info as *const Arc<AppState>);
 
         if event_type == K_CGEVENT_TAP_DISABLED_BY_USER_INPUT {
-            // Permissions revoked - request stop
+            // Permissions revoked - request full stop (tap must be recreated after permissions restored)
             state.request_stop_event_tap();
             state.request_exit(); // Request CLI to exit (ignored by tray app)
             log::warn!("Requested event tap stop and CLI exit due to permission loss");
         } else {
-            // Timeout - request restart to recover
-            // The main loop will call restart_event_tap() to create a fresh tap
-            state.request_start_event_tap();
-            log::info!("Requested event tap restart due to timeout");
+            // Timeout — most commonly triggered by sleep/wake. The tap is still valid;
+            // re-enabling it reuses the existing WindowServer connection rather than
+            // creating a new one. This avoids zombie Mach port accumulation.
+            let created = TAPS_CREATED.load(Ordering::Relaxed);
+            let destroyed = TAPS_DESTROYED.load(Ordering::Relaxed);
+            log::warn!(
+                "[wake-proxy] Event tap disabled by timeout — likely sleep/wake. \
+                Requesting re-enable of existing tap (no new WindowServer connection). \
+                Lifetime taps: created={}, destroyed={}, live={}",
+                created,
+                destroyed,
+                created.saturating_sub(destroyed)
+            );
+            state.request_reenable_event_tap();
         }
 
         // Return event unmodified (these are system events)
@@ -302,6 +349,17 @@ pub unsafe fn disable_event_tap(tap: CGEventTapRef) {
     info!("Event tap disabled");
 }
 
+/// Re-enable an event tap that was disabled by macOS (e.g. after sleep/wake timeout).
+/// Reuses the existing WindowServer connection — no new Mach port is created.
+///
+/// # Safety
+/// The `tap` parameter must be a valid CGEventTapRef that was previously created and
+/// not yet released via `remove_event_tap_from_runloop`.
+pub unsafe fn reenable_existing_tap(tap: CGEventTapRef) {
+    CGEventTapEnable(tap, true);
+    info!("Event tap re-enabled (existing handle reused)");
+}
+
 /// Remove event tap source from run loop and disable it
 ///
 /// # Safety
@@ -311,8 +369,14 @@ pub unsafe fn remove_event_tap_from_runloop(tap: CGEventTapRef, source: CFRunLoo
 
     info!("Removing event tap from run loop (tap: {:?})", tap);
 
-    // Disable the tap first
+    // Disable the tap first so no new events are delivered
     CGEventTapEnable(tap, false);
+
+    // Brief drain delay: give the kernel time to flush any in-flight event callbacks
+    // that were already queued before the disable. Without this, WindowServer may hold
+    // a send right to the Mach port while we release our receive right, leaving a zombie
+    // port until WindowServer drains its queue and releases its send rights.
+    std::thread::sleep(std::time::Duration::from_millis(crate::constants::EVENT_TAP_DRAIN_DELAY_MS));
 
     // Convert the source ref back to CFRunLoopSource and remove it from the run loop
     let source = core_foundation::runloop::CFRunLoopSource::wrap_under_get_rule(
@@ -323,5 +387,8 @@ pub unsafe fn remove_event_tap_from_runloop(tap: CGEventTapRef, source: CFRunLoo
     // CRITICAL: Release the CGEventTapRef (CFMachPortRef) to prevent WindowServer resource leak
     // Without this, each sleep/wake cycle accumulates zombie tap handles causing desktop stuttering
     CFRelease(tap as *const c_void);
-    info!("Event tap released and removed from run loop");
+
+    let count = TAPS_DESTROYED.fetch_add(1, Ordering::Relaxed) + 1;
+    info!("Event tap released and removed from run loop (lifetime tap #{} destroyed)", count);
+    log_mach_port_count("after remove_event_tap_from_runloop");
 }
