@@ -2,6 +2,15 @@
 
 ## [0.6.7] - 2026-03-03
 
+## 📦 Uncategorized
+
+- investigate: add sleep/wake stutter telemetry and fix zombie Mach port accumulation
+   - PR: #13
+
+
+
+## [0.6.7] - 2026-03-03
+
 ### Added
 - Add sleep/wake stutter telemetry (#13)
 - Include git hash in mouseover to identify release
