@@ -99,6 +99,19 @@ pub const POLL_INTERVAL_ENABLED_MS: u64 = 500;
 /// Unit: milliseconds
 /// Recommended range: 10-50 (short enough to be imperceptible, long enough to drain)
 pub const EVENT_TAP_DRAIN_DELAY_MS: u64 = 20;
+/// Ignore duplicate timeout-driven re-enable requests inside this window.
+/// Helps prevent rapid timeout/re-enable thrash loops under transient load.
+/// Unit: milliseconds
+pub const EVENT_TAP_REENABLE_DEBOUNCE_MS: u64 = 1500;
+/// Callback duration threshold for detailed slow-callback logging.
+/// Unit: milliseconds
+pub const EVENT_TAP_SLOW_CALLBACK_THRESHOLD_MS: u64 = 5;
+/// Cooldown between detailed slow-callback log lines.
+/// Unit: milliseconds
+pub const EVENT_TAP_SLOW_LOG_COOLDOWN_MS: u64 = 1000;
+/// Emit aggregate callback telemetry every N callback invocations.
+/// Unit: callback count
+pub const EVENT_TAP_METRICS_LOG_EVERY_EVENTS: u64 = 5000;
 
 // ============================================================================
 // NOTIFICATION TIMEOUTS
