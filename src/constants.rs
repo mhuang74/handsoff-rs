@@ -93,6 +93,17 @@ pub const POLL_INTERVAL_DISABLED_SECS: u64 = 5;
 /// Recommended range: 100-1000 (same as CFRUNLOOP_POLL_INTERVAL_MS)
 pub const POLL_INTERVAL_ENABLED_MS: u64 = 500;
 
+/// Threshold for logging slow event tap callbacks.
+/// Callbacks exceeding this duration are counted and logged in telemetry summaries.
+/// Unit: microseconds
+/// Recommended range: 200-1000 (low enough to detect issues, high enough to avoid noise)
+pub const CALLBACK_SLOW_THRESHOLD_US: u64 = 500;
+
+/// Interval for logging callback telemetry summaries from the permission monitor thread.
+/// Unit: seconds
+/// Recommended range: 30-120
+pub const CALLBACK_TELEMETRY_INTERVAL_SECS: u64 = 60;
+
 /// Delay between disabling an event tap and releasing its CFMachPortRef.
 /// Gives the kernel time to flush in-flight callbacks so WindowServer can release
 /// its send right before we drop our receive right, reducing zombie Mach port lifetime.
