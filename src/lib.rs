@@ -20,10 +20,11 @@ use core_graphics::sys::CGEventTapRef;
 use input_blocking::event_tap;
 use input_blocking::hotkeys::HotkeyManager;
 use log::{error, info, warn};
+use std::sync::atomic::AtomicPtr;
 use std::sync::mpsc::{self, Sender};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// Return current wall-clock time as a human-readable string for correlation with external logs.
 fn wall_clock_now() -> String {
@@ -42,6 +43,13 @@ fn wall_clock_now() -> String {
 // Type alias for CFRunLoopSourceRef (from event_tap.rs)
 type CFRunLoopSourceRef = *mut std::ffi::c_void;
 
+/// Message to CFRunLoop thread for asynchronous operations
+enum CFRunLoopMessage {
+    /// Request to re-enable the event tap (CGEventTapEnable must be called on CFRunLoop thread)
+    /// The tap reference is accessed via the shared AtomicPtr.
+    ReenableTap,
+}
+
 /// Core HandsOff functionality shared between CLI and Tray App
 pub struct HandsOffCore {
     pub state: Arc<AppState>,
@@ -52,10 +60,12 @@ pub struct HandsOffCore {
     lock_key: global_hotkey::hotkey::Code,
     /// Talk hotkey key code (default: Code::KeyT)
     talk_key: global_hotkey::hotkey::Code,
-    /// CFRunLoop thread handle and shutdown channel
-    cfrunloop_thread: Option<(JoinHandle<()>, Sender<()>)>,
+    /// CFRunLoop thread handle, shutdown channel, and message channel
+    cfrunloop_thread: Option<(JoinHandle<()>, Sender<()>, Sender<CFRunLoopMessage>)>,
     /// State pointer passed to event tap (for cleanup)
     event_tap_state_ptr: Option<*mut std::ffi::c_void>,
+    /// Shared pointer to event tap for CFRunLoop thread access (re-enable operations)
+    tap_ptr: Option<Arc<AtomicPtr<std::ffi::c_void>>>,
 }
 
 impl HandsOffCore {
@@ -74,6 +84,7 @@ impl HandsOffCore {
             talk_key: global_hotkey::hotkey::Code::KeyT,
             cfrunloop_thread: None,
             event_tap_state_ptr: None,
+            tap_ptr: None,
         })
     }
 
@@ -227,14 +238,21 @@ impl HandsOffCore {
             return;
         }
 
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
+        let (shutdown_tx, shutdown_rx) = mpsc::channel::<()>();
+        let (msg_tx, msg_rx) = mpsc::channel::<CFRunLoopMessage>();
+
+        // Shared pointer to the event tap - allows CFRunLoop thread to access it for re-enable
+        // SAFETY: The pointer is only valid while the HandsOffCore is alive. The CFRunLoop thread
+        // is joined and stopped before the tap is released in stop_event_tap/drop.
+        let tap_ptr = Arc::new(AtomicPtr::new(std::ptr::null_mut()));
+        let tap_ptr_for_thread = Arc::clone(&tap_ptr);
 
         let handle = thread::spawn(move || {
             info!("CFRunLoop thread started");
             use core_foundation::runloop::{kCFRunLoopDefaultMode, CFRunLoop, CFRunLoopRunResult};
 
             loop {
-                // Run the loop for 0.5 seconds, then check for shutdown
+                // Run the loop for 0.5 seconds, then check for shutdown/messages
                 let result = unsafe {
                     CFRunLoop::run_in_mode(
                         kCFRunLoopDefaultMode,
@@ -243,10 +261,32 @@ impl HandsOffCore {
                     )
                 };
 
-                // Check if shutdown requested
+                // Check for shutdown request
                 if shutdown_rx.try_recv().is_ok() {
                     info!("CFRunLoop thread received shutdown signal");
                     break;
+                }
+
+                // PHASE 2: Check for re-enable requests (process all pending messages)
+                while let Ok(msg) = msg_rx.try_recv() {
+                    match msg {
+                        CFRunLoopMessage::ReenableTap => {
+                            let tap: *mut std::ffi::c_void = tap_ptr_for_thread.load(std::sync::atomic::Ordering::Acquire);
+                            if !tap.is_null() {
+                                info!("[tap-lifecycle] CFRunLoop thread re-enabling event tap (tap: {:?})", tap);
+                                let start = Instant::now();
+                                unsafe {
+                                    event_tap::reenable_existing_tap(tap as CGEventTapRef);
+                                }
+                                info!(
+                                    "[tap-lifecycle] Event tap re-enabled from CFRunLoop thread (took {:?})",
+                                    start.elapsed()
+                                );
+                            } else {
+                                warn!("[tap-lifecycle] Re-enable requested but tap pointer is null (tap not yet created or already destroyed)");
+                            }
+                        }
+                    }
                 }
 
                 // Log result for debugging (will be removed later if too verbose)
@@ -258,13 +298,16 @@ impl HandsOffCore {
             info!("CFRunLoop thread stopped");
         });
 
-        self.cfrunloop_thread = Some((handle, shutdown_tx));
+        // Store the tap_ptr so we can update it when the tap is created
+        self.tap_ptr = Some(tap_ptr);
+
+        self.cfrunloop_thread = Some((handle, shutdown_tx, msg_tx));
         info!("CFRunLoop thread spawned successfully");
     }
 
     /// Stop CFRunLoop background thread
     fn stop_cfrunloop_thread(&mut self) {
-        if let Some((handle, shutdown_tx)) = self.cfrunloop_thread.take() {
+        if let Some((handle, shutdown_tx, _msg_tx)) = self.cfrunloop_thread.take() {
             info!("Stopping CFRunLoop thread");
 
             // Send shutdown signal
@@ -294,6 +337,12 @@ impl HandsOffCore {
         self.event_tap = Some(tap);
         self.run_loop_source = Some(source);
         self.event_tap_state_ptr = Some(state_ptr);
+
+        // Update the shared tap pointer so CFRunLoop thread can access it for re-enable
+        if let Some(tap_ptr) = &self.tap_ptr {
+            tap_ptr.store(tap as *mut std::ffi::c_void, std::sync::atomic::Ordering::Release);
+        }
+
         info!("Event tap started");
         Ok(())
     }
@@ -301,6 +350,11 @@ impl HandsOffCore {
     /// Stop the event tap and remove it from run loop
     /// This should be called when permissions are lost to stop blocking input
     pub fn stop_event_tap(&mut self) {
+        // Clear the shared tap pointer first to prevent CFRunLoop thread from using it
+        if let Some(tap_ptr) = &self.tap_ptr {
+            tap_ptr.store(std::ptr::null_mut(), std::sync::atomic::Ordering::Release);
+        }
+
         if let (Some(tap), Some(source)) = (self.event_tap, self.run_loop_source) {
             warn!("[tap-lifecycle] Stopping event tap at {}", wall_clock_now());
             unsafe {
@@ -351,19 +405,47 @@ impl HandsOffCore {
     /// The tap handle is still valid — we just need to call CGEventTapEnable again.
     /// This avoids the zombie Mach port accumulation caused by creating a new tap each wake.
     ///
+    /// PHASE 2: Now sends message to CFRunLoop thread to perform re-enable asynchronously,
+    /// avoiding blocking the main thread for 8+ seconds when WindowServer is congested.
+    ///
     /// If no tap is currently held (e.g. it was stopped due to permission loss), falls back
     /// to a full restart so the caller never needs to distinguish the two cases.
     pub fn reenable_event_tap(&mut self) -> Result<()> {
         match self.event_tap {
             Some(tap) => {
                 info!(
-                    "[tap-lifecycle] Re-enabling existing event tap at {} (reusing WindowServer connection, no new Mach port)",
+                    "[tap-lifecycle] Re-enabling existing event tap at {} (reusing WindowServer connection, no new Mach port, async)",
                     wall_clock_now()
                 );
                 event_tap::log_mach_port_count("before reenable_event_tap");
-                unsafe { event_tap::reenable_existing_tap(tap) };
-                event_tap::log_mach_port_count("after reenable_event_tap");
-                info!("[tap-lifecycle] Event tap re-enabled successfully");
+
+                // PHASE 2: Send re-enable request to CFRunLoop thread instead of blocking
+                // This avoids blocking the main thread when WindowServer is congested
+                if let Some((_handle, _shutdown_tx, msg_tx)) = &self.cfrunloop_thread {
+                    let start = Instant::now();
+                    if let Err(e) = msg_tx.send(CFRunLoopMessage::ReenableTap) {
+                        warn!("Failed to send re-enable request to CFRunLoop thread: {}", e);
+                        // Fallback to synchronous on send failure
+                        unsafe { event_tap::reenable_existing_tap(tap) };
+                    } else {
+                        info!(
+                            "[tap-lifecycle] Async re-enable request sent to CFRunLoop thread (took {:?})",
+                            start.elapsed()
+                        );
+                        // Note: The actual re-enable happens asynchronously in the CFRunLoop thread.
+                        // We don't wait for it to complete to avoid blocking.
+                    }
+                } else {
+                    warn!("[tap-lifecycle] CFRunLoop thread not running, falling back to synchronous re-enable");
+                    // Fallback to synchronous re-enable if thread isn't running
+                    let start = Instant::now();
+                    unsafe { event_tap::reenable_existing_tap(tap) };
+                    info!(
+                        "[tap-lifecycle] Synchronous re-enable completed (took {:?})",
+                        start.elapsed()
+                    );
+                }
+
                 Ok(())
             }
             None => {
