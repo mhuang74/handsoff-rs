@@ -13,8 +13,8 @@ pub mod utils;
 use anyhow::{Context, Result};
 use app_state::AppState;
 use constants::{
-    AUTO_LOCK_CHECK_INTERVAL_SECS, AUTO_UNLOCK_CHECK_INTERVAL_SECS,
-    BUFFER_RESET_CHECK_INTERVAL_MS, CFRUNLOOP_POLL_INTERVAL_MS, PERMISSION_CHECK_INTERVAL_SECS,
+    AUTO_LOCK_CHECK_INTERVAL_SECS, AUTO_UNLOCK_CHECK_INTERVAL_SECS, BUFFER_RESET_CHECK_INTERVAL_MS,
+    CFRUNLOOP_POLL_INTERVAL_MS, EVENT_TAP_REENABLE_DEBOUNCE_MS, PERMISSION_CHECK_INTERVAL_SECS,
 };
 use core_graphics::sys::CGEventTapRef;
 use input_blocking::event_tap;
@@ -23,7 +23,7 @@ use log::{error, info, warn};
 use std::sync::mpsc::{self, Sender};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// Return current wall-clock time as a human-readable string for correlation with external logs.
 fn wall_clock_now() -> String {
@@ -56,6 +56,8 @@ pub struct HandsOffCore {
     cfrunloop_thread: Option<(JoinHandle<()>, Sender<()>)>,
     /// State pointer passed to event tap (for cleanup)
     event_tap_state_ptr: Option<*mut std::ffi::c_void>,
+    /// Last time a timeout-driven re-enable was attempted.
+    last_reenable_attempt_at: Option<Instant>,
 }
 
 impl HandsOffCore {
@@ -74,6 +76,7 @@ impl HandsOffCore {
             talk_key: global_hotkey::hotkey::Code::KeyT,
             cfrunloop_thread: None,
             event_tap_state_ptr: None,
+            last_reenable_attempt_at: None,
         })
     }
 
@@ -95,20 +98,32 @@ impl HandsOffCore {
         match utils::keycode::code_to_keycode(lock_key) {
             Some(lock_keycode) => {
                 self.state.set_lock_keycode(lock_keycode);
-                info!("Lock hotkey configured: {:?} (macOS keycode: {})", lock_key, lock_keycode);
+                info!(
+                    "Lock hotkey configured: {:?} (macOS keycode: {})",
+                    lock_key, lock_keycode
+                );
             }
             None => {
-                error!("CRITICAL: Failed to convert lock hotkey {:?} to macOS keycode", lock_key);
+                error!(
+                    "CRITICAL: Failed to convert lock hotkey {:?} to macOS keycode",
+                    lock_key
+                );
                 error!("Lock hotkey will use default keycode (L). This is likely a bug.");
             }
         }
         match utils::keycode::code_to_keycode(talk_key) {
             Some(talk_keycode) => {
                 self.state.set_talk_keycode(talk_keycode);
-                info!("Talk hotkey configured: {:?} (macOS keycode: {})", talk_key, talk_keycode);
+                info!(
+                    "Talk hotkey configured: {:?} (macOS keycode: {})",
+                    talk_key, talk_keycode
+                );
             }
             None => {
-                error!("CRITICAL: Failed to convert talk hotkey {:?} to macOS keycode", talk_key);
+                error!(
+                    "CRITICAL: Failed to convert talk hotkey {:?} to macOS keycode",
+                    talk_key
+                );
                 error!("Talk hotkey will use default keycode (T). This is likely a bug.");
             }
         }
@@ -323,6 +338,7 @@ impl HandsOffCore {
 
         // Stop CFRunLoop thread (no longer needed without event tap)
         self.stop_cfrunloop_thread();
+        self.last_reenable_attempt_at = None;
     }
 
     /// Restart the event tap after permissions are restored
@@ -354,6 +370,20 @@ impl HandsOffCore {
     /// If no tap is currently held (e.g. it was stopped due to permission loss), falls back
     /// to a full restart so the caller never needs to distinguish the two cases.
     pub fn reenable_event_tap(&mut self) -> Result<()> {
+        let now = Instant::now();
+        if let Some(last) = self.last_reenable_attempt_at {
+            let elapsed_ms = now.duration_since(last).as_millis() as u64;
+            if elapsed_ms < EVENT_TAP_REENABLE_DEBOUNCE_MS {
+                info!(
+                    "[tap-lifecycle] Re-enable request debounced ({} ms since previous attempt, threshold {} ms)",
+                    elapsed_ms,
+                    EVENT_TAP_REENABLE_DEBOUNCE_MS
+                );
+                return Ok(());
+            }
+        }
+        self.last_reenable_attempt_at = Some(now);
+
         match self.event_tap {
             Some(tap) => {
                 info!(
@@ -638,7 +668,14 @@ impl HandsOffCore {
                         continue;
                     }
 
-                    let has_permissions = input_blocking::check_accessibility_permissions();
+                    let has_permissions = if last_permission_state {
+                        input_blocking::check_accessibility_permissions_lightweight()
+                    } else {
+                        info!(
+                            "Permission monitor: running full event-tap permission probe (recovery mode)"
+                        );
+                        input_blocking::check_accessibility_permissions()
+                    };
 
                     // Detect permission loss (transition from true to false)
                     if last_permission_state && !has_permissions {

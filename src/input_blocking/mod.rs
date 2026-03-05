@@ -6,7 +6,8 @@ use crate::auth;
 use crate::constants::BACKSPACE_KEYCODE;
 use crate::utils::keycode::keycode_to_char;
 use core_graphics::event::{CGEvent, CGEventFlags, CGEventType, EventField};
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
+use std::time::Instant;
 
 /// Handle a keyboard event during lock
 ///
@@ -178,6 +179,7 @@ pub fn check_accessibility_permissions() -> bool {
     const K_CGHEAD_INSERT_EVENT_TAP: u32 = 0;
     const K_CGEVENT_TAP_OPTION_DEFAULT: u32 = 0;
 
+    let check_start = Instant::now();
     unsafe {
         // Check using AXIsProcessTrusted first (informational)
         let ax_trusted = AXIsProcessTrusted();
@@ -221,7 +223,31 @@ pub fn check_accessibility_permissions() -> bool {
             error!("  - Please check System Settings > Privacy & Security > Accessibility");
         }
 
+        let elapsed_ms = check_start.elapsed().as_millis();
+        if elapsed_ms > 200 {
+            warn!(
+                "[telemetry] Full accessibility permission probe took {} ms (includes test tap create/release)",
+                elapsed_ms
+            );
+        }
+
         // Return true if event tap can be created (the actual test that matters)
         tap_created
+    }
+}
+
+/// Lightweight accessibility check that avoids creating a test event tap.
+/// Used by the background permission monitor while permissions are known-good
+/// to avoid unnecessary WindowServer churn.
+pub fn check_accessibility_permissions_lightweight() -> bool {
+    #[link(name = "ApplicationServices", kind = "framework")]
+    extern "C" {
+        fn AXIsProcessTrusted() -> bool;
+    }
+
+    unsafe {
+        let ax_trusted = AXIsProcessTrusted();
+        info!("AXIsProcessTrusted check (lightweight): {}", ax_trusted);
+        ax_trusted
     }
 }
