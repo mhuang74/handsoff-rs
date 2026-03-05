@@ -8,12 +8,77 @@ use log::{error, info, warn};
 use std::ffi::c_void;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::{Duration, Instant};
 
 /// Counts total CGEventTap handles created since process start.
 /// Compared with TAPS_DESTROYED to detect accumulation across sleep/wake cycles.
 pub static TAPS_CREATED: AtomicU32 = AtomicU32::new(0);
 /// Counts total CGEventTap handles released since process start.
 pub static TAPS_DESTROYED: AtomicU32 = AtomicU32::new(0);
+
+// ============================================================================
+// CALLBACK TELEMETRY
+// ============================================================================
+static TOTAL_CALLBACKS: AtomicU32 = AtomicU32::new(0);
+static SLOW_CALLBACKS_1MS: AtomicU32 = AtomicU32::new(0);
+static SLOW_CALLBACKS_5MS: AtomicU32 = AtomicU32::new(0);
+static SLOW_CALLBACKS_10MS: AtomicU32 = AtomicU32::new(0);
+static SLOW_CALLBACKS_20MS: AtomicU32 = AtomicU32::new(0);
+static SLOW_CALLBACKS_30MS: AtomicU32 = AtomicU32::new(0);
+static MAX_CALLBACK_DURATION_US: AtomicU32 = AtomicU32::new(0);
+
+/// Convert event type to human-readable name for telemetry
+fn event_type_to_name(event_type: u32) -> &'static str {
+    match event_type {
+        x if x == CGEventType::KeyDown as u32 => "KeyDown",
+        x if x == CGEventType::KeyUp as u32 => "KeyUp",
+        x if x == CGEventType::MouseMoved as u32 => "MouseMoved",
+        x if x == CGEventType::LeftMouseDown as u32 => "LeftMouseDown",
+        x if x == CGEventType::LeftMouseUp as u32 => "LeftMouseUp",
+        x if x == CGEventType::RightMouseDown as u32 => "RightMouseDown",
+        x if x == CGEventType::RightMouseUp as u32 => "RightMouseUp",
+        x if x == CGEventType::LeftMouseDragged as u32 => "LeftMouseDragged",
+        x if x == CGEventType::RightMouseDragged as u32 => "RightMouseDragged",
+        x if x == CGEventType::OtherMouseDragged as u32 => "OtherMouseDragged",
+        x if x == CGEventType::ScrollWheel as u32 => "ScrollWheel",
+        0xFFFFFFFE => "DISABLED_BY_TIMEOUT",
+        0xFFFFFFFF => "DISABLED_BY_USER",
+        _ => "Unknown",
+    }
+}
+
+/// Log callback telemetry summary (call periodically to see statistics)
+pub fn log_callback_telemetry_summary() {
+    let total = TOTAL_CALLBACKS.load(Ordering::Relaxed);
+    if total == 0 {
+        return;
+    }
+
+    let slow_1ms = SLOW_CALLBACKS_1MS.load(Ordering::Relaxed);
+    let slow_5ms = SLOW_CALLBACKS_5MS.load(Ordering::Relaxed);
+    let slow_10ms = SLOW_CALLBACKS_10MS.load(Ordering::Relaxed);
+    let slow_20ms = SLOW_CALLBACKS_20MS.load(Ordering::Relaxed);
+    let slow_30ms = SLOW_CALLBACKS_30MS.load(Ordering::Relaxed);
+    let max_duration_us = MAX_CALLBACK_DURATION_US.load(Ordering::Relaxed);
+
+    let _pct_5ms = if total > 0 { slow_5ms * 100 / total } else { 0 };
+    let _pct_10ms = if total > 0 { slow_10ms * 100 / total } else { 0 };
+    let _pct_20ms = if total > 0 { slow_20ms * 100 / total } else { 0 };
+
+    info!(
+        "[callback-telemetry] Total: {}, >1ms: {} ({:.1}%), >5ms: {} ({:.1}%), >10ms: {} ({:.1}%), >20ms: {}, >30ms: {}, max: {:?}ms",
+        total,
+        slow_1ms,
+        slow_1ms as f32 * 100.0 / total as f32,
+        slow_5ms,
+        _pct_5ms as f32,
+        slow_10ms,
+        _pct_10ms as f32,
+        slow_20ms,
+        slow_30ms,
+        Duration::from_micros(max_duration_us as u64)
+    );
+}
 
 /// Log the current process Mach port count via lsof (telemetry only — not in hot path).
 /// Returns None if lsof is unavailable or parsing fails.
@@ -99,14 +164,14 @@ pub fn create_event_tap(state: Arc<AppState>) -> Option<(CGEventTapRef, *mut c_v
     let event_mask: u64 = (1 << CGEventType::KeyDown as u64)
         | (1 << CGEventType::KeyUp as u64)
         | (1 << CGEventType::MouseMoved as u64)
-        | (1 << CGEventType::LeftMouseDown as u64)
-        | (1 << CGEventType::LeftMouseUp as u64)
-        | (1 << CGEventType::LeftMouseDragged as u64)
-        | (1 << CGEventType::RightMouseDown as u64)
-        | (1 << CGEventType::RightMouseUp as u64)
-        | (1 << CGEventType::RightMouseDragged as u64)
-        | (1 << CGEventType::OtherMouseDragged as u64)
-        | (1 << CGEventType::ScrollWheel as u64);
+        | (1 << CGEventType::LeftMouseDown as u32)
+        | (1 << CGEventType::LeftMouseUp as u32)
+        | (1 << CGEventType::LeftMouseDragged as u32)
+        | (1 << CGEventType::RightMouseDown as u32)
+        | (1 << CGEventType::RightMouseUp as u32)
+        | (1 << CGEventType::RightMouseDragged as u32)
+        | (1 << CGEventType::OtherMouseDragged as u32)
+        | (1 << CGEventType::ScrollWheel as u32);
 
     // Box the state so we can pass it as user_info
     let state_ptr = Box::into_raw(Box::new(state)) as *mut c_void;
@@ -142,6 +207,9 @@ unsafe extern "C" fn event_tap_callback(
     event: CGEventRef,
     user_info: *mut c_void,
 ) -> CGEventRef {
+    // Track callback start time for telemetry
+    let callback_start = Instant::now();
+
     // Constants for special event types that indicate the tap has been disabled
     const K_CGEVENT_TAP_DISABLED_BY_TIMEOUT: u32 = 0xFFFFFFFE;
     const K_CGEVENT_TAP_DISABLED_BY_USER_INPUT: u32 = 0xFFFFFFFF;
@@ -205,6 +273,56 @@ unsafe extern "C" fn event_tap_callback(
 
         // Return event unmodified (these are system events)
         return event;
+    }
+
+    // Telemetry: Track callback duration
+    let duration = callback_start.elapsed();
+    TOTAL_CALLBACKS.fetch_add(1, Ordering::Relaxed);
+
+    // Update max duration
+    let duration_us = duration.as_micros() as u32;
+    let prev_max = MAX_CALLBACK_DURATION_US.load(Ordering::Relaxed);
+    if duration_us > prev_max {
+        MAX_CALLBACK_DURATION_US.store(duration_us, Ordering::Relaxed);
+    }
+
+    // Track slow callbacks at different thresholds
+    if duration > Duration::from_millis(30) {
+        SLOW_CALLBACKS_30MS.fetch_add(1, Ordering::Relaxed);
+        SLOW_CALLBACKS_20MS.fetch_add(1, Ordering::Relaxed);
+        SLOW_CALLBACKS_10MS.fetch_add(1, Ordering::Relaxed);
+        SLOW_CALLBACKS_5MS.fetch_add(1, Ordering::Relaxed);
+        SLOW_CALLBACKS_1MS.fetch_add(1, Ordering::Relaxed);
+        warn!(
+            "[callback-telemetry-slow] Duration: {:?}us (>30ms) - event type: 0x{:X} ({})",
+            duration_us, event_type, event_type_to_name(event_type)
+        );
+    } else if duration > Duration::from_millis(20) {
+        SLOW_CALLBACKS_20MS.fetch_add(1, Ordering::Relaxed);
+        SLOW_CALLBACKS_10MS.fetch_add(1, Ordering::Relaxed);
+        SLOW_CALLBACKS_5MS.fetch_add(1, Ordering::Relaxed);
+        SLOW_CALLBACKS_1MS.fetch_add(1, Ordering::Relaxed);
+        warn!(
+            "[callback-telemetry-slow] Duration: {:?}us (>20ms) - event type: 0x{:X} ({})",
+            duration_us, event_type, event_type_to_name(event_type)
+        );
+    } else if duration > Duration::from_millis(10) {
+        SLOW_CALLBACKS_10MS.fetch_add(1, Ordering::Relaxed);
+        SLOW_CALLBACKS_5MS.fetch_add(1, Ordering::Relaxed);
+        SLOW_CALLBACKS_1MS.fetch_add(1, Ordering::Relaxed);
+        warn!(
+            "[callback-telemetry-slow] Duration: {:?}us (>10ms) - event type: 0x{:X} ({})",
+            duration_us, event_type, event_type_to_name(event_type)
+        );
+    } else if duration > Duration::from_millis(5) {
+        SLOW_CALLBACKS_5MS.fetch_add(1, Ordering::Relaxed);
+        SLOW_CALLBACKS_1MS.fetch_add(1, Ordering::Relaxed);
+        log::warn!(
+            "[callback-telemetry-slow] Duration: {:?}us (>5ms) - event type: 0x{:X} ({})",
+            duration_us, event_type, event_type_to_name(event_type)
+        );
+    } else if duration > Duration::from_millis(1) {
+        SLOW_CALLBACKS_1MS.fetch_add(1, Ordering::Relaxed);
     }
 
     // Reconstruct the state from user_info without taking ownership

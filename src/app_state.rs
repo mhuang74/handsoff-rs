@@ -1,6 +1,120 @@
 use parking_lot::Mutex;
-use std::sync::Arc;
-use std::time::Instant;
+use std::sync::{Arc, atomic::{AtomicU32, Ordering}};
+use std::time::{Duration, Instant};
+
+// ============================================================================
+// LOCK TELEMETRY
+// ============================================================================
+static TOTAL_LOCK_ACQUISITIONS: AtomicU32 = AtomicU32::new(0);
+static LONG_LOCK_HOLDS_1MS: AtomicU32 = AtomicU32::new(0);
+static LONG_LOCK_HOLDS_5MS: AtomicU32 = AtomicU32::new(0);
+static LONG_LOCK_HOLDS_10MS: AtomicU32 = AtomicU32::new(0);
+static MAX_LOCK_HOLD_US: AtomicU32 = AtomicU32::new(0);
+
+/// Wrapper for MutexGuard that tracks how long the lock is held.
+/// Use this instead of raw MutexGuard to measure lock contention.
+pub struct TimedLockGuard<'a, T> {
+    inner: parking_lot::MutexGuard<'a, T>,
+    start: Instant,
+    context: &'static str,  // Optional context to identify where lock was acquired
+}
+
+impl<'a, T> TimedLockGuard<'a, T> {
+    /// Create a new TimedLockGuard with context identification
+    pub fn new(inner: parking_lot::MutexGuard<'a, T>, context: &'static str) -> Self {
+        Self {
+            inner,
+            start: Instant::now(),
+            context,
+        }
+    }
+
+    /// Get the inner MutexGuard
+    pub fn inner(&self) -> &parking_lot::MutexGuard<'a, T> {
+        &self.inner
+    }
+
+    /// Get mutable reference to inner MutexGuard
+    pub fn inner_mut(&mut self) -> &mut parking_lot::MutexGuard<'a, T> {
+        &mut self.inner
+    }
+}
+
+impl<'a, T> std::ops::Deref for TimedLockGuard<'a, T> {
+    type Target = parking_lot::MutexGuard<'a, T>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl<'a, T> std::ops::DerefMut for TimedLockGuard<'a, T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.inner
+    }
+}
+
+impl<'a, T> Drop for TimedLockGuard<'a, T> {
+    fn drop(&mut self) {
+        let hold_time = self.start.elapsed();
+        let hold_time_us = hold_time.as_micros() as u32;
+
+        // Update statistics
+        TOTAL_LOCK_ACQUISITIONS.fetch_add(1, Ordering::Relaxed);
+
+        // Track max hold time
+        let prev_max = MAX_LOCK_HOLD_US.load(Ordering::Relaxed);
+        if hold_time_us > prev_max {
+            MAX_LOCK_HOLD_US.store(hold_time_us, Ordering::Relaxed);
+        }
+
+        // Log warning if lock was held too long
+        if hold_time > Duration::from_millis(10) {
+            LONG_LOCK_HOLDS_10MS.fetch_add(1, Ordering::Relaxed);
+            LONG_LOCK_HOLDS_5MS.fetch_add(1, Ordering::Relaxed);
+            LONG_LOCK_HOLDS_1MS.fetch_add(1, Ordering::Relaxed);
+            log::warn!(
+                "[lock-telemetry-slow] Lock held for {:?}us (>10ms) at: {}",
+                hold_time_us, self.context
+            );
+        } else if hold_time > Duration::from_millis(5) {
+            LONG_LOCK_HOLDS_5MS.fetch_add(1, Ordering::Relaxed);
+            LONG_LOCK_HOLDS_1MS.fetch_add(1, Ordering::Relaxed);
+            log::warn!(
+                "[lock-telemetry-slow] Lock held for {:?}us (>5ms) at: {}",
+                hold_time_us, self.context
+            );
+        } else if hold_time > Duration::from_millis(1) {
+            LONG_LOCK_HOLDS_1MS.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+}
+
+/// Log lock telemetry summary (call periodically to see statistics)
+pub fn log_lock_telemetry_summary() {
+    let total = TOTAL_LOCK_ACQUISITIONS.load(Ordering::Relaxed);
+    if total == 0 {
+        return;
+    }
+
+    let long_1ms = LONG_LOCK_HOLDS_1MS.load(Ordering::Relaxed);
+    let long_5ms = LONG_LOCK_HOLDS_5MS.load(Ordering::Relaxed);
+    let long_10ms = LONG_LOCK_HOLDS_10MS.load(Ordering::Relaxed);
+    let max_hold_us = MAX_LOCK_HOLD_US.load(Ordering::Relaxed);
+
+    let _pct_1ms = if total > 0 { long_1ms * 100 / total } else { 0 };
+    let _pct_5ms = if total > 0 { long_5ms * 100 / total } else { 0 };
+    let _pct_10ms = if total > 0 { long_10ms * 100 / total } else { 0 };
+
+    log::info!(
+        "[lock-telemetry] Total acqs: {}, >1ms: {}, >5ms: {}, >10ms: {}, max: {:?}ms",
+        total,
+        long_1ms,
+        long_5ms,
+        long_10ms,
+        Duration::from_micros(max_hold_us as u64)
+    );
+}
 
 // Re-export constants for backward compatibility
 pub use crate::constants::{
@@ -86,8 +200,20 @@ impl AppState {
         self.inner.lock()
     }
 
+    /// Lock with telemetry - times how long the lock is held.
+    /// Use this instead of lock() in hot paths to measure lock contention.
+    pub fn timed_lock(&self, context: &'static str) -> TimedLockGuard<'_, AppStateInner> {
+        TimedLockGuard::new(self.inner.lock(), context)
+    }
+
     pub fn is_locked(&self) -> bool {
         self.inner.lock().is_locked
+    }
+
+    /// is_locked with telemetry (for hot path)
+    pub fn is_locked_timed(&self) -> bool {
+        let guard = self.timed_lock("is_locked");
+        guard.is_locked
     }
 
     pub fn set_locked(&self, locked: bool) {
@@ -108,6 +234,12 @@ impl AppState {
     pub fn update_input_time(&self) {
         let mut state = self.inner.lock();
         state.last_input_time = Instant::now();
+    }
+
+    /// update_input_time with telemetry (for hot path)
+    pub fn update_input_time_timed(&self) {
+        let mut guard = self.timed_lock("update_input_time");
+        guard.last_input_time = Instant::now();
     }
 
     pub fn update_key_time(&self) {
