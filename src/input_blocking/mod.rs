@@ -130,7 +130,67 @@ pub fn handle_mouse_event(_event_type: CGEventType, state: &AppState) -> bool {
     true
 }
 
-/// Check accessibility permissions
+/// Fast accessibility permission check that avoids CGEventTap creation churn.
+///
+/// Uses AXIsProcessTrusted() as the primary check (no WindowServer interaction).
+/// Only creates a test CGEventTap when permission transitions from false→true,
+/// to validate that the restored permission actually works.
+///
+/// This dramatically reduces WindowServer load compared to the original
+/// `check_accessibility_permissions()` which created/destroyed a test tap every call.
+///
+/// # Arguments
+/// * `last_ax_state` - Mutable reference to track the previous AXIsProcessTrusted state.
+///   Caller should initialize this to `false` and pass the same variable on each call.
+///
+/// # Returns
+/// `true` if accessibility permissions are granted and functional, `false` otherwise.
+pub fn check_accessibility_permissions_fast(last_ax_state: &mut bool) -> bool {
+    #[link(name = "ApplicationServices", kind = "framework")]
+    extern "C" {
+        fn AXIsProcessTrusted() -> bool;
+    }
+
+    let ax_trusted = unsafe { AXIsProcessTrusted() };
+
+    // Fast path: AX still trusted, skip test tap
+    if ax_trusted && *last_ax_state {
+        debug!("Permission check (fast): AXIsProcessTrusted=true, skipping test tap");
+        return true;
+    }
+
+    // Permission was revoked
+    if !ax_trusted {
+        if *last_ax_state {
+            info!("Permission check: AXIsProcessTrusted changed true→false");
+        }
+        *last_ax_state = false;
+        return false;
+    }
+
+    // Permission restored (false→true) - validate with test tap once
+    info!("Permission check: AXIsProcessTrusted changed false→true, validating with test tap");
+    let tap_created = check_accessibility_permissions();
+    *last_ax_state = tap_created;
+    if tap_created {
+        info!("Permission restoration validated successfully via test tap");
+    } else {
+        error!("AXIsProcessTrusted=true but test tap creation failed - permission may be incomplete");
+    }
+    tap_created
+}
+
+/// Check accessibility permissions by creating a test CGEventTap.
+///
+/// WARNING: This creates and destroys a CGEventTap on every call, which causes
+/// WindowServer churn. After 40-60 minutes of periodic calls (~240 cycles/hour),
+/// this can cause desktop stutter and event tap timeouts.
+///
+/// Prefer `check_accessibility_permissions_fast()` for periodic monitoring.
+/// Use this function only for:
+/// - Initial permission check at startup
+/// - Validating permission restoration after revocation
+/// - One-time permission checks (not in a loop)
 pub fn check_accessibility_permissions() -> bool {
     use core_graphics::sys::CGEventTapRef;
     use std::ffi::c_void;

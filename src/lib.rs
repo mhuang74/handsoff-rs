@@ -360,9 +360,10 @@ impl HandsOffCore {
                     "[tap-lifecycle] Re-enabling existing event tap at {} (reusing WindowServer connection, no new Mach port)",
                     wall_clock_now()
                 );
-                event_tap::log_mach_port_count("before reenable_event_tap");
+                // Note: Removed log_mach_port_count() calls here to avoid lsof subprocess overhead
+                // during re-enable. Mach port telemetry is still logged in create/destroy paths.
                 unsafe { event_tap::reenable_existing_tap(tap) };
-                event_tap::log_mach_port_count("after reenable_event_tap");
+                self.state.mark_reenable_completed();
                 info!("[tap-lifecycle] Event tap re-enabled successfully");
                 Ok(())
             }
@@ -589,6 +590,9 @@ impl HandsOffCore {
 
     /// Background thread to monitor accessibility permissions and signal when to stop event tap
     /// CRITICAL SAFETY FEATURE: Prevents user lockout if permissions are revoked while app is running
+    ///
+    /// Uses the fast permission check (AXIsProcessTrusted) to avoid CGEventTap churn.
+    /// Only creates a test tap when permission transitions from false→true.
     fn start_permission_monitor_thread(&self) {
         let state = self.state.clone();
 
@@ -596,13 +600,18 @@ impl HandsOffCore {
             .name("permission-monitor".to_string())
             .spawn(move || {
                 info!(
-                    "Permission monitoring thread started - will check every {} seconds",
+                    "Permission monitoring thread started - will check every {} seconds (using fast AX check)",
                     PERMISSION_CHECK_INTERVAL_SECS
                 );
 
                 // CRITICAL: Check initial permission state rather than assuming true
                 // This handles the edge case where permissions are removed before the first check
+                // Use full check at startup to validate permissions work
                 let mut last_permission_state = input_blocking::check_accessibility_permissions();
+
+                // Track AX state for the fast permission check
+                // Sync with initial state so future calls use fast path
+                let mut last_ax_state = last_permission_state;
 
                 // Cache the initial permission state
                 state.set_cached_accessibility_permissions(last_permission_state);
@@ -638,7 +647,9 @@ impl HandsOffCore {
                         continue;
                     }
 
-                    let has_permissions = input_blocking::check_accessibility_permissions();
+                    // Use fast check to avoid CGEventTap creation churn (~240 cycles/hour → ~0-5)
+                    let has_permissions =
+                        input_blocking::check_accessibility_permissions_fast(&mut last_ax_state);
 
                     // Detect permission loss (transition from true to false)
                     if last_permission_state && !has_permissions {

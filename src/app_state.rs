@@ -46,6 +46,8 @@ pub struct AppStateInner {
     /// This is different from should_start_event_tap: re-enable reuses the existing tap handle
     /// rather than destroying and creating a new WindowServer connection.
     pub should_reenable_event_tap: bool,
+    /// Timestamp when the last re-enable completed (for debouncing rapid timeouts)
+    pub last_reenable_completed: Option<Instant>,
     /// Flag to signal that app should exit (CLI only - set by event tap callback on permission loss)
     pub should_exit: bool,
     /// Whether the app is currently disabled (minimal CPU mode)
@@ -74,6 +76,7 @@ impl AppState {
                 should_stop_event_tap: false,
                 should_start_event_tap: false,
                 should_reenable_event_tap: false,
+                last_reenable_completed: None,
                 should_exit: false,
                 is_disabled: false,
                 lock_keycode: DEFAULT_LOCK_KEYCODE,
@@ -296,12 +299,35 @@ impl AppState {
         self.inner.lock().should_reenable_event_tap = true;
     }
 
-    /// Check if the existing event tap should be re-enabled and clear the flag
+    /// Check if the existing event tap should be re-enabled and clear the flag.
+    /// Includes debouncing: skips re-enable if one completed in the last 10 seconds.
+    /// This prevents cascading re-enables when WindowServer is under load.
     pub fn should_reenable_event_tap_and_clear(&self) -> bool {
         let mut state = self.inner.lock();
-        let should_reenable = state.should_reenable_event_tap;
+        if !state.should_reenable_event_tap {
+            return false;
+        }
+
+        // Debounce: skip if re-enabled in last 10 seconds
+        if let Some(last) = state.last_reenable_completed {
+            if last.elapsed().as_secs() < 10 {
+                log::info!(
+                    "Debouncing re-enable request: last re-enable was {} seconds ago",
+                    last.elapsed().as_secs()
+                );
+                state.should_reenable_event_tap = false;
+                return false;
+            }
+        }
+
         state.should_reenable_event_tap = false;
-        should_reenable
+        true
+    }
+
+    /// Mark that a re-enable operation completed successfully.
+    /// Called after `reenable_event_tap()` succeeds to enable debouncing.
+    pub fn mark_reenable_completed(&self) {
+        self.inner.lock().last_reenable_completed = Some(Instant::now());
     }
 
     /// Request that the application exit (CLI only)
