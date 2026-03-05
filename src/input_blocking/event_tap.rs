@@ -8,6 +8,7 @@ use log::{error, info, warn};
 use std::ffi::c_void;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::Instant;
 
 /// Counts total CGEventTap handles created since process start.
 /// Compared with TAPS_DESTROYED to detect accumulation across sleep/wake cycles.
@@ -142,6 +143,9 @@ unsafe extern "C" fn event_tap_callback(
     event: CGEventRef,
     user_info: *mut c_void,
 ) -> CGEventRef {
+    // Timing: Start measurement for callback duration
+    let callback_start = Instant::now();
+
     // Constants for special event types that indicate the tap has been disabled
     const K_CGEVENT_TAP_DISABLED_BY_TIMEOUT: u32 = 0xFFFFFFFE;
     const K_CGEVENT_TAP_DISABLED_BY_USER_INPUT: u32 = 0xFFFFFFFF;
@@ -210,6 +214,20 @@ unsafe extern "C" fn event_tap_callback(
     // Reconstruct the state from user_info without taking ownership
     let state = &*(user_info as *const Arc<AppState>);
 
+    // PHASE 3 OPTIMIZATION: Fast path for MouseMoved (most frequent event)
+    // This avoids CGEvent wrapping for simple mouse movement tracking
+    if event_type == CGEventType::MouseMoved as u32 {
+        state.update_input_time();
+        let elapsed = callback_start.elapsed();
+        if elapsed.as_micros() > 1000 {
+            warn!(
+                "[callback-timing] Slow MouseMoved callback: {:?}",
+                elapsed
+            );
+        }
+        return event;
+    }
+
     let cg_event = core_graphics::event::CGEvent::from_ptr(event);
 
     // Handle different event types - use safe pattern matching instead of transmute
@@ -221,12 +239,6 @@ unsafe extern "C" fn event_tap_callback(
         t if t == CGEventType::KeyUp as u32 => {
             // Always handle keyboard events (for hotkeys even when unlocked)
             handle_keyboard_event(&cg_event, CGEventType::KeyUp, state)
-        }
-        t if t == CGEventType::MouseMoved as u32 => {
-            // Always allow mouse movement (needed for tooltips and cursor position)
-            // This is a passive event and doesn't trigger any actions
-            state.update_input_time();
-            false // Always pass through
         }
         t if t == CGEventType::LeftMouseDown as u32 => {
             if state.is_locked() {
@@ -302,6 +314,15 @@ unsafe extern "C" fn event_tap_callback(
     // The event is owned by the system, not by us.
     std::mem::forget(cg_event);
 
+    // PHASE 1 TELEMETRY: Log slow callbacks (> 1ms is suspicious)
+    let elapsed = callback_start.elapsed();
+    if elapsed.as_micros() > 1000 {
+        warn!(
+            "[callback-timing] Slow callback: {:?} for event_type={}",
+            elapsed, event_type
+        );
+    }
+
     if should_block {
         std::ptr::null_mut() // Block the event
     } else {
@@ -356,8 +377,20 @@ pub unsafe fn disable_event_tap(tap: CGEventTapRef) {
 /// The `tap` parameter must be a valid CGEventTapRef that was previously created and
 /// not yet released via `remove_event_tap_from_runloop`.
 pub unsafe fn reenable_existing_tap(tap: CGEventTapRef) {
+    let start = Instant::now();
     CGEventTapEnable(tap, true);
-    info!("Event tap re-enabled (existing handle reused)");
+    let elapsed = start.elapsed();
+    info!(
+        "Event tap re-enabled (existing handle reused, took {:?})",
+        elapsed
+    );
+    // Log warning if re-enable takes too long (indicates WindowServer congestion)
+    if elapsed.as_millis() > 100 {
+        warn!(
+            "[callback-timing] Slow re-enable: {:?} - WindowServer may be congested",
+            elapsed
+        );
+    }
 }
 
 /// Remove event tap source from run loop and disable it
