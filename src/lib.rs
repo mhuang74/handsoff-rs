@@ -11,19 +11,40 @@ pub mod input_blocking;
 pub mod utils;
 
 use anyhow::{Context, Result};
-use app_state::AppState;
+use app_state::{AppState, log_lock_telemetry_summary};
 use constants::{
     AUTO_LOCK_CHECK_INTERVAL_SECS, AUTO_UNLOCK_CHECK_INTERVAL_SECS,
     BUFFER_RESET_CHECK_INTERVAL_MS, CFRUNLOOP_POLL_INTERVAL_MS, PERMISSION_CHECK_INTERVAL_SECS,
 };
 use core_graphics::sys::CGEventTapRef;
-use input_blocking::event_tap;
+use input_blocking::event_tap::{self, log_callback_telemetry_summary};
 use input_blocking::hotkeys::HotkeyManager;
 use log::{error, info, warn};
 use std::sync::mpsc::{self, Sender};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+// ============================================================================
+// TELEMETRY SUMMARY INTERVAL
+// ============================================================================
+/// Interval for logging telemetry summaries (in seconds)
+const TELEMETRY_SUMMARY_INTERVAL_SECS: u64 = 60;
+
+/// Seconds since program started (used for periodic telemetry logging)
+static TELEMETRY_SECONDS: AtomicU32 = AtomicU32::new(0);
+
+/// Increment telemetry seconds counter (call periodically)
+pub fn increment_telemetry_seconds() {
+    let secs = TELEMETRY_SECONDS.fetch_add(1, Ordering::Relaxed) + 1;
+
+    // Log telemetry summary every TELEMETRY_SUMMARY_INTERVAL_SECS
+    if secs % TELEMETRY_SUMMARY_INTERVAL_SECS as u32 == TELEMETRY_SUMMARY_INTERVAL_SECS as u32 - 1 {
+        log_callback_telemetry_summary();
+        log_lock_telemetry_summary();
+    }
+}
 
 /// Return current wall-clock time as a human-readable string for correlation with external logs.
 fn wall_clock_now() -> String {
@@ -223,14 +244,15 @@ impl HandsOffCore {
     /// Required for event tap to receive events
     fn start_cfrunloop_thread(&mut self) {
         if self.cfrunloop_thread.is_some() {
-            warn!("CFRunLoop thread already running");
+            warn!("[cfrunloop-thread] CFRunLoop thread already running");
             return;
         }
 
         let (shutdown_tx, shutdown_rx) = mpsc::channel();
 
+        info!("[cfrunloop-thread] Starting CFRunLoop thread");
         let handle = thread::spawn(move || {
-            info!("CFRunLoop thread started");
+            info!("[cfrunloop-thread] CFRunLoop thread started");
             use core_foundation::runloop::{kCFRunLoopDefaultMode, CFRunLoop, CFRunLoopRunResult};
 
             loop {
@@ -243,42 +265,45 @@ impl HandsOffCore {
                     )
                 };
 
+                // Increment telemetry counter for periodic summaries
+                increment_telemetry_seconds();
+
                 // Check if shutdown requested
                 if shutdown_rx.try_recv().is_ok() {
-                    info!("CFRunLoop thread received shutdown signal");
+                    info!("[cfrunloop-thread] CFRunLoop thread received shutdown signal");
                     break;
                 }
 
                 // Log result for debugging (will be removed later if too verbose)
                 if result != CFRunLoopRunResult::TimedOut {
-                    log::trace!("CFRunLoop run_in_mode returned: {:?}", result);
+                    log::trace!("[cfrunloop-thread] CFRunLoop run_in_mode returned: {:?}", result);
                 }
             }
 
-            info!("CFRunLoop thread stopped");
+            info!("[cfrunloop-thread] CFRunLoop thread stopped");
         });
 
         self.cfrunloop_thread = Some((handle, shutdown_tx));
-        info!("CFRunLoop thread spawned successfully");
+        info!("[cfrunloop-thread] CFRunLoop thread spawned successfully");
     }
 
     /// Stop CFRunLoop background thread
     fn stop_cfrunloop_thread(&mut self) {
         if let Some((handle, shutdown_tx)) = self.cfrunloop_thread.take() {
-            info!("Stopping CFRunLoop thread");
+            info!("[cfrunloop-thread] Stopping CFRunLoop thread");
 
             // Send shutdown signal
             if let Err(e) = shutdown_tx.send(()) {
-                warn!("Failed to send shutdown signal to CFRunLoop thread: {}", e);
+                warn!("[cfrunloop-thread] Failed to send shutdown signal to CFRunLoop thread: {}", e);
             }
 
             // Wait for thread to finish (with timeout)
             match handle.join() {
-                Ok(()) => info!("CFRunLoop thread stopped successfully"),
-                Err(e) => warn!("CFRunLoop thread panicked: {:?}", e),
+                Ok(()) => info!("[cfrunloop-thread] CFRunLoop thread stopped successfully"),
+                Err(e) => warn!("[cfrunloop-thread] CFRunLoop thread panicked: {:?}", e),
             }
         } else {
-            warn!("CFRunLoop thread not running, nothing to stop");
+            warn!("[cfrunloop-thread] CFRunLoop thread not running, nothing to stop");
         }
     }
 
@@ -467,57 +492,67 @@ impl HandsOffCore {
     /// Background thread to reset input buffer after timeout
     fn start_buffer_reset_thread(&self) {
         let state = self.state.clone();
-        thread::spawn(move || loop {
-            thread::sleep(Duration::from_millis(BUFFER_RESET_CHECK_INTERVAL_MS));
+        thread::Builder::new()
+            .name("buffer-reset".to_string())
+            .spawn(move || {
+                info!("[buffer-reset-thread] Started (interval: {}ms)", BUFFER_RESET_CHECK_INTERVAL_MS);
+                loop {
+                    thread::sleep(Duration::from_millis(BUFFER_RESET_CHECK_INTERVAL_MS));
 
-            // Skip processing when disabled
-            if state.is_disabled() {
-                continue;
-            }
+                    // Skip processing when disabled
+                    if state.is_disabled() {
+                        continue;
+                    }
 
-            if state.should_reset_buffer() {
-                let buffer = state.get_buffer();
-                if !buffer.is_empty() {
-                    info!("Resetting input buffer after timeout");
-                    state.clear_buffer();
+                    if state.should_reset_buffer() {
+                        let buffer = state.get_buffer();
+                        if !buffer.is_empty() {
+                            info!("[buffer-reset-thread] Resetting input buffer after timeout");
+                            state.clear_buffer();
+                        }
+                    }
                 }
-            }
-        });
+            })
+            .expect("Failed to spawn buffer reset thread");
     }
 
     /// Background thread to enable auto-lock after inactivity
     fn start_auto_lock_thread(&self) {
         let state = self.state.clone();
-        thread::spawn(move || {
-            let mut check_count = 0u32;
-            loop {
-                thread::sleep(Duration::from_secs(AUTO_LOCK_CHECK_INTERVAL_SECS));
+        thread::Builder::new()
+            .name("auto-lock".to_string())
+            .spawn(move || {
+                let mut check_count = 0u32;
+                info!("[auto-lock-thread] Started (interval: {}s)", AUTO_LOCK_CHECK_INTERVAL_SECS);
+                loop {
+                    thread::sleep(Duration::from_secs(AUTO_LOCK_CHECK_INTERVAL_SECS));
 
-                // Skip processing when disabled
-                if state.is_disabled() {
-                    continue;
-                }
+                    // Skip processing when disabled
+                    if state.is_disabled() {
+                        continue;
+                    }
 
-                check_count += 1;
+                    check_count += 1;
 
-                // Log remaining time every 30 seconds (6 checks of 5 seconds each)
-                if check_count.is_multiple_of(6) {
-                    if let Some(remaining_secs) = state.get_auto_lock_remaining_secs() {
-                        let minutes = remaining_secs / 60;
-                        let seconds = remaining_secs % 60;
-                        info!(
-                            "Auto-lock in {} seconds ({} min {} sec remaining)",
-                            remaining_secs, minutes, seconds
-                        );
+                    // Log remaining time every 30 seconds (6 checks of 5 seconds each)
+                    if check_count.is_multiple_of(6) {
+                        if let Some(remaining_secs) = state.get_auto_lock_remaining_secs() {
+                            let minutes = remaining_secs / 60;
+                            let seconds = remaining_secs % 60;
+                            info!(
+                                "[auto-lock-thread] Auto-lock in {} seconds ({} min {} sec remaining)",
+                                remaining_secs, minutes, seconds
+                            );
+                        }
+                    }
+
+                    if state.should_auto_lock() {
+                        info!("[auto-lock-thread] Auto-lock triggered after inactivity - input now locked");
+                        state.set_locked(true);
                     }
                 }
-
-                if state.should_auto_lock() {
-                    info!("Auto-lock triggered after inactivity - input now locked");
-                    state.set_locked(true);
-                }
-            }
-        });
+            })
+            .expect("Failed to spawn auto-lock thread");
     }
 
     /// Background thread to listen for hotkey events
@@ -528,35 +563,39 @@ impl HandsOffCore {
         let lock_hotkey_id = manager.lock_hotkey.map(|hk| hk.id());
         let talk_hotkey_id = manager.talk_hotkey.map(|hk| hk.id());
 
-        thread::spawn(move || {
-            use global_hotkey::GlobalHotKeyEvent;
+        thread::Builder::new()
+            .name("hotkey-listener".to_string())
+            .spawn(move || {
+                use global_hotkey::GlobalHotKeyEvent;
 
-            let receiver = GlobalHotKeyEvent::receiver();
-            loop {
-                if let Ok(event) = receiver.recv() {
-                    // Skip processing when disabled
-                    if state.is_disabled() {
-                        continue;
-                    }
+                info!("[hotkey-listener-thread] Started");
+                let receiver = GlobalHotKeyEvent::receiver();
+                loop {
+                    if let Ok(event) = receiver.recv() {
+                        // Skip processing when disabled
+                        if state.is_disabled() {
+                            continue;
+                        }
 
-                    let event_id = event.id;
+                        let event_id = event.id;
 
-                    // Check if it's the lock hotkey
-                    if lock_hotkey_id.is_some_and(|id| id == event_id) {
-                        info!("Lock hotkey triggered");
-                        if !state.is_locked() {
-                            state.set_locked(true);
-                            info!("Input locked via hotkey");
+                        // Check if it's the lock hotkey
+                        if lock_hotkey_id.is_some_and(|id| id == event_id) {
+                            info!("[hotkey-listener-thread] Lock hotkey triggered");
+                            if !state.is_locked() {
+                                state.set_locked(true);
+                                info!("[hotkey-listener-thread] Input locked via hotkey");
+                            }
+                        }
+                        // Check if it's the talk hotkey
+                        else if talk_hotkey_id.is_some_and(|id| id == event_id) {
+                            info!("[hotkey-listener-thread] Talk hotkey triggered");
+                            // Note: Spacebar passthrough is handled in the event tap
                         }
                     }
-                    // Check if it's the talk hotkey
-                    else if talk_hotkey_id.is_some_and(|id| id == event_id) {
-                        info!("Talk hotkey triggered");
-                        // Note: Spacebar passthrough is handled in the event tap
-                    }
                 }
-            }
-        });
+            })
+            .expect("Failed to spawn hotkey listener thread");
     }
 
     /// Background thread to trigger auto-unlock after timeout
@@ -565,8 +604,7 @@ impl HandsOffCore {
         thread::Builder::new()
             .name("auto-unlock".to_string())
             .spawn(move || {
-                info!("Auto-unlock monitoring thread started");
-
+                info!("[auto-unlock-thread] Started (interval: {}s)", AUTO_UNLOCK_CHECK_INTERVAL_SECS);
                 loop {
                     thread::sleep(Duration::from_secs(AUTO_UNLOCK_CHECK_INTERVAL_SECS));
 
@@ -576,11 +614,11 @@ impl HandsOffCore {
                     }
 
                     if state.should_auto_unlock() {
-                        warn!("Auto-unlock timeout expired - disabling input interception");
+                        warn!("[auto-unlock-thread] Auto-unlock timeout expired - disabling input interception");
 
                         // Unlock the device
                         state.trigger_auto_unlock();
-                        info!("Input unlocked due to auto-unlock timeout");
+                        info!("[auto-unlock-thread] Input unlocked due to auto-unlock timeout");
                     }
                 }
             })
@@ -596,7 +634,7 @@ impl HandsOffCore {
             .name("permission-monitor".to_string())
             .spawn(move || {
                 info!(
-                    "Permission monitoring thread started - will check every {} seconds",
+                    "[permission-monitor-thread] Started - will check every {} seconds",
                     PERMISSION_CHECK_INTERVAL_SECS
                 );
 
@@ -609,12 +647,12 @@ impl HandsOffCore {
 
                 // If permissions are already missing, request event tap stop
                 if !last_permission_state {
-                    warn!("CRITICAL: Accessibility permissions are missing at startup");
+                    warn!("[permission-monitor-thread] CRITICAL: Accessibility permissions are missing at startup");
 
                     // Unlock if locked
                     if state.is_locked() {
                         state.set_locked(false);
-                        info!("Unlocked - permissions missing");
+                        info!("[permission-monitor-thread] Unlocked - permissions missing");
                     }
 
                     // Signal to stop event tap
@@ -633,6 +671,9 @@ impl HandsOffCore {
                 loop {
                     thread::sleep(Duration::from_secs(PERMISSION_CHECK_INTERVAL_SECS));
 
+                    // Increment telemetry counter
+                    increment_telemetry_seconds();
+
                     // Skip permission checking when disabled (no event tap running)
                     if state.is_disabled() {
                         continue;
@@ -642,13 +683,13 @@ impl HandsOffCore {
 
                     // Detect permission loss (transition from true to false)
                     if last_permission_state && !has_permissions {
-                        warn!("CRITICAL: Accessibility permissions were revoked while app is running!");
+                        warn!("[permission-monitor-thread] CRITICAL: Accessibility permissions were revoked while app is running!");
 
                         // Unlock if currently locked
                         if state.is_locked() {
-                            warn!("App is locked - unlocking to restore input");
+                            warn!("[permission-monitor-thread] App is locked - unlocking to restore input");
                             state.set_locked(false);
-                            info!("Unlocked - permissions revoked");
+                            info!("[permission-monitor-thread] Unlocked - permissions revoked");
                         }
 
                         // Signal to stop event tap (main thread will handle the actual stop)
@@ -664,11 +705,11 @@ impl HandsOffCore {
                                 .show();
                         }
 
-                        warn!("Event tap stop requested - main thread will handle cleanup");
+                        warn!("[permission-monitor-thread] Event tap stop requested - main thread will handle cleanup");
                     }
                     // Detect permission restoration
                     else if !last_permission_state && has_permissions {
-                        info!("Accessibility permissions have been restored");
+                        info!("[permission-monitor-thread] Accessibility permissions have been restored");
 
                         // Request automatic restart (Tray app will handle this)
                         state.request_start_event_tap();

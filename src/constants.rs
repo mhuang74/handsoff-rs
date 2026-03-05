@@ -155,3 +155,22 @@ pub const CONFIG_PERMISSION_MASK_GROUP_OTHER: u32 = 0o077;
 /// Unit: bytes
 /// Range: Fixed at 12 bytes (96 bits) per GCM specification
 pub const NONCE_LENGTH_BYTES: usize = 12;
+
+// ============================================================================
+// TELEMETRY CONFIGURATION
+// ============================================================================
+
+/// Threshold for warning about slow callback durations.
+/// Callbacks exceeding this duration are logged with warning level.
+/// Unit: milliseconds
+pub const CALLBACK_SLOW_WARNING_THRESHOLD_MS: u64 = 5;
+
+/// Threshold for lock hold duration warnings.
+/// Locks held longer than this are logged with warning level.
+/// Unit: milliseconds
+pub const LOCK_SLOW_WARNING_THRESHOLD_MS: u64 = 5;
+
+/// Interval for logging periodic telemetry summaries.
+/// How often to summarize callback and lock timing data.
+/// Unit: seconds
+pub const TELEMETRY_SUMMARY_INTERVAL_SECS: u64 = 60;
