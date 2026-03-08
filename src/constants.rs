@@ -111,6 +111,13 @@ pub const CALLBACK_TELEMETRY_INTERVAL_SECS: u64 = 60;
 /// Recommended range: 10-50 (short enough to be imperceptible, long enough to drain)
 pub const EVENT_TAP_DRAIN_DELAY_MS: u64 = 20;
 
+/// Re-enable debounce interval to prevent cascading timeouts.
+/// When WindowServer is under pressure, rapid timeout events can occur.
+/// This cooldown prevents cascading re-enables that would worsen the situation.
+/// Unit: seconds
+/// Recommended range: 5-15 (long enough to let WindowServer stabilize)
+pub const REENABLE_DEBOUNCE_SECS: u64 = 10;
+
 // ============================================================================
 // NOTIFICATION TIMEOUTS
 // ============================================================================

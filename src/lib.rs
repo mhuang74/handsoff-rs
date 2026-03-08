@@ -361,9 +361,9 @@ impl HandsOffCore {
                     "[tap-lifecycle] Re-enabling existing event tap at {} (reusing WindowServer connection, no new Mach port)",
                     wall_clock_now()
                 );
-                event_tap::log_mach_port_count("before reenable_event_tap");
+                // NOTE: Removed log_mach_port_count() — lsof subprocess adds 500ms-8s latency during re-enable
                 unsafe { event_tap::reenable_existing_tap(tap) };
-                event_tap::log_mach_port_count("after reenable_event_tap");
+                self.state.mark_reenable_completed();
                 info!("[tap-lifecycle] Event tap re-enabled successfully");
                 Ok(())
             }
