@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.6.8] - 2026-03-09
+
+## 📦 Uncategorized
+
+- fix: eliminate desktop stutter from event tap timeout
+   - PR: #16
+
+
+
 ## [0.6.7] - 2026-03-03
 
 ## 📦 Uncategorized
