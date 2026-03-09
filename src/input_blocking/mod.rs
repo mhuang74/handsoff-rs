@@ -130,7 +130,27 @@ pub fn handle_mouse_event(_event_type: CGEventType, state: &AppState) -> bool {
     true
 }
 
-/// Check accessibility permissions
+/// Lightweight accessibility permission check using only AXIsProcessTrusted().
+/// No WindowServer interaction — safe to call frequently from background threads.
+///
+/// This avoids the CGEventTapCreate/CFRelease cycle that, over hundreds of calls,
+/// degrades WindowServer's ability to service the real event tap callback within
+/// its timeout window.
+///
+/// Safe for revocation detection: AXIsProcessTrusted() reliably returns false
+/// when permissions are removed (caching issues only affect the grant direction).
+/// The real event tap callback also detects revocation via DISABLED_BY_USER_INPUT.
+pub fn check_accessibility_permissions_lightweight() -> bool {
+    #[link(name = "ApplicationServices", kind = "framework")]
+    extern "C" {
+        fn AXIsProcessTrusted() -> bool;
+    }
+
+    unsafe { AXIsProcessTrusted() }
+}
+
+/// Check accessibility permissions (full check with test tap creation).
+/// Use only at startup or for one-time validation — NOT for periodic monitoring.
 pub fn check_accessibility_permissions() -> bool {
     use core_graphics::sys::CGEventTapRef;
     use std::ffi::c_void;

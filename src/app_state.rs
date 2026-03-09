@@ -8,6 +8,7 @@ pub use crate::constants::{
     AUTO_UNLOCK_DEFAULT_SECONDS, AUTO_UNLOCK_MAX_SECONDS, AUTO_UNLOCK_MIN_SECONDS,
     BUFFER_RESET_DEFAULT_SECONDS, DEFAULT_LOCK_KEYCODE, DEFAULT_TALK_KEYCODE,
 };
+use crate::constants::REENABLE_DEBOUNCE_SECS;
 
 /// Application state shared across modules
 #[derive(Clone)]
@@ -46,6 +47,8 @@ pub struct AppStateInner {
     /// This is different from should_start_event_tap: re-enable reuses the existing tap handle
     /// rather than destroying and creating a new WindowServer connection.
     pub should_reenable_event_tap: bool,
+    /// Timestamp when event tap was last re-enabled (for debouncing)
+    pub last_reenable_time: Option<Instant>,
     /// Flag to signal that app should exit (CLI only - set by event tap callback on permission loss)
     pub should_exit: bool,
     /// Whether the app is currently disabled (minimal CPU mode)
@@ -74,6 +77,7 @@ impl AppState {
                 should_stop_event_tap: false,
                 should_start_event_tap: false,
                 should_reenable_event_tap: false,
+                last_reenable_time: None,
                 should_exit: false,
                 is_disabled: false,
                 lock_keycode: DEFAULT_LOCK_KEYCODE,
@@ -296,12 +300,33 @@ impl AppState {
         self.inner.lock().should_reenable_event_tap = true;
     }
 
-    /// Check if the existing event tap should be re-enabled and clear the flag
+    /// Check if the existing event tap should be re-enabled and clear the flag.
+    /// Includes debouncing: skips re-enable if done within the last REENABLE_DEBOUNCE_SECS.
     pub fn should_reenable_event_tap_and_clear(&self) -> bool {
         let mut state = self.inner.lock();
-        let should_reenable = state.should_reenable_event_tap;
+        if !state.should_reenable_event_tap {
+            return false;
+        }
+
+        // Debounce: skip if re-enabled in last REENABLE_DEBOUNCE_SECS seconds
+        if let Some(last) = state.last_reenable_time {
+            if last.elapsed().as_secs() < REENABLE_DEBOUNCE_SECS {
+                log::info!(
+                    "[tap-lifecycle] Skipping re-enable (debounce: {:?} ago)",
+                    last.elapsed()
+                );
+                state.should_reenable_event_tap = false;
+                return false;
+            }
+        }
+
         state.should_reenable_event_tap = false;
-        should_reenable
+        true
+    }
+
+    /// Mark that event tap was just re-enabled (for debouncing)
+    pub fn mark_reenable_completed(&self) {
+        self.inner.lock().last_reenable_time = Some(Instant::now());
     }
 
     /// Request that the application exit (CLI only)

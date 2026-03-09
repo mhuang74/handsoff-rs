@@ -14,7 +14,8 @@ use anyhow::{Context, Result};
 use app_state::AppState;
 use constants::{
     AUTO_LOCK_CHECK_INTERVAL_SECS, AUTO_UNLOCK_CHECK_INTERVAL_SECS,
-    BUFFER_RESET_CHECK_INTERVAL_MS, CFRUNLOOP_POLL_INTERVAL_MS, PERMISSION_CHECK_INTERVAL_SECS,
+    BUFFER_RESET_CHECK_INTERVAL_MS, CALLBACK_TELEMETRY_INTERVAL_SECS,
+    CFRUNLOOP_POLL_INTERVAL_MS, PERMISSION_CHECK_INTERVAL_SECS,
 };
 use core_graphics::sys::CGEventTapRef;
 use input_blocking::event_tap;
@@ -360,9 +361,9 @@ impl HandsOffCore {
                     "[tap-lifecycle] Re-enabling existing event tap at {} (reusing WindowServer connection, no new Mach port)",
                     wall_clock_now()
                 );
-                event_tap::log_mach_port_count("before reenable_event_tap");
+                // NOTE: Removed log_mach_port_count() — lsof subprocess adds 500ms-8s latency during re-enable
                 unsafe { event_tap::reenable_existing_tap(tap) };
-                event_tap::log_mach_port_count("after reenable_event_tap");
+                self.state.mark_reenable_completed();
                 info!("[tap-lifecycle] Event tap re-enabled successfully");
                 Ok(())
             }
@@ -630,6 +631,11 @@ impl HandsOffCore {
                     }
                 }
 
+                // Track elapsed checks for periodic telemetry logging
+                let telemetry_checks_per_interval =
+                    (CALLBACK_TELEMETRY_INTERVAL_SECS / PERMISSION_CHECK_INTERVAL_SECS).max(1);
+                let mut check_counter: u64 = 0;
+
                 loop {
                     thread::sleep(Duration::from_secs(PERMISSION_CHECK_INTERVAL_SECS));
 
@@ -638,7 +644,24 @@ impl HandsOffCore {
                         continue;
                     }
 
-                    let has_permissions = input_blocking::check_accessibility_permissions();
+                    check_counter += 1;
+
+                    // Log callback telemetry periodically
+                    if check_counter % telemetry_checks_per_interval == 0 {
+                        let (count, slow, max_us) =
+                            event_tap::reset_callback_telemetry();
+                        if count > 0 {
+                            info!(
+                                "[telemetry] callback stats (last {}s): total={}, slow={}, max_duration={}us",
+                                CALLBACK_TELEMETRY_INTERVAL_SECS, count, slow, max_us
+                            );
+                        }
+                    }
+
+                    // Lightweight check: only AXIsProcessTrusted(), no WindowServer interaction.
+                    // Avoids the CGEventTapCreate/CFRelease cycle that degrades WindowServer
+                    // over hundreds of calls (root cause of "callback was too slow" timeouts).
+                    let has_permissions = input_blocking::check_accessibility_permissions_lightweight();
 
                     // Detect permission loss (transition from true to false)
                     if last_permission_state && !has_permissions {

@@ -1,4 +1,5 @@
 use crate::app_state::AppState;
+use crate::constants::CALLBACK_SLOW_THRESHOLD_US;
 use crate::input_blocking::{handle_keyboard_event, handle_mouse_event};
 use core_foundation::runloop::{kCFRunLoopCommonModes, CFRunLoop};
 use core_graphics::event::CGEventType;
@@ -7,13 +8,28 @@ use foreign_types::ForeignType;
 use log::{error, info, warn};
 use std::ffi::c_void;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 /// Counts total CGEventTap handles created since process start.
 /// Compared with TAPS_DESTROYED to detect accumulation across sleep/wake cycles.
 pub static TAPS_CREATED: AtomicU32 = AtomicU32::new(0);
 /// Counts total CGEventTap handles released since process start.
 pub static TAPS_DESTROYED: AtomicU32 = AtomicU32::new(0);
+
+/// Total callback invocations since last telemetry reset.
+pub static CALLBACK_COUNT: AtomicU64 = AtomicU64::new(0);
+/// Callbacks that exceeded CALLBACK_SLOW_THRESHOLD_US since last telemetry reset.
+pub static CALLBACK_SLOW_COUNT: AtomicU64 = AtomicU64::new(0);
+/// Maximum callback duration in microseconds since last telemetry reset.
+pub static CALLBACK_MAX_DURATION_US: AtomicU64 = AtomicU64::new(0);
+
+/// Reset callback telemetry counters and return (count, slow_count, max_duration_us).
+pub fn reset_callback_telemetry() -> (u64, u64, u64) {
+    let count = CALLBACK_COUNT.swap(0, Ordering::Relaxed);
+    let slow = CALLBACK_SLOW_COUNT.swap(0, Ordering::Relaxed);
+    let max_us = CALLBACK_MAX_DURATION_US.swap(0, Ordering::Relaxed);
+    (count, slow, max_us)
+}
 
 /// Log the current process Mach port count via lsof (telemetry only — not in hot path).
 /// Returns None if lsof is unavailable or parsing fails.
@@ -207,6 +223,10 @@ unsafe extern "C" fn event_tap_callback(
         return event;
     }
 
+    // Start timing for telemetry
+    let callback_start = std::time::Instant::now();
+    CALLBACK_COUNT.fetch_add(1, Ordering::Relaxed);
+
     // Reconstruct the state from user_info without taking ownership
     let state = &*(user_info as *const Arc<AppState>);
 
@@ -301,6 +321,31 @@ unsafe extern "C" fn event_tap_callback(
     // CRITICAL: Prevent cg_event from being dropped/freed since we're returning the same pointer!
     // The event is owned by the system, not by us.
     std::mem::forget(cg_event);
+
+    // Record callback duration for telemetry
+    let elapsed_us = callback_start.elapsed().as_micros() as u64;
+    if elapsed_us > CALLBACK_SLOW_THRESHOLD_US {
+        CALLBACK_SLOW_COUNT.fetch_add(1, Ordering::Relaxed);
+        log::debug!(
+            "[telemetry] slow callback: {}us (threshold: {}us, event_type: {})",
+            elapsed_us,
+            CALLBACK_SLOW_THRESHOLD_US,
+            event_type
+        );
+    }
+    // Update max duration (relaxed CAS loop — benign races are fine for telemetry)
+    let mut current_max = CALLBACK_MAX_DURATION_US.load(Ordering::Relaxed);
+    while elapsed_us > current_max {
+        match CALLBACK_MAX_DURATION_US.compare_exchange_weak(
+            current_max,
+            elapsed_us,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => break,
+            Err(actual) => current_max = actual,
+        }
+    }
 
     if should_block {
         std::ptr::null_mut() // Block the event
