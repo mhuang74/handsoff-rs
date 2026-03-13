@@ -88,6 +88,7 @@ extern "C" {
     ) -> CGEventTapRef;
 
     fn CGEventTapEnable(tap: CGEventTapRef, enable: bool);
+    fn CGEventTapIsEnabled(tap: CGEventTapRef) -> bool;
 }
 
 // CFMachPort functions from CoreFoundation
@@ -397,12 +398,20 @@ pub unsafe fn disable_event_tap(tap: CGEventTapRef) {
 /// Re-enable an event tap that was disabled by macOS (e.g. after sleep/wake timeout).
 /// Reuses the existing WindowServer connection — no new Mach port is created.
 ///
+/// Returns `true` if the tap is enabled after the call, `false` otherwise.
+///
 /// # Safety
 /// The `tap` parameter must be a valid CGEventTapRef that was previously created and
 /// not yet released via `remove_event_tap_from_runloop`.
-pub unsafe fn reenable_existing_tap(tap: CGEventTapRef) {
+pub unsafe fn reenable_existing_tap(tap: CGEventTapRef) -> bool {
     CGEventTapEnable(tap, true);
-    info!("Event tap re-enabled (existing handle reused)");
+    let is_enabled = CGEventTapIsEnabled(tap);
+    if is_enabled {
+        info!("Event tap re-enabled (existing handle reused)");
+    } else {
+        warn!("Event tap re-enable call completed but tap is still disabled");
+    }
+    is_enabled
 }
 
 /// Remove event tap source from run loop and disable it

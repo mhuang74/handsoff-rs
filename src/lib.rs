@@ -362,10 +362,18 @@ impl HandsOffCore {
                     wall_clock_now()
                 );
                 // NOTE: Removed log_mach_port_count() — lsof subprocess adds 500ms-8s latency during re-enable
-                unsafe { event_tap::reenable_existing_tap(tap) };
-                self.state.mark_reenable_completed();
-                info!("[tap-lifecycle] Event tap re-enabled successfully");
-                Ok(())
+                let success = unsafe { event_tap::reenable_existing_tap(tap) };
+                if success {
+                    self.state.mark_reenable_completed();
+                    info!("[tap-lifecycle] Event tap re-enabled successfully");
+                    Ok(())
+                } else {
+                    warn!(
+                        "[tap-lifecycle] Re-enable failed (tap still disabled), falling back to full restart at {}",
+                        wall_clock_now()
+                    );
+                    self.restart_event_tap()
+                }
             }
             None => {
                 warn!(
