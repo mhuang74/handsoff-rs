@@ -309,13 +309,16 @@ impl AppState {
         }
 
         // Debounce: skip if re-enabled in last REENABLE_DEBOUNCE_SECS seconds
+        // NOTE: Do NOT clear the flag here - if debounce blocks, keep the flag set
+        // so the next check after debounce expires will retry the re-enable.
+        // Clearing the flag here caused the tap to stay disabled permanently when
+        // macOS rapidly disabled the tap multiple times during sleep/wake.
         if let Some(last) = state.last_reenable_time {
             if last.elapsed().as_secs() < REENABLE_DEBOUNCE_SECS {
                 log::info!(
-                    "[tap-lifecycle] Skipping re-enable (debounce: {:?} ago)",
+                    "[tap-lifecycle] Skipping re-enable (debounce: {:?} ago, will retry later)",
                     last.elapsed()
                 );
-                state.should_reenable_event_tap = false;
                 return false;
             }
         }
