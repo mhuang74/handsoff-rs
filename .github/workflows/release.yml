@@ -352,6 +352,7 @@ jobs:
 
         # Checkout main branch (workflow checks out tag, putting us in detached HEAD)
         git fetch origin main
+        git checkout -- CHANGELOG.md
         git checkout main
 
         # Restore the updated CHANGELOG.md
