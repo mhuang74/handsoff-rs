@@ -1,22 +1,11 @@
 # Changelog
 
-## [0.6.9] - 2026-03-28
-
-## 📦 Uncategorized
-
-- fix: prevent tray app showing locked state when input is not blocked
-- docs: update tooltip for Escape key buffer clearing behavior
-
-
-
 ## [0.6.8] - 2026-03-09
 
 ## 📦 Uncategorized
 
 - fix: eliminate desktop stutter from event tap timeout
    - PR: #16
-
-
 
 ## [0.6.7] - 2026-03-03
 
@@ -25,20 +14,6 @@
 - investigate: add sleep/wake stutter telemetry and fix zombie Mach port accumulation
    - PR: #13
 
-
-
-## [0.6.7] - 2026-03-03
-
-### Added
-- Add sleep/wake stutter telemetry (#13)
-- Include git hash in mouseover to identify release
-
-### Fixed
-- Fix zombie Mach port accumulation (#13)
-
-### Changed
-- Set MSRV to 1.80 (Cargo.toml, README badge)
-
 ## [0.6.6] - 2026-02-27
 
 ## 📦 Uncategorized
@@ -46,35 +21,12 @@
 - feat: reduce passphrase retry delay and add Escape key
    - PR: #12
 
-
-
-## [0.6.6] - 2026-02-27
-
-### Added
-- Add badges to README.md for build status, releases, license, Rust version, and platform
-
-### Changed
-- Reduce passphrase retry delay from 5s to 3s (fc49ba3)
-- Add Escape key to immediately clear passphrase input buffer (fc49ba3)
-
 ## [0.6.5] - 2026-02-20
 
 ## 📦 Uncategorized
 
 - fix: release CGEventTapRef to prevent desktop stuttering
    - PR: #11
-
-
-
-## [0.6.5] - 2026-02-20
-
-### Fixed
-- Fix desktop stuttering after handsoff-tray runs for extended time
-  - Add CFRelease call to release CGEventTapRef and prevent WindowServer resource leak
-  - Add Drop impl for HandsOffCore to ensure cleanup on drop
-
-### Changed
-- Change default passphrase from `quit` to `qwet` for single-hand unlock
 
 ## [0.6.4] - 2025-11-15
 
