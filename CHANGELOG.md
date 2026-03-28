@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.6.9] - 2026-03-28
+
+## 📦 Uncategorized
+
+- fix: prevent tray app showing locked state when input is not blocked
+   - PR: #19
+
+
+
 ## [0.6.8] - 2026-03-09
 
 ## 📦 Uncategorized
