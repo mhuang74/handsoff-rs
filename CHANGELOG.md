@@ -5,6 +5,7 @@
 ## 📦 Uncategorized
 
 - fix: prevent tray app showing locked state when input is not blocked
+- docs: update tooltip for Escape key buffer clearing behavior
 
 
 
