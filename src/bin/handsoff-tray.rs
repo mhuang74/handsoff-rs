@@ -690,7 +690,8 @@ fn build_tooltip(
 
     tooltip.push_str("TO UNLOCK:\n");
     tooltip.push_str("• Type your passphrase on keyboard (default: qwet)\n");
-    tooltip.push_str("• Wait 5 sec between attempts if you mistype\n\n");
+    tooltip.push_str("• Press Escape to clear buffer immediately if you mistype\n");
+    tooltip.push_str("• Or wait 3 seconds for auto-clear\n\n");
 
     // Hotkeys
     tooltip.push_str("HOTKEYS:\n");

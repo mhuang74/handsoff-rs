@@ -24,7 +24,7 @@ Key implementation details:
 
 - Uses SHA-256 hashing (via `ring` crate) for secure passphrase storage
 - Keycode-to-character mapping for US keyboard layout
-- Input buffer with 5-second timeout for accidental input reset
+- Input buffer with 3-second timeout for accidental input reset (Escape key clears immediately)
 
 ### 3. Keychain Integration
 
@@ -56,7 +56,7 @@ Implemented hotkeys:
 **Location**: `src/main.rs`
 
 Three background threads:
-1. Buffer reset thread: Checks every second if buffer should be cleared (5s timeout)
+1. Buffer reset thread: Checks every 250ms if buffer should be cleared (3s timeout)
 2. Auto-lock thread: Checks every 10 seconds if auto-lock should engage (3min timeout)
 3. Hotkey listener thread: Monitors for global hotkey events
 
