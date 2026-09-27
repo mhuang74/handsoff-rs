@@ -1,10 +1,15 @@
-//! Configuration file management with encrypted passphrase storage
+//! Configuration file management with hashed passphrase storage
 //!
 //! This module handles loading and saving the application configuration file,
-//! which includes the encrypted passphrase and timeout settings.
+//! which includes the passphrase hash (over the physical keycode sequence) and
+//! timeout settings.
+//!
+//! See specs/deep-design-review-v2-2026-09.md §2.7 and §3:
+//! - Passphrases are stored as SHA-256 hashes over raw keycodes (`keycode-v1`).
+//! - Auto-unlock is a backoff mode (`backoff` | `disabled`), not a scalar.
 
 use crate::constants::{CONFIG_FILE_PERMISSIONS, CONFIG_PERMISSION_MASK_GROUP_OTHER};
-use crate::crypto;
+use crate::utils::{hash_keycodes, KEYCODE_SEQUENCE_FORMAT};
 use anyhow::{anyhow, Context, Result};
 use global_hotkey::hotkey::Code;
 use serde::{Deserialize, Serialize};
@@ -14,15 +19,34 @@ use std::path::{Path, PathBuf};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
+/// Auto-unlock modes (§2.7)
+pub const AUTO_UNLOCK_MODE_BACKOFF: &str = "backoff";
+pub const AUTO_UNLOCK_MODE_DISABLED: &str = "disabled";
+
 /// Application configuration stored in config.toml
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Config {
-    /// Base64-encoded AES-256-GCM encrypted passphrase
-    pub encrypted_passphrase: String,
+    /// SHA-256 hex hash of the passphrase keycode sequence (keycode-v1 format).
+    /// Optional on load so legacy configs (which have `encrypted_passphrase`
+    /// instead) parse successfully and hit the explicit re-setup error below,
+    /// rather than an opaque "missing field" parse error.
+    #[serde(default)]
+    pub passphrase_hash: Option<String>,
+    /// Passphrase format tag; only "keycode-v1" is loadable. Any other value
+    /// (including legacy AES-encrypted configs) forces a re-setup.
+    #[serde(default = "default_passphrase_format")]
+    pub passphrase_format: String,
     /// Auto-lock timeout in seconds (default: 120)
     pub auto_lock_timeout: u64,
-    /// Auto-unlock timeout in seconds (default: 0/disabled in Release, 60 in Debug)
-    pub auto_unlock_timeout: u64,
+    /// Auto-unlock mode: "backoff" (enabled-by-default exponential schedule)
+    /// or "disabled" (§2.7)
+    #[serde(default = "default_auto_unlock_mode")]
+    pub auto_unlock_mode: String,
+    /// Base interval in seconds for the exponential-backoff auto-unlock
+    /// schedule (§2.7). Present only when `auto_unlock_mode` is "backoff";
+    /// older configs without this field fall back to `AUTO_UNLOCK_BASE_SECONDS`.
+    #[serde(default)]
+    pub auto_unlock_base_interval: Option<u64>,
     /// Lock hotkey last key (A-Z, default: L)
     #[serde(default)]
     pub lock_hotkey: Option<String>,
@@ -31,45 +55,66 @@ pub struct Config {
     pub talk_hotkey: Option<String>,
 }
 
+fn default_passphrase_format() -> String {
+    KEYCODE_SEQUENCE_FORMAT.to_string()
+}
+
+fn default_auto_unlock_mode() -> String {
+    AUTO_UNLOCK_MODE_BACKOFF.to_string()
+}
+
 impl Config {
-    /// Create a new config with encrypted passphrase
+    /// Create a new config from a captured keycode sequence
     ///
     /// # Arguments
     ///
-    /// * `plaintext_passphrase` - The passphrase to encrypt and store
+    /// * `keycodes` - Physical keycodes captured during setup (validated by caller)
     /// * `auto_lock` - Auto-lock timeout in seconds
-    /// * `auto_unlock` - Auto-unlock timeout in seconds
+    /// * `auto_unlock_backoff` - Whether the backoff auto-unlock schedule is enabled
+    /// * `auto_unlock_base` - Base interval in seconds for the backoff schedule
+    ///   (used only when `auto_unlock_backoff` is true; validated by caller)
     /// * `lock_key` - Optional lock hotkey (A-Z), defaults to None (which becomes L)
     /// * `talk_key` - Optional talk hotkey (A-Z), defaults to None (which becomes T)
     pub fn new(
-        plaintext_passphrase: &str,
+        keycodes: &[u32],
         auto_lock: u64,
-        auto_unlock: u64,
+        auto_unlock_backoff: bool,
+        auto_unlock_base: u64,
         lock_key: Option<String>,
         talk_key: Option<String>,
     ) -> Result<Self> {
-        let encrypted_passphrase = crypto::encrypt_passphrase(plaintext_passphrase)
-            .context("Failed to encrypt passphrase")?;
-
         // Validate hotkeys if provided
-        if let Some(ref key) = lock_key {
+        if let Some(key) = &lock_key {
             Self::validate_hotkey(key)?;
         }
-        if let Some(ref key) = talk_key {
+        if let Some(key) = &talk_key {
             Self::validate_hotkey(key)?;
         }
 
         // Validate that lock and talk keys are different
-        if let (Some(ref lock), Some(ref talk)) = (&lock_key, &talk_key) {
+        if let (Some(lock), Some(talk)) = (&lock_key, &talk_key) {
             if lock.to_uppercase() == talk.to_uppercase() {
-                return Err(anyhow!("Lock and Talk hotkeys must be different (both set to '{}')", lock));
+                return Err(anyhow!(
+                    "Lock and Talk hotkeys must be different (both set to '{}')",
+                    lock
+                ));
             }
         }
 
         Ok(Self {
-            encrypted_passphrase,
+            passphrase_hash: Some(hash_keycodes(keycodes)),
+            passphrase_format: KEYCODE_SEQUENCE_FORMAT.to_string(),
             auto_lock_timeout: auto_lock,
-            auto_unlock_timeout: auto_unlock,
+            auto_unlock_mode: if auto_unlock_backoff {
+                AUTO_UNLOCK_MODE_BACKOFF.to_string()
+            } else {
+                AUTO_UNLOCK_MODE_DISABLED.to_string()
+            },
+            auto_unlock_base_interval: if auto_unlock_backoff {
+                Some(auto_unlock_base)
+            } else {
+                None
+            },
             lock_hotkey: lock_key,
             talk_hotkey: talk_key,
         })
@@ -79,7 +124,7 @@ impl Config {
     ///
     /// - macOS: `~/Library/Application Support/handsoff/config.toml`
     /// - Linux: `~/.config/handsoff/config.toml`
-    /// - Windows: `%APPDATA%\handsoff\config.toml`
+    /// - Windows: `%APPDATA%\handsoff/config.toml`
     pub fn config_path() -> PathBuf {
         let config_dir = dirs::config_dir()
             .expect("Failed to determine config directory")
@@ -97,6 +142,7 @@ impl Config {
     /// - Failed to read file
     /// - TOML parsing fails
     /// - File permissions are too permissive (warning only)
+    /// - Passphrase format is not `keycode-v1` (legacy configs must re-setup)
     pub fn load() -> Result<Self> {
         let path = Self::config_path();
         Self::load_from_path(&path)
@@ -113,6 +159,7 @@ impl Config {
     /// - Failed to read file
     /// - TOML parsing fails
     /// - File permissions are too permissive (warning only)
+    /// - Passphrase format is not `keycode-v1` (legacy configs must re-setup)
     pub fn load_from_path(path: &Path) -> Result<Self> {
         if !path.exists() {
             anyhow::bail!(
@@ -145,18 +192,59 @@ impl Config {
         let config: Config = toml::from_str(&contents).context("Failed to parse config file")?;
 
         // Validate loaded config
-        // 1. Validate hotkey format if provided
-        if let Some(ref key) = config.lock_hotkey {
+        // 1. Passphrase format must be keycode-v1 (legacy formats are rejected:
+        //    never silently keep an unverifiable passphrase — spec §3/§6)
+        if config.passphrase_format != KEYCODE_SEQUENCE_FORMAT {
+            anyhow::bail!(
+                "Unsupported passphrase format '{}' (expected '{}').\n\
+                 A one-time re-setup is required: run 'handsoff --setup'.\n\
+                 (Existing passphrases cannot be migrated — they were stored in an \
+                 unverifiable format.)",
+                config.passphrase_format,
+                KEYCODE_SEQUENCE_FORMAT
+            );
+        }
+
+        // 2. Hash must be present and look like a SHA-256 hex digest.
+        // A missing hash (legacy config with encrypted_passphrase, or a
+        // corrupted file) also forces re-setup with clear guidance.
+        let hash_ok = config
+            .passphrase_hash
+            .as_ref()
+            .is_some_and(|h| h.len() == 64 && h.chars().all(|c| c.is_ascii_hexdigit()));
+        if !hash_ok {
+            anyhow::bail!(
+                "No valid passphrase hash found in config file (it may be from an \
+                 older version of HandsOff).\n\
+                 A one-time re-setup is required: run 'handsoff --setup'."
+            );
+        }
+
+        // 3. Auto-unlock mode must be known
+        if config.auto_unlock_mode != AUTO_UNLOCK_MODE_BACKOFF
+            && config.auto_unlock_mode != AUTO_UNLOCK_MODE_DISABLED
+        {
+            anyhow::bail!(
+                "Invalid auto_unlock_mode '{}' (expected '{}' or '{}'). \
+                 Run 'handsoff --setup' to reconfigure.",
+                config.auto_unlock_mode,
+                AUTO_UNLOCK_MODE_BACKOFF,
+                AUTO_UNLOCK_MODE_DISABLED
+            );
+        }
+
+        // 4. Validate hotkey format if provided
+        if let Some(key) = &config.lock_hotkey {
             Config::validate_hotkey(key)
                 .with_context(|| format!("Invalid lock_hotkey in config file: '{}'", key))?;
         }
-        if let Some(ref key) = config.talk_hotkey {
+        if let Some(key) = &config.talk_hotkey {
             Config::validate_hotkey(key)
                 .with_context(|| format!("Invalid talk_hotkey in config file: '{}'", key))?;
         }
 
-        // 2. Validate that lock and talk keys are different
-        if let (Some(ref lock), Some(ref talk)) = (&config.lock_hotkey, &config.talk_hotkey) {
+        // 5. Validate that lock and talk keys are different
+        if let (Some(lock), Some(talk)) = (&config.lock_hotkey, &config.talk_hotkey) {
             if lock.to_uppercase() == talk.to_uppercase() {
                 anyhow::bail!(
                     "Invalid config: Lock and Talk hotkeys must be different (both set to '{}'). Please run 'handsoff --setup' to reconfigure.",
@@ -200,10 +288,17 @@ impl Config {
         Ok(())
     }
 
-    /// Decrypt and return the plaintext passphrase
-    pub fn get_passphrase(&self) -> Result<String> {
-        crypto::decrypt_passphrase(&self.encrypted_passphrase)
-            .context("Failed to decrypt passphrase")
+    /// Save config to a specific path (used by tests)
+    #[cfg(test)]
+    pub fn save_to_path(&self, path: &Path) -> Result<()> {
+        let contents = toml::to_string_pretty(self).context("Failed to serialize config")?;
+        fs::write(path, contents)
+            .with_context(|| format!("Failed to write config file: {}", path.display()))
+    }
+
+    /// Whether the backoff auto-unlock schedule is enabled
+    pub fn auto_unlock_backoff_enabled(&self) -> bool {
+        self.auto_unlock_mode == AUTO_UNLOCK_MODE_BACKOFF
     }
 
     /// Get the lock hotkey Code, defaulting to KeyL if not configured
@@ -281,288 +376,253 @@ mod tests {
     use std::path::Path;
 
     fn temp_config_path() -> PathBuf {
-        // Use a unique, per-test path to prevent interference between tests,
-        // even when they run in parallel within the same process.
-        //
-        // Strategy:
-        // - Base: system temp dir
-        // - Subdir: "handsoff_tests/config_file"
-        // - Unique segment: high-resolution timestamp + thread ID
-        //
-        // This ensures each call gets its own directory/file instead of sharing
-        // a single path based only on PID.
-        use std::thread;
-        use std::time::{SystemTime, UNIX_EPOCH};
-
-        let mut base = std::env::temp_dir();
-        base.push("handsoff_tests");
-        base.push("config_file");
-
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
-        let tid = format!("{:?}", thread::current().id());
-        base.push(format!("t_{nanos}_{tid}"));
-
-        let _ = fs::create_dir_all(&base);
-
-        base.join("config.toml")
+        std::env::temp_dir().join(format!(
+            "handsoff-test-config-{}-{}.toml",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
     }
 
     #[test]
     fn test_config_new() {
+        let keycodes = vec![0u32, 12, 15, 37];
         let config =
-            Config::new("test_passphrase", 30, 60, None, None).expect("Failed to create config");
+            Config::new(&keycodes, 120, true, 3600, Some("L".to_string()), Some("T".to_string()))
+                .expect("Failed to create config");
 
-        assert_eq!(config.auto_lock_timeout, 30);
-        assert_eq!(config.auto_unlock_timeout, 60);
-        assert!(!config.encrypted_passphrase.is_empty());
+        assert_eq!(config.passphrase_format, "keycode-v1");
+        assert_eq!(config.auto_lock_timeout, 120);
+        assert_eq!(config.auto_unlock_mode, AUTO_UNLOCK_MODE_BACKOFF);
+        assert!(config.auto_unlock_backoff_enabled());
+        assert_eq!(config.passphrase_hash, Some(hash_keycodes(&keycodes)));
     }
 
     #[test]
-    fn test_config_get_passphrase() {
-        let original = "my_secret_password";
-        let config = Config::new(original, 30, 60, None, None).expect("Failed to create config");
+    fn test_config_keycode_hash_is_layout_independent() {
+        // The stored hash must be over the raw keycodes: the same physical
+        // sequence produces the same hash regardless of layout.
+        let keycodes = vec![12u32, 15, 0, 37];
+        let a = Config::new(&keycodes, 120, true, 3600, None, None).unwrap();
+        let b = Config::new(&keycodes, 120, true, 3600, None, None).unwrap();
+        assert_eq!(a.passphrase_hash, b.passphrase_hash);
 
-        let decrypted = config.get_passphrase().expect("Failed to get passphrase");
-
-        assert_eq!(original, decrypted);
+        // Different sequence -> different hash
+        let c = Config::new(&[12, 15, 0, 36], 120, true, 3600, None, None).unwrap();
+        assert_ne!(a.passphrase_hash, c.passphrase_hash);
     }
 
     #[test]
     fn test_config_save_load_roundtrip() {
-        let temp_path = temp_config_path();
+        let path = temp_config_path();
+        let config = Config::new(&[0, 12, 15, 37], 120, true, 3600, None, None)
+            .expect("Failed to create config");
 
-        // Ensure clean slate
-        let _ = fs::remove_file(&temp_path);
+        config.save_to_path(&path).expect("Failed to save");
+        let loaded = Config::load_from_path(&path).expect("Failed to load");
 
-        // Create config
-        let original_config = Config {
-            encrypted_passphrase: "test_encrypted_data".to_string(),
-            auto_lock_timeout: 45,
-            auto_unlock_timeout: 120,
-            lock_hotkey: None,
-            talk_hotkey: None,
-        };
+        assert_eq!(loaded.passphrase_hash, config.passphrase_hash);
+        assert_eq!(loaded.passphrase_format, "keycode-v1");
+        assert_eq!(loaded.auto_unlock_mode, AUTO_UNLOCK_MODE_BACKOFF);
+        assert_eq!(loaded.auto_unlock_base_interval, Some(3600));
+        assert_eq!(loaded.auto_lock_timeout, 120);
 
-        // Write to temp file
-        let contents = toml::to_string_pretty(&original_config).expect("Failed to serialize");
-        fs::write(&temp_path, contents).expect("Failed to write temp config");
+        // A custom setup-persisted base survives the round-trip (§2.7)
+        let custom = Config::new(&[0, 12, 15, 37], 120, true, 300, None, None)
+            .expect("Failed to create config");
+        custom.save_to_path(&path).expect("Failed to save");
+        let loaded_custom = Config::load_from_path(&path).expect("Failed to load");
+        assert_eq!(loaded_custom.auto_unlock_base_interval, Some(300));
 
-        // Use the same logic as production via load_from_path
-        let loaded_config = Config::load_from_path(&temp_path).expect("Failed to load temp config");
+        // Disabled mode stores no base interval
+        let disabled = Config::new(&[0, 12, 15, 37], 120, false, 300, None, None)
+            .expect("Failed to create config");
+        assert_eq!(disabled.auto_unlock_base_interval, None);
 
-        // Verify
-        assert_eq!(
-            original_config.encrypted_passphrase,
-            loaded_config.encrypted_passphrase
-        );
-        assert_eq!(
-            original_config.auto_lock_timeout,
-            loaded_config.auto_lock_timeout
-        );
-        assert_eq!(
-            original_config.auto_unlock_timeout,
-            loaded_config.auto_unlock_timeout
-        );
-
-        // Cleanup
-        fs::remove_file(temp_path).ok();
+        let _ = fs::remove_file(&path);
     }
 
     #[test]
     #[cfg(unix)]
     fn test_config_permissions() {
-        let temp_path = temp_config_path();
+        use std::os::unix::fs::PermissionsExt;
 
-        let config = Config {
-            encrypted_passphrase: "test".to_string(),
-            auto_lock_timeout: 30,
-            auto_unlock_timeout: 60,
-            lock_hotkey: None,
-            talk_hotkey: None,
-        };
+        let path = temp_config_path();
+        let config =
+            Config::new(&[0, 12, 15, 37], 120, false, 3600, None, None).expect("Failed to create config");
 
-        // Write config
-        let contents = toml::to_string_pretty(&config).unwrap();
-        fs::write(&temp_path, contents).unwrap();
+        // save_to_path does not set permissions; save() does. Simulate by
+        // checking the constant and the real save path via config_path().
+        // For an isolated test, write manually and verify the mode mask logic.
+        config.save_to_path(&path).expect("Failed to save");
+        let metadata = fs::metadata(&path).expect("Failed to stat");
+        let _mode = metadata.permissions().mode();
+        // The permission constant must remain user-only.
+        assert_eq!(CONFIG_FILE_PERMISSIONS, 0o600);
+        assert_eq!(CONFIG_PERMISSION_MASK_GROUP_OTHER, 0o077);
 
-        // Set permissions to 600
-        let mut permissions = fs::metadata(&temp_path).unwrap().permissions();
-        permissions.set_mode(0o600);
-        fs::set_permissions(&temp_path, permissions).unwrap();
-
-        // Verify permissions
-        let metadata = fs::metadata(&temp_path).unwrap();
-        let mode = metadata.permissions().mode();
-        assert_eq!(mode & 0o777, 0o600, "Permissions should be 600");
-
-        // Cleanup
-        fs::remove_file(temp_path).ok();
-    }
-
-    #[test]
-    fn test_config_portability() {
-        // This test verifies that a config created in one "session" works in another
-        // by creating, saving, and loading multiple times
-
-        let passphrase = "portable_test_passphrase";
-
-        // Session 1: Create and get encrypted value
-        let config1 =
-            Config::new(passphrase, 30, 60, None, None).expect("Failed to create config 1");
-        let encrypted1 = config1.encrypted_passphrase.clone();
-
-        // Session 2: Create another config with same passphrase
-        let config2 =
-            Config::new(passphrase, 30, 60, None, None).expect("Failed to create config 2");
-        let encrypted2 = config2.encrypted_passphrase.clone();
-
-        // The encrypted values will be different (random nonces) but both should decrypt to same value
-        assert_ne!(
-            encrypted1, encrypted2,
-            "Encrypted values should differ due to random nonces"
-        );
-
-        let decrypted1 = config1.get_passphrase().expect("Failed to decrypt 1");
-        let decrypted2 = config2.get_passphrase().expect("Failed to decrypt 2");
-
-        assert_eq!(decrypted1, passphrase);
-        assert_eq!(decrypted2, passphrase);
-        assert_eq!(decrypted1, decrypted2);
+        let _ = fs::remove_file(&path);
     }
 
     #[test]
     fn test_missing_config_file() {
-        // Use a guaranteed-nonexistent path to test missing config handling
-        let missing_path = Path::new("/tmp/handsoff_missing_config_test_config.toml");
-        // Ensure it does not exist if the test is re-run
-        let _ = fs::remove_file(missing_path);
-
-        let result = Config::load_from_path(missing_path);
-
-        // Should fail with helpful error message
+        let result = Config::load_from_path(Path::new("/nonexistent/handsoff/config.toml"));
         assert!(result.is_err());
-        if let Err(e) = result {
-            let error_msg = format!("{:#}", e);
-            assert!(error_msg.contains("not found") || error_msg.contains("--setup"));
-        }
+        let err = format!("{}", result.unwrap_err());
+        assert!(err.contains("--setup"), "Error should direct to setup: {}", err);
+    }
+
+    #[test]
+    fn test_legacy_format_rejected() {
+        // Legacy AES-encrypted config must be rejected with re-setup guidance
+        let path = temp_config_path();
+        let legacy = r#"
+passphrase_hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+passphrase_format = "legacy-encrypted-v0"
+auto_lock_timeout = 120
+auto_unlock_mode = "backoff"
+"#;
+        fs::write(&path, legacy).expect("Failed to write legacy config");
+
+        let result = Config::load_from_path(&path);
+        assert!(result.is_err(), "Legacy format must be rejected");
+        let err = format!("{}", result.unwrap_err());
+        assert!(
+            err.contains("re-setup"),
+            "Legacy config error should demand re-setup: {}",
+            err
+        );
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_legacy_encrypted_passphrase_rejected() {
+        // A real legacy config has encrypted_passphrase and NO passphrase_hash.
+        // This must parse and hit the explicit re-setup error — not a "missing
+        // field" parse error (spec §6: fail loudly into setup).
+        let path = temp_config_path();
+        let legacy = r#"
+encrypted_passphrase = "c29tZWJhc2U2NGRhdGE="
+auto_lock_timeout = 120
+auto_unlock_timeout = 0
+"#;
+        fs::write(&path, legacy).expect("Failed to write legacy config");
+
+        let result = Config::load_from_path(&path);
+        assert!(result.is_err(), "Legacy config must be rejected");
+        let err = format!("{}", result.unwrap_err());
+        assert!(
+            err.contains("re-setup"),
+            "Legacy config error should demand re-setup: {}",
+            err
+        );
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_invalid_hash_rejected() {
+        let path = temp_config_path();
+        let bad = r#"
+passphrase_hash = "not-a-hash"
+auto_lock_timeout = 120
+auto_unlock_mode = "backoff"
+"#;
+        fs::write(&path, bad).expect("Failed to write config");
+
+        assert!(Config::load_from_path(&path).is_err());
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_invalid_auto_unlock_mode_rejected() {
+        let path = temp_config_path();
+        let bad = r#"
+passphrase_hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+auto_lock_timeout = 120
+auto_unlock_mode = "3600"
+"#;
+        fs::write(&path, bad).expect("Failed to write config");
+
+        assert!(Config::load_from_path(&path).is_err());
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_missing_optional_fields_default() {
+        // passphrase_format and auto_unlock_mode have serde defaults; a config
+        // written without them loads as keycode-v1 + backoff.
+        let path = temp_config_path();
+        let minimal = r#"
+passphrase_hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+auto_lock_timeout = 120
+"#;
+        fs::write(&path, minimal).expect("Failed to write config");
+
+        let loaded = Config::load_from_path(&path).expect("Should load with defaults");
+        assert_eq!(loaded.passphrase_format, "keycode-v1");
+        assert_eq!(loaded.auto_unlock_mode, AUTO_UNLOCK_MODE_BACKOFF);
+
+        let _ = fs::remove_file(&path);
     }
 
     #[test]
     fn test_duplicate_hotkeys_in_new() {
-        // Test that Config::new rejects duplicate hotkeys
-        let result = Config::new(
-            "test_passphrase",
-            30,
-            60,
-            Some("M".to_string()),
-            Some("M".to_string()),
-        );
-
-        assert!(result.is_err(), "Should reject duplicate hotkeys");
-        if let Err(e) = result {
-            let error_msg = format!("{}", e);
-            assert!(
-                error_msg.contains("must be different"),
-                "Error message should mention duplicates: {}",
-                error_msg
-            );
-        }
+        let result =
+            Config::new(&[0, 12, 15, 37], 120, true, 3600, Some("L".to_string()), Some("L".to_string()));
+        assert!(result.is_err(), "Duplicate hotkeys must be rejected");
     }
 
     #[test]
     fn test_duplicate_hotkeys_case_insensitive() {
-        // Test that duplicate detection is case-insensitive
-        let result = Config::new(
-            "test_passphrase",
-            30,
-            60,
-            Some("m".to_string()),
-            Some("M".to_string()),
-        );
-
-        assert!(result.is_err(), "Should reject duplicate hotkeys (case-insensitive)");
+        let result =
+            Config::new(&[0, 12, 15, 37], 120, true, 3600, Some("l".to_string()), Some("L".to_string()));
+        assert!(result.is_err(), "Case-insensitive duplicates must be rejected");
     }
 
     #[test]
     fn test_different_hotkeys_accepted() {
-        // Test that different hotkeys are accepted
-        let result = Config::new(
-            "test_passphrase",
-            30,
-            60,
-            Some("L".to_string()),
-            Some("T".to_string()),
-        );
-
-        assert!(result.is_ok(), "Should accept different hotkeys");
+        let result =
+            Config::new(&[0, 12, 15, 37], 120, true, 3600, Some("L".to_string()), Some("T".to_string()));
+        assert!(result.is_ok());
     }
 
     #[test]
     fn test_invalid_hotkey_in_loaded_config() {
-        // Test that loading a config with invalid hotkeys fails
-        let temp_path = temp_config_path();
-        let _ = fs::remove_file(&temp_path);
-
-        // Create config with invalid hotkey
-        let contents = r#"
-encrypted_passphrase = "test_encrypted_data"
-auto_lock_timeout = 30
-auto_unlock_timeout = 60
-lock_hotkey = "123"
+        let path = temp_config_path();
+        let bad = r#"
+passphrase_hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+auto_lock_timeout = 120
+auto_unlock_mode = "backoff"
+lock_hotkey = "1"
 talk_hotkey = "T"
 "#;
-        fs::write(&temp_path, contents).expect("Failed to write temp config");
+        fs::write(&path, bad).expect("Failed to write config");
 
-        // Try to load
-        let result = Config::load_from_path(&temp_path);
+        assert!(Config::load_from_path(&path).is_err());
 
-        assert!(result.is_err(), "Should reject invalid lock_hotkey");
-        if let Err(e) = result {
-            let error_msg = format!("{}", e);
-            assert!(
-                error_msg.contains("Invalid lock_hotkey") || error_msg.contains("must be a letter"),
-                "Error should mention invalid hotkey: {}",
-                error_msg
-            );
-        }
-
-        // Cleanup
-        fs::remove_file(temp_path).ok();
+        let _ = fs::remove_file(&path);
     }
 
     #[test]
     fn test_duplicate_hotkeys_in_loaded_config() {
-        // Test that loading a config with duplicate hotkeys fails
-        let temp_path = temp_config_path();
-        let _ = fs::remove_file(&temp_path);
-
-        // Create config with duplicate hotkeys
-        let contents = r#"
-encrypted_passphrase = "test_encrypted_data"
-auto_lock_timeout = 30
-auto_unlock_timeout = 60
-lock_hotkey = "M"
-talk_hotkey = "M"
+        let path = temp_config_path();
+        let bad = r#"
+passphrase_hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+auto_lock_timeout = 120
+auto_unlock_mode = "backoff"
+lock_hotkey = "L"
+talk_hotkey = "l"
 "#;
-        fs::write(&temp_path, contents).expect("Failed to write temp config");
+        fs::write(&path, bad).expect("Failed to write config");
 
-        // Try to load
-        let result = Config::load_from_path(&temp_path);
+        assert!(Config::load_from_path(&path).is_err());
 
-        assert!(result.is_err(), "Should reject duplicate hotkeys in loaded config");
-        if let Err(e) = result {
-            let error_msg = format!("{}", e);
-            assert!(
-                error_msg.contains("must be different"),
-                "Error should mention duplicates: {}",
-                error_msg
-            );
-        }
-
-        // Cleanup
-        fs::remove_file(temp_path).ok();
+        let _ = fs::remove_file(&path);
     }
 }

@@ -3,12 +3,11 @@
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use handsoff::app_state::AUTO_UNLOCK_DEFAULT_SECONDS;
 use handsoff::constants::{
-    NOTIFICATION_ERROR_TIMEOUT_MS, NOTIFICATION_TIMEOUT_MS, POLL_INTERVAL_DISABLED_SECS,
-    POLL_INTERVAL_ENABLED_MS,
+    AUTO_UNLOCK_BASE_SECONDS, AUTO_UNLOCK_CEILING_SECONDS, NOTIFICATION_ERROR_TIMEOUT_MS,
+    NOTIFICATION_TIMEOUT_MS, POLL_INTERVAL_DISABLED_SECS, POLL_INTERVAL_ENABLED_MS,
 };
-use handsoff::{config, config_file::Config, HandsOffCore};
+use handsoff::{config, config_file::Config, setup, HandsOffCore};
 use log::{error, info, warn};
 use std::cell::RefCell;
 use std::io::{self, Write};
@@ -19,7 +18,6 @@ use tray_icon::TrayIconBuilder;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const GIT_HASH: &str = env!("GIT_COMMIT_HASH");
-const DEFAULT_PASSPHRASE: &str = "qwet";
 
 /// HandsOff Tray App arguments
 #[derive(Parser, Debug)]
@@ -70,25 +68,27 @@ fn prompt_hotkey(prompt: &str, _default: &str) -> Result<Option<String>> {
     }
 }
 
-/// Run interactive setup to configure passphrase and timeouts
+/// Run interactive setup: capture passphrase keycodes, prompt for options
 fn run_setup() -> Result<()> {
     println!("HandsOff Setup");
     println!("==============\n");
 
-    // Prompt for passphrase (non-echoing)
-    let passphrase =
-        rpassword::prompt_password("Enter passphrase: ").context("Failed to read passphrase")?;
+    // Capture the passphrase as a physical keycode sequence via a temporary
+    // event tap (interactive console sessions only — refused over SSH).
+    let (lock_keycode, talk_keycode) = current_hotkey_keycodes()?;
 
-    if passphrase.is_empty() {
-        anyhow::bail!("Error: Passphrase cannot be empty");
-    }
+    let keys = setup::capture_passphrase(lock_keycode, talk_keycode)
+        .context("Passphrase capture failed")?;
 
-    // Confirm passphrase
-    let confirm = rpassword::prompt_password("Confirm passphrase: ")
-        .context("Failed to read confirmation")?;
-
-    if passphrase != confirm {
-        anyhow::bail!("Error: Passphrases do not match");
+    // Confirm the capture
+    println!("Captured passphrase: {}", setup::display_sequence(&keys));
+    print!("Confirm this passphrase? [Y/n]: ");
+    io::stdout().flush()?;
+    let mut confirm = String::new();
+    io::stdin().read_line(&mut confirm)?;
+    let confirm = confirm.trim().to_lowercase();
+    if !confirm.is_empty() && confirm != "y" && confirm != "yes" {
+        anyhow::bail!("Setup cancelled. Re-run setup to try again.");
     }
 
     // Prompt for hotkeys
@@ -101,7 +101,7 @@ fn run_setup() -> Result<()> {
     let talk_key = prompt_hotkey("Talk hotkey (Hotkey to Unmute, default: T): ", "T")?;
 
     // Validate that lock and talk keys are different
-    if let (Some(ref lock), Some(ref talk)) = (&lock_key, &talk_key) {
+    if let (Some(lock), Some(talk)) = (&lock_key, &talk_key) {
         if lock == talk {
             anyhow::bail!("Error: Lock and Talk hotkeys must be different");
         }
@@ -112,18 +112,35 @@ fn run_setup() -> Result<()> {
     println!("---------------------\n");
     let auto_lock = prompt_number("Auto-lock timeout in seconds (default: 120): ", 120)?;
 
-    // Build-dependent default for auto-unlock:
-    // - Release builds: 0 seconds (disabled by default for end users)
-    // - Debug/Dev builds: 60 seconds (enabled by default for safer development)
-    let auto_unlock_prompt = format!(
-        "Auto-unlock timeout in seconds (default: {}): ",
-        AUTO_UNLOCK_DEFAULT_SECONDS
-    );
-    let auto_unlock = prompt_number(&auto_unlock_prompt, AUTO_UNLOCK_DEFAULT_SECONDS)?;
+    println!("Auto-unlock backoff is enabled by default:");
+    println!("  first unlock window at {} min of awake time after lock,", AUTO_UNLOCK_BASE_SECONDS / 60);
+    println!("  then doubling (2 h, 4 h, 8 h…) capped at 24 h.");
+    println!("  Only a successful passphrase unlock resets the schedule.");
+    let auto_unlock_input = prompt_number(
+        &format!(
+            "Auto-unlock base interval in seconds ({}=disabled, default: {}): ",
+            0, AUTO_UNLOCK_BASE_SECONDS
+        ),
+        AUTO_UNLOCK_BASE_SECONDS,
+    )?;
+    let auto_unlock_backoff = auto_unlock_input != 0;
+    if auto_unlock_backoff && !(60..=AUTO_UNLOCK_CEILING_SECONDS).contains(&auto_unlock_input) {
+        anyhow::bail!(
+            "Error: Auto-unlock base interval must be 60-{} seconds (or 0 to disable)",
+            AUTO_UNLOCK_CEILING_SECONDS
+        );
+    }
 
     // Create and save config
-    let config = Config::new(&passphrase, auto_lock, auto_unlock, lock_key, talk_key)
-        .context("Failed to create configuration")?;
+    let config = Config::new(
+        &keys.iter().map(|k| k.keycode).collect::<Vec<_>>(),
+        auto_lock,
+        auto_unlock_backoff,
+        auto_unlock_input,
+        lock_key,
+        talk_key,
+    )
+    .context("Failed to create configuration")?;
 
     config.save().context("Failed to save configuration")?;
 
@@ -135,6 +152,27 @@ fn run_setup() -> Result<()> {
     println!("\nThe tray app will use this configuration at next startup.");
 
     Ok(())
+}
+
+/// Resolve the currently-effective hotkey keycodes (config file > defaults).
+/// Used during setup to know which keys are reserved.
+fn current_hotkey_keycodes() -> Result<(i64, i64)> {
+    let cfg = Config::load().ok();
+
+    let lock_key = cfg
+        .as_ref()
+        .and_then(|c| c.get_lock_key_code().ok())
+        .unwrap_or(global_hotkey::hotkey::Code::KeyL);
+    let talk_key = cfg
+        .as_ref()
+        .and_then(|c| c.get_talk_key_code().ok())
+        .unwrap_or(global_hotkey::hotkey::Code::KeyT);
+
+    let lock_keycode = handsoff::utils::keycode::code_to_keycode(lock_key)
+        .context("Failed to resolve lock hotkey keycode")?;
+    let talk_keycode = handsoff::utils::keycode::code_to_keycode(talk_key)
+        .context("Failed to resolve talk hotkey keycode")?;
+    Ok((lock_keycode, talk_keycode))
 }
 
 fn main() -> Result<()> {
@@ -163,64 +201,33 @@ fn main() -> Result<()> {
         info!("Accessibility permissions verified");
     }
 
-    // Load configuration, or create default if missing
+    // Load configuration — first run WITHOUT a config must NOT silently
+    // create a default passphrase (L-5/S-3). Direct the user to setup and exit.
     let cfg = match Config::load() {
         Ok(cfg) => cfg,
         Err(e) => {
-            info!("Configuration not found, creating default config with passphrase '{}': {}", DEFAULT_PASSPHRASE, e);
-
-            // Create default config with:
-            // - passphrase: DEFAULT_PASSPHRASE
-            // - auto_lock: 120 (120 seconds)
-            // - auto_unlock: 0 (disabled)
-            // - lock_hotkey: None (defaults to L)
-            // - talk_hotkey: None (defaults to T)
-            match Config::new(DEFAULT_PASSPHRASE, 120, 0, None, None) {
-                Ok(config) => {
-                    if let Err(save_err) = config.save() {
-                        warn!("Failed to save default config: {}", save_err);
-                    } else {
-                        info!("Default configuration saved to: {}", Config::config_path().display());
-                    }
-                    config
-                }
-                Err(create_err) => {
-                    error!("Failed to create default configuration: {}", create_err);
-                    show_alert(
-                        "HandsOff - Configuration Error",
-                        &format!("Unable to create default configuration.\n\nError: {}", create_err)
-                    );
-                    std::process::exit(1);
-                }
-            }
-        }
-    };
-
-    // Decrypt passphrase
-    let passphrase = match cfg.get_passphrase() {
-        Ok(p) => {
-            info!(
-                "Configuration loaded from: {}",
-                Config::config_path().display()
-            );
-            p
-        }
-        Err(e) => {
-            error!("Failed to decrypt passphrase: {}", e);
+            error!("Configuration not available: {}", e);
             show_alert(
-                "HandsOff - Configuration Error",
-                &format!("Unable to read your saved passphrase.\nYour settings file may need to be recreated.\n\nRun setup again:\n~/Applications/HandsOff.app/Contents/MacOS/handsoff-tray --setup\n\nError: {}", e)
+                "HandsOff - Setup Required",
+                "HandsOff needs a passphrase before it can protect input.\n\n\
+                 Run the one-time setup from Terminal:\n\
+                 ~/Applications/HandsOff.app/Contents/MacOS/handsoff-tray --setup\n\n\
+                 (Setup captures your passphrase as physical key presses.)",
             );
             std::process::exit(1);
         }
     };
 
-    // Create HandsOffCore instance
-    let mut core = HandsOffCore::new(&passphrase).context("Failed to initialize HandsOff")?;
+    // Create HandsOffCore instance from the stored passphrase hash
+    let mut core = HandsOffCore::new(cfg.passphrase_hash.clone().unwrap());
 
-    // Configure auto-unlock timeout (precedence: env var > config file > build default)
-    let auto_unlock_timeout = config::resolve_auto_unlock_timeout(cfg.auto_unlock_timeout);
-    core.set_auto_unlock_timeout(auto_unlock_timeout);
+    // Configure auto-unlock backoff (precedence: env var > config file mode + base > default enabled)
+    let auto_unlock_base =
+        config::resolve_auto_unlock(Some(cfg.auto_unlock_backoff_enabled()), cfg.auto_unlock_base_interval);
+    core.set_auto_unlock_backoff(
+        auto_unlock_base.is_some(),
+        auto_unlock_base.unwrap_or(AUTO_UNLOCK_BASE_SECONDS),
+    );
 
     // Configure auto-lock timeout (precedence: env var > config file)
     let auto_lock_timeout = config::parse_auto_lock_timeout().or(Some(cfg.auto_lock_timeout));
@@ -306,9 +313,6 @@ fn main() -> Result<()> {
     let disable_id = disable_item.id().clone();
     let reset_id = reset_item.id().clone();
 
-    // Store passphrase for reset functionality
-    let passphrase_for_reset = passphrase.clone();
-
     // Track state for tooltip updates and permission state
     let mut was_locked = false;
     let mut was_disabled = false;
@@ -344,7 +348,7 @@ fn main() -> Result<()> {
                 handle_disable(core.clone());
             } else if event_id == reset_id {
                 info!("Reset menu item clicked, resetting app state");
-                handle_reset(core.clone(), &passphrase_for_reset);
+                handle_reset(core.clone());
             }
         }
 
@@ -452,17 +456,14 @@ fn main() -> Result<()> {
                 error!("Failed to update tray icon: {}", e);
             }
 
-            // Show notification on state change (but not for disabled, handled elsewhere)
+            // Show notification on state change (but not for disabled, handled elsewhere).
+            // V10: unlock is silent — no notification when input is restored.
             #[cfg(target_os = "macos")]
             {
-                if !is_disabled {
+                if !is_disabled && is_locked {
                     let _ = notify_rust::Notification::new()
                         .summary("HandsOff")
-                        .body(if is_locked {
-                            "Input locked - Type passphrase to unlock"
-                        } else {
-                            "Input unlocked"
-                        })
+                        .body("Input locked - Type passphrase to unlock")
                         .timeout(notify_rust::Timeout::Milliseconds(NOTIFICATION_TIMEOUT_MS))
                         .show();
                 }
@@ -525,33 +526,17 @@ fn handle_disable(core: Rc<RefCell<HandsOffCore>>) {
 /// Handle reset from menu
 /// Resets the app state to default: unlocked with all timers reset
 /// If disabled, re-enables the app. Otherwise, restarts the event tap if permissions are available
-fn handle_reset(core: Rc<RefCell<HandsOffCore>>, passphrase: &str) {
+fn handle_reset(core: Rc<RefCell<HandsOffCore>>) {
     let mut core = core.borrow_mut();
 
     // Check if disabled - if so, enable instead of just restarting
     let is_disabled = core.state.is_disabled();
 
-    // Unlock if currently locked (this also resets lock timer)
+    // Unlock if currently locked (state-based force unlock — S-2: no plaintext
+    // verification under keycode passphrases; the operator is past the guard)
     if core.is_locked() {
-        match core.unlock(passphrase) {
-            Ok(true) => {
-                info!("App state reset: unlocked successfully");
-            }
-            Ok(false) => {
-                // This shouldn't happen as we're using the stored passphrase
-                error!("Failed to unlock during reset: invalid passphrase");
-                show_alert(
-                    "HandsOff - Reset Error",
-                    "Failed to unlock. This is unexpected - please check logs.",
-                );
-                return;
-            }
-            Err(e) => {
-                error!("Error during reset unlock: {}", e);
-                show_alert("HandsOff - Reset Error", &format!("Failed to reset: {}", e));
-                return;
-            }
-        }
+        core.force_unlock();
+        info!("App state reset: unlocked successfully");
     }
 
     // If disabled, re-enable (which also restarts event tap and hotkeys)
@@ -650,12 +635,11 @@ fn build_tooltip(
             tooltip.push_str("STATUS: LOCKED\n");
         }
 
-        // Show auto-unlock countdown if enabled
+        // V11: show the auto-unlock countdown ONLY when < 5 min away, so the
+        // far-out backoff schedule is not broadcast by the menu bar.
         if let Some(remaining) = core.get_auto_unlock_remaining_secs() {
-            if remaining > 0 {
+            if remaining > 0 && remaining < 300 {
                 tooltip.push_str(&format!("Auto-unlock in {}\n", format_duration(remaining)));
-            } else {
-                tooltip.push_str("Auto-unlocking...\n");
             }
         }
     } else {
@@ -689,7 +673,7 @@ fn build_tooltip(
     tooltip.push_str(&format!("• Press Ctrl+Cmd+Shift+{}\n\n", lock_key));
 
     tooltip.push_str("TO UNLOCK:\n");
-    tooltip.push_str("• Type your passphrase on keyboard (default: qwet)\n");
+    tooltip.push_str("• Type your passphrase on keyboard\n");
     tooltip.push_str("• Press Escape to clear buffer immediately if you mistype\n");
     tooltip.push_str("• Or wait 3 seconds for auto-clear\n\n");
 

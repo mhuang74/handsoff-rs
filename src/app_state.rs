@@ -5,8 +5,8 @@ use std::time::Instant;
 // Re-export constants for backward compatibility
 pub use crate::constants::{
     AUTO_LOCK_DEFAULT_SECONDS, AUTO_LOCK_MAX_SECONDS, AUTO_LOCK_MIN_SECONDS,
-    AUTO_UNLOCK_DEFAULT_SECONDS, AUTO_UNLOCK_MAX_SECONDS, AUTO_UNLOCK_MIN_SECONDS,
-    BUFFER_RESET_DEFAULT_SECONDS, DEFAULT_LOCK_KEYCODE, DEFAULT_TALK_KEYCODE,
+    AUTO_UNLOCK_BASE_SECONDS, AUTO_UNLOCK_CEILING_SECONDS, BUFFER_RESET_DEFAULT_SECONDS,
+    DEFAULT_LOCK_KEYCODE, DEFAULT_TALK_KEYCODE,
 };
 use crate::constants::REENABLE_DEBOUNCE_SECS;
 
@@ -16,16 +16,40 @@ pub struct AppState {
     inner: Arc<Mutex<AppStateInner>>,
 }
 
+/// Auto-unlock backoff schedule state (specs/deep-design-review-v2-2026-09.md §2).
+///
+/// The counter is keyed to the *locked stretch* (time since the last successful
+/// passphrase authentication), not to individual lock events: auto-lock
+/// re-engagements inside a stretch do not reset the doubling schedule. Only a
+/// successful passphrase unlock resets it (§2.3).
+#[derive(Debug)]
+pub struct AutoUnlockState {
+    /// Whether auto-unlock is enabled at all
+    pub enabled: bool,
+    /// Base interval in seconds (configurable via config/env override);
+    /// windows open at `base * 2^window_index` of awake-time, capped at the
+    /// ceiling.
+    pub base_interval_secs: u64,
+    /// Awake-time instant the current window clock is anchored to
+    /// (re-anchored at every lock event)
+    pub stretch_start: Instant,
+    /// Index of the next auto-unlock window (0-based; the Nth window opens
+    /// `interval(N)` after the current anchor, where interval doubles per N
+    /// and is capped at the ceiling). Only a successful passphrase unlock
+    /// resets this to 0 (§2.3).
+    pub window_index: u32,
+}
+
 pub struct AppStateInner {
     /// Whether input is currently locked
     pub is_locked: bool,
-    /// Buffer for passphrase input
-    pub input_buffer: String,
+    /// Buffer of physical keycodes typed while locked (canonical passphrase form)
+    pub input_buffer: Vec<u32>,
     /// Last time any key was pressed (for buffer reset)
     pub last_key_time: Option<Instant>,
     /// Last time any input occurred (for auto-lock)
     pub last_input_time: Instant,
-    /// Current passphrase hash (SHA-256, hex-encoded)
+    /// Current passphrase hash (SHA-256 hex over the keycode sequence)
     pub passphrase_hash: Option<String>,
     /// Auto-lock timeout in seconds (see AUTO_LOCK_DEFAULT_SECONDS)
     pub auto_lock_timeout: u64,
@@ -33,10 +57,10 @@ pub struct AppStateInner {
     pub buffer_reset_timeout: u64,
     /// Whether the Talk hotkey is currently pressed (for passthrough)
     pub talk_key_pressed: bool,
-    /// Timestamp when device was locked (for auto-unlock)
+    /// Timestamp when device was locked (for auto-lock elapsed display)
     pub lock_start_time: Option<Instant>,
-    /// Auto-unlock timeout in seconds (None = disabled)
-    pub auto_unlock_timeout: Option<u64>,
+    /// Auto-unlock backoff schedule state (None = disabled)
+    pub auto_unlock: Option<AutoUnlockState>,
     /// Cached accessibility permissions state (updated by background thread)
     pub has_accessibility_permissions: bool,
     /// Flag to signal that event tap should be stopped (set by permission monitor)
@@ -64,7 +88,7 @@ impl AppState {
         Self {
             inner: Arc::new(Mutex::new(AppStateInner {
                 is_locked: false,
-                input_buffer: String::new(),
+                input_buffer: Vec::new(),
                 last_key_time: None,
                 last_input_time: Instant::now(),
                 passphrase_hash: None,
@@ -72,7 +96,7 @@ impl AppState {
                 buffer_reset_timeout: BUFFER_RESET_DEFAULT_SECONDS,
                 talk_key_pressed: false,
                 lock_start_time: None,
-                auto_unlock_timeout: None,
+                auto_unlock: None,
                 has_accessibility_permissions: false,
                 should_stop_event_tap: false,
                 should_start_event_tap: false,
@@ -94,6 +118,10 @@ impl AppState {
         self.inner.lock().is_locked
     }
 
+    /// Engage the lock.
+    ///
+    /// Records the lock time; if this is the first lock of a new locked stretch
+    /// (no auto-unlock schedule running), starts the backoff schedule.
     pub fn set_locked(&self, locked: bool) {
         let mut state = self.inner.lock();
         state.is_locked = locked;
@@ -101,6 +129,22 @@ impl AppState {
         if locked {
             // Record when lock was engaged
             state.lock_start_time = Some(Instant::now());
+
+            // Re-anchor the window clock at every lock event but KEEP the
+            // window index: auto-lock re-engagements do not reset the counter
+            // (§2.3 — only a successful passphrase unlock resets it), so the
+            // doubling continues across re-locks within a stretch. Re-anchoring
+            // also prevents an already-open window from instantly re-unlocking
+            // a freshly locked machine, and makes each interval a gap between
+            // consecutive unlock opportunities (§2.1 cumulative timeline).
+            if let Some(unlock) = &mut state.auto_unlock {
+                unlock.stretch_start = Instant::now();
+                log::debug!(
+                    "Lock engaged; auto-unlock window {} opens after {}s",
+                    unlock.window_index,
+                    Self::auto_unlock_interval_secs(unlock.base_interval_secs, unlock.window_index),
+                );
+            }
             log::debug!("Lock engaged at {:?}", state.lock_start_time);
         } else {
             // Clear lock time when manually unlocked
@@ -108,6 +152,125 @@ impl AppState {
             log::debug!("Lock disengaged");
         }
     }
+
+    /// Configure auto-unlock (called at startup).
+    /// `enabled = false` fully disables the schedule; `base_interval_secs`
+    /// sets the first window's interval (overridable via config/env).
+    pub fn set_auto_unlock_enabled(&self, enabled: bool, base_interval_secs: u64) {
+        let mut state = self.inner.lock();
+        state.auto_unlock = if enabled {
+            Some(AutoUnlockState {
+                enabled: true,
+                base_interval_secs: base_interval_secs.max(1),
+                // Anchored for real when the first lock happens; Instant::now()
+                // here is a placeholder so the struct is always valid.
+                stretch_start: Instant::now(),
+                window_index: 0,
+            })
+        } else {
+            None
+        };
+    }
+
+    pub fn auto_unlock_enabled(&self) -> bool {
+        self.inner.lock().auto_unlock.is_some()
+    }
+
+    /// Interval in seconds of the auto-unlock window at `index`:
+    /// `base * 2^index` capped at the ceiling (§2.1). Each window is a gap
+    /// measured from the previous window/lock, so cumulative open times
+    /// reproduce the spec timeline t=60m, 180m, 420m, 900m… for base=60m.
+    pub fn auto_unlock_interval_secs(base_secs: u64, window_index: u32) -> u64 {
+        let doubled = base_secs
+            .saturating_mul(1u64 << window_index.min(u32::from(u64::BITS - 1) as u32));
+        doubled.min(AUTO_UNLOCK_CEILING_SECONDS)
+    }
+
+    /// Check whether an auto-unlock window has opened on schedule (§2).
+    ///
+    /// Fires when locked, auto-unlock is enabled, and
+    /// `stretch_start + interval(window_index) <= now` (awake-time). The fire
+    /// is schedule-only: the window is the UNLOCKED period that follows
+    /// (§2.2), during which `AUTO_LOCK_DEFAULT_SECONDS` of no input re-locks
+    /// the machine — that 120 s bound is realized by the auto-lock thread
+    /// once `trigger_auto_unlock` resets `last_input_time`. "An at-keyboard
+    /// masher can hold a window open" (§2.2) refers to that unlocked period
+    /// — an accepted weakness, NOT a reason to hold the lock. The schedule
+    /// counter is NOT reset by the fire (§2.3).
+    pub fn should_auto_unlock(&self) -> bool {
+        let state = self.inner.lock();
+
+        if !state.is_locked {
+            return false;
+        }
+        let Some(unlock) = state.auto_unlock.as_ref() else {
+            return false;
+        };
+
+        let interval = Self::auto_unlock_interval_secs(unlock.base_interval_secs, unlock.window_index);
+        unlock.stretch_start.elapsed().as_secs() >= interval
+    }
+
+    /// Successful passphrase unlock: reset the backoff schedule to the base
+    /// interval (§2.3 — the linchpin rule) and clear locked state.
+    ///
+    /// Also resets `last_input_time` so auto-lock does not immediately
+    /// re-engage right after unlock.
+    pub fn complete_passphrase_unlock(&self) {
+        let mut state = self.inner.lock();
+
+        log::info!("Passphrase accepted - input unlocked");
+
+        state.last_input_time = Instant::now();
+        state.is_locked = false;
+        state.lock_start_time = None;
+        state.input_buffer.clear();
+        state.last_key_time = None;
+
+        if let Some(unlock) = &mut state.auto_unlock {
+            unlock.window_index = 0;
+            unlock.stretch_start = Instant::now();
+        }
+    }
+
+    /// Trigger auto-unlock (a backoff window fired). Unlocks without
+    /// authentication.
+    ///
+    /// Owns the full fired-window transition: advances the backoff counter
+    /// (§2.1/§2.3 — the window is consumed; if the machine re-locks, the next
+    /// window is further out) and unlocks WITHOUT resetting the schedule —
+    /// only successful passphrase auth resets it (§2.3).
+    pub fn trigger_auto_unlock(&self) {
+        let mut state = self.inner.lock();
+
+        if state.is_locked {
+            let elapsed = state
+                .lock_start_time
+                .map(|t| t.elapsed().as_secs())
+                .unwrap_or(0);
+
+            log::warn!("AUTO-UNLOCK WINDOW FIRED after {}s awake-time", elapsed);
+
+            // Consume the window: double the interval for the next stretch.
+            if let Some(unlock) = &mut state.auto_unlock {
+                unlock.window_index = unlock.window_index.saturating_add(1);
+                log::info!(
+                    "Auto-unlock backoff advanced: next window opens after {}s",
+                    Self::auto_unlock_interval_secs(unlock.base_interval_secs, unlock.window_index)
+                );
+            }
+
+            // Reset last_input_time for fresh auto-lock countdown
+            // Note: if don't do this first, auto-lock may kick in right after unlock
+            state.last_input_time = Instant::now();
+
+            state.is_locked = false;
+            state.lock_start_time = None;
+            state.input_buffer.clear();
+            state.last_key_time = None;
+        }
+    }
+
 
     pub fn update_input_time(&self) {
         let mut state = self.inner.lock();
@@ -119,9 +282,14 @@ impl AppState {
         state.last_key_time = Some(Instant::now());
     }
 
-    pub fn append_to_buffer(&self, ch: char) {
+    pub fn append_to_buffer(&self, keycode: u32) {
         let mut state = self.inner.lock();
-        state.input_buffer.push(ch);
+        state.input_buffer.push(keycode);
+    }
+
+    pub fn pop_buffer(&self) {
+        let mut state = self.inner.lock();
+        state.input_buffer.pop();
     }
 
     pub fn clear_buffer(&self) {
@@ -129,8 +297,10 @@ impl AppState {
         state.input_buffer.clear();
     }
 
-    pub fn get_buffer(&self) -> String {
-        self.inner.lock().input_buffer.clone()
+    /// Snapshot of the current buffer (for length-only logging — S-1: never
+    /// log buffer contents).
+    pub fn buffer_len(&self) -> usize {
+        self.inner.lock().input_buffer.len()
     }
 
     pub fn set_passphrase_hash(&self, hash: String) {
@@ -176,84 +346,35 @@ impl AppState {
         self.inner.lock().talk_key_pressed
     }
 
-    /// Sets the auto-unlock timeout (called at startup)
-    pub fn set_auto_unlock_timeout(&self, timeout_seconds: Option<u64>) {
-        let mut state = self.inner.lock();
-        state.auto_unlock_timeout = timeout_seconds;
-    }
-
-    /// Check if auto-unlock should trigger
-    pub fn should_auto_unlock(&self) -> bool {
-        let state = self.inner.lock();
-
-        // Must be locked and have timeout configured
-        if !state.is_locked || state.auto_unlock_timeout.is_none() {
-            return false;
-        }
-
-        // Get timeout value - treat 0 as disabled (safeguard against config bugs)
-        let timeout_secs = state.auto_unlock_timeout.unwrap();
-        if timeout_secs == 0 {
-            return false;
-        }
-
-        // Must have recorded lock start time
-        let lock_start = match state.lock_start_time {
-            Some(time) => time,
-            None => return false,
-        };
-
-        let timeout = std::time::Duration::from_secs(timeout_secs);
-        lock_start.elapsed() >= timeout
-    }
-
-    /// Trigger auto-unlock (called by background thread)
-    pub fn trigger_auto_unlock(&self) {
-        let mut state = self.inner.lock();
-
-        if state.is_locked {
-            let elapsed = state
-                .lock_start_time
-                .map(|t| t.elapsed().as_secs())
-                .unwrap_or(0);
-
-            log::warn!("AUTO-UNLOCK TRIGGERED after {} seconds", elapsed);
-
-            // Reset last_input_time for fresh auto-lock countdown
-            // Note: if don't do this first, auto-lock may kick in right after unlock
-            state.last_input_time = Instant::now();
-
-            state.is_locked = false;
-            state.lock_start_time = None;
-            state.input_buffer.clear();
-        }
-    }
-
     /// Get the elapsed time since lock was engaged (in seconds)
     pub fn get_lock_elapsed_secs(&self) -> Option<u64> {
         let state = self.inner.lock();
         state.lock_start_time.map(|t| t.elapsed().as_secs())
     }
 
-    /// Get remaining time until auto-unlock (in seconds)
-    /// Returns None if not locked, auto-unlock disabled, or no lock start time
+    /// Seconds until the current auto-unlock window opens (awake-time).
+    /// `None` when unlocked or disabled. Returns `Some(0)` when the window is
+    /// already open. The displayed value is the schedule time; the window
+    /// itself stays open only while input keeps arriving (§2.2).
     pub fn get_auto_unlock_remaining_secs(&self) -> Option<u64> {
         let state = self.inner.lock();
-
-        // Must be locked with auto-unlock enabled
-        if !state.is_locked || state.auto_unlock_timeout.is_none() {
+        let unlock = state.auto_unlock.as_ref()?;
+        if !state.is_locked {
             return None;
         }
-
-        let timeout = state.auto_unlock_timeout?;
-        let elapsed = state.lock_start_time?.elapsed().as_secs();
-
-        Some(timeout.saturating_sub(elapsed))
+        let interval = Self::auto_unlock_interval_secs(unlock.base_interval_secs, unlock.window_index);
+        let elapsed = unlock.stretch_start.elapsed().as_secs();
+        Some(interval.saturating_sub(elapsed))
     }
 
-    /// Get the configured auto-unlock timeout (in seconds)
-    pub fn get_auto_unlock_timeout(&self) -> Option<u64> {
-        self.inner.lock().auto_unlock_timeout
+    /// Interval of the currently-pending auto-unlock window in seconds.
+    /// `None` when auto-unlock is disabled.
+    pub fn get_auto_unlock_interval_secs(&self) -> Option<u64> {
+        let state = self.inner.lock();
+        state
+            .auto_unlock
+            .as_ref()
+            .map(|u| Self::auto_unlock_interval_secs(u.base_interval_secs, u.window_index))
     }
 
     /// Get cached accessibility permissions state
@@ -385,250 +506,176 @@ impl Default for AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::thread;
     use std::time::Duration;
 
     #[test]
     fn test_auto_unlock_disabled_by_default() {
         let state = AppState::new();
         state.set_locked(true);
-        thread::sleep(Duration::from_secs(1));
+        std::thread::sleep(Duration::from_millis(50));
         assert!(
             !state.should_auto_unlock(),
             "Auto-unlock should be disabled by default"
         );
+        assert!(!state.auto_unlock_enabled());
     }
 
     #[test]
-    fn test_auto_unlock_timeout_triggers() {
-        let state = AppState::new();
-        state.set_auto_unlock_timeout(Some(2)); // 2 seconds for testing
-
-        // Lock the device
-        state.set_locked(true);
-
-        // Should not trigger immediately
-        assert!(
-            !state.should_auto_unlock(),
-            "Should not trigger immediately after lock"
-        );
-
-        // Wait for timeout
-        thread::sleep(Duration::from_secs(3));
-
-        // Should trigger after timeout
-        assert!(
-            state.should_auto_unlock(),
-            "Should trigger after timeout expires"
-        );
+    fn test_interval_schedule_doubles_and_caps() {
+        // Base interval windows: 60min, 120min, 240min... capped at 24h
+        assert_eq!(AppState::auto_unlock_interval_secs(3600, 0), 3600);
+        assert_eq!(AppState::auto_unlock_interval_secs(3600, 1), 7200);
+        assert_eq!(AppState::auto_unlock_interval_secs(3600, 2), 14400);
+        assert_eq!(AppState::auto_unlock_interval_secs(3600, 3), 28800);
+        assert_eq!(AppState::auto_unlock_interval_secs(3600, 4), 57600);
+        // 115200 would exceed the 86400 ceiling
+        assert_eq!(AppState::auto_unlock_interval_secs(3600, 5), 86400);
+        assert_eq!(AppState::auto_unlock_interval_secs(3600, 6), 86400);
+        assert_eq!(AppState::auto_unlock_interval_secs(3600, 100), 86400);
     }
 
     #[test]
-    fn test_auto_unlock_reset_on_manual_unlock() {
+    fn test_first_window_opens_at_base() {
         let state = AppState::new();
-        state.set_auto_unlock_timeout(Some(2)); // 2 seconds for testing
-
-        // Lock the device
+        state.set_auto_unlock_enabled(true, AUTO_UNLOCK_BASE_SECONDS);
         state.set_locked(true);
-        thread::sleep(Duration::from_millis(500));
 
-        // Manual unlock before timeout
-        state.set_locked(false);
-
-        // Wait past the original timeout
-        thread::sleep(Duration::from_secs(2));
-
-        // Should not trigger after manual unlock
-        assert!(
-            !state.should_auto_unlock(),
-            "Should not trigger after manual unlock"
-        );
+        // Window not open yet (base = 3600s, we just locked)
+        assert!(!state.should_auto_unlock());
+        assert_eq!(state.get_auto_unlock_remaining_secs(), Some(3600));
     }
 
     #[test]
-    fn test_auto_unlock_lock_unlock_lock_cycles() {
+    fn test_relock_does_not_reset_schedule() {
+        // §2.3: re-locks inside a stretch must NOT restart the schedule.
         let state = AppState::new();
-        state.set_auto_unlock_timeout(Some(1)); // 1 second for testing
+        state.set_auto_unlock_enabled(true, AUTO_UNLOCK_BASE_SECONDS);
 
-        // First lock cycle
+        // Simulate a stretch where the first window already fired.
         state.set_locked(true);
-        thread::sleep(Duration::from_millis(500));
-        state.set_locked(false);
+        {
+            let mut inner = state.lock();
+            // Backdate the stretch so window 0 is open
+            inner.auto_unlock.as_mut().unwrap().stretch_start =
+                Instant::now() - Duration::from_secs(3601);
+            inner.last_input_time = Instant::now() - Duration::from_secs(3601);
+        }
+        assert!(state.should_auto_unlock());
 
-        // Second lock cycle (timer should start fresh)
+        // Auto-unlock fires (no auth); trigger_auto_unlock consumes the window.
+        state.trigger_auto_unlock();
+        assert!(!state.is_locked());
+
+        // Re-lock must keep the advanced position, not restart at base.
+        // set_locked re-anchors the clock but keeps window_index=1.
         state.set_locked(true);
-        thread::sleep(Duration::from_millis(500));
-
-        // Should not trigger yet (only 500ms into second cycle)
-        assert!(
-            !state.should_auto_unlock(),
-            "Should not trigger in middle of second cycle"
-        );
-
-        // Wait for second cycle to complete
-        thread::sleep(Duration::from_millis(600));
-
-        // Should trigger now
-        assert!(
-            state.should_auto_unlock(),
-            "Should trigger after second cycle timeout"
-        );
+        assert_eq!(state.get_auto_unlock_interval_secs(), Some(7200));
+        assert!(!state.should_auto_unlock());
     }
 
     #[test]
-    fn test_trigger_auto_unlock_clears_state() {
+    fn test_passphrase_unlock_resets_schedule_to_base() {
+        // §2.3 linchpin: only successful auth resets the counter.
         let state = AppState::new();
-        state.set_auto_unlock_timeout(Some(1));
+        state.set_auto_unlock_enabled(true, AUTO_UNLOCK_BASE_SECONDS);
+        state.set_locked(true);
+        {
+            let mut inner = state.lock();
+            let u = inner.auto_unlock.as_mut().unwrap();
+            u.stretch_start = Instant::now() - Duration::from_secs(40000);
+            u.window_index = 3; // 28800s interval, long past
+            inner.last_input_time = Instant::now() - Duration::from_secs(40000);
+        }
+        assert!(state.should_auto_unlock());
 
-        // Add some input to buffer
-        state.append_to_buffer('t');
-        state.append_to_buffer('e');
-        state.append_to_buffer('s');
-        state.append_to_buffer('t');
+        state.complete_passphrase_unlock();
+        assert!(!state.is_locked());
+        assert_eq!(state.get_auto_unlock_interval_secs(), Some(3600));
+        assert_eq!(state.get_auto_unlock_remaining_secs(), None); // unlocked
 
-        // Lock the device
+        // Re-lock: first window again at base.
+        state.set_locked(true);
+        assert_eq!(state.get_auto_unlock_interval_secs(), Some(3600));
+        assert!(!state.should_auto_unlock());
+    }
+
+    #[test]
+    fn test_complete_passphrase_unlock_clears_state() {
+        let state = AppState::new();
+        state.set_auto_unlock_enabled(true, AUTO_UNLOCK_BASE_SECONDS);
+        state.append_to_buffer(0);
+        state.append_to_buffer(12);
         state.set_locked(true);
 
-        // Trigger auto-unlock
+        state.complete_passphrase_unlock();
+
+        assert!(!state.is_locked());
+        assert!(state.buffer_len() == 0, "Buffer should be cleared");
+        let inner = state.lock();
+        assert!(inner.lock_start_time.is_none());
+    }
+
+    #[test]
+    fn test_trigger_auto_unlock_clears_state_and_advances_counter() {
+        let state = AppState::new();
+        state.set_auto_unlock_enabled(true, AUTO_UNLOCK_BASE_SECONDS);
+        state.append_to_buffer(0);
+        state.set_locked(true);
+
         state.trigger_auto_unlock();
 
-        // Verify state is cleared
-        assert!(!state.is_locked(), "Should be unlocked after trigger");
-        assert_eq!(state.get_buffer(), "", "Buffer should be cleared");
-
-        // Verify lock_start_time is cleared
+        assert!(!state.is_locked());
+        assert_eq!(state.buffer_len(), 0, "Buffer should be cleared");
+        // Window consumed: interval doubled, NOT reset (only passphrase auth resets)
+        assert_eq!(state.get_auto_unlock_interval_secs(), Some(7200));
         let inner = state.lock();
-        assert!(
-            inner.lock_start_time.is_none(),
-            "Lock start time should be None"
-        );
+        assert!(inner.lock_start_time.is_none());
     }
 
     #[test]
     fn test_auto_unlock_only_when_locked() {
         let state = AppState::new();
-        state.set_auto_unlock_timeout(Some(1));
+        state.set_auto_unlock_enabled(true, AUTO_UNLOCK_BASE_SECONDS);
+        {
+            let mut inner = state.lock();
+            inner.auto_unlock.as_mut().unwrap().stretch_start =
+                Instant::now() - Duration::from_secs(7200);
+        }
 
-        // Device is unlocked, wait past timeout
-        thread::sleep(Duration::from_secs(2));
-
-        // Should not trigger when device is not locked
-        assert!(
-            !state.should_auto_unlock(),
-            "Should not trigger when device is unlocked"
-        );
-    }
-
-    #[test]
-    fn test_auto_unlock_minimum_timeout() {
-        let state = AppState::new();
-        state.set_auto_unlock_timeout(Some(1)); // 1 second (below 60s minimum in production)
-
-        state.set_locked(true);
-
-        // Should not trigger immediately
+        // Unlocked: no auto-unlock
         assert!(!state.should_auto_unlock());
-
-        // Wait for timeout
-        thread::sleep(Duration::from_millis(1100));
-
-        // Should trigger after 1 second
-        assert!(
-            state.should_auto_unlock(),
-            "Should work with minimum timeout"
-        );
     }
 
     #[test]
-    fn test_set_auto_unlock_timeout_changes_config() {
+    fn test_keycode_buffer_operations() {
         let state = AppState::new();
+        state.append_to_buffer(0);
+        state.append_to_buffer(12);
+        assert_eq!(state.buffer_len(), 2);
+        state.pop_buffer();
+        assert_eq!(state.buffer_len(), 1);
+        state.clear_buffer();
+        assert_eq!(state.buffer_len(), 0);
+    }
 
-        // Initially None
-        {
-            let inner = state.lock();
-            assert!(inner.auto_unlock_timeout.is_none());
-        }
-
-        // Set to 30 seconds
-        state.set_auto_unlock_timeout(Some(30));
-        {
-            let inner = state.lock();
-            assert_eq!(inner.auto_unlock_timeout, Some(30));
-        }
-
-        // Set to None (disable)
-        state.set_auto_unlock_timeout(None);
-        {
-            let inner = state.lock();
-            assert!(inner.auto_unlock_timeout.is_none());
-        }
+    #[test]
+    fn test_auto_unlock_disable_clears_schedule() {
+        let state = AppState::new();
+        state.set_auto_unlock_enabled(true, AUTO_UNLOCK_BASE_SECONDS);
+        assert!(state.auto_unlock_enabled());
+        state.set_auto_unlock_enabled(false, AUTO_UNLOCK_BASE_SECONDS);
+        assert!(!state.auto_unlock_enabled());
+        state.set_locked(true);
+        assert!(!state.should_auto_unlock());
     }
 
     #[test]
     fn test_lock_start_time_recorded() {
         let state = AppState::new();
-
-        // Initially None
-        {
-            let inner = state.lock();
-            assert!(
-                inner.lock_start_time.is_none(),
-                "Lock start time should be None initially"
-            );
-        }
-
-        // Lock the device
+        assert!(state.get_lock_elapsed_secs().is_none());
         state.set_locked(true);
-
-        // Should have recorded start time
-        {
-            let inner = state.lock();
-            assert!(
-                inner.lock_start_time.is_some(),
-                "Lock start time should be recorded"
-            );
-        }
-
-        // Unlock the device
+        assert!(state.get_lock_elapsed_secs().is_some());
         state.set_locked(false);
-
-        // Should clear start time
-        {
-            let inner = state.lock();
-            assert!(
-                inner.lock_start_time.is_none(),
-                "Lock start time should be cleared on unlock"
-            );
-        }
-    }
-
-    #[test]
-    fn test_auto_unlock_zero_timeout_does_not_trigger() {
-        // Regression test for bug where Some(0) would cause immediate unlock
-        // A timeout of 0 should be treated as disabled (converted to None)
-        // but if accidentally set as Some(0), it should NOT trigger immediately
-        let state = AppState::new();
-
-        // This simulates the buggy scenario where config file has 0
-        // and it gets passed as Some(0) instead of None
-        state.set_auto_unlock_timeout(Some(0));
-
-        // Lock the device
-        state.set_locked(true);
-
-        // should_auto_unlock() should return false when timeout is Some(0)
-        // because Duration::from_secs(0) would make elapsed >= timeout always true
-        // This test verifies the bug is fixed at the AppState level
-        assert!(
-            !state.should_auto_unlock(),
-            "Auto-unlock with timeout=0 should not trigger (should be treated as disabled)"
-        );
-
-        // Wait a bit and verify it still doesn't trigger
-        thread::sleep(Duration::from_millis(100));
-        assert!(
-            !state.should_auto_unlock(),
-            "Auto-unlock with timeout=0 should remain disabled"
-        );
+        assert!(state.get_lock_elapsed_secs().is_none());
     }
 }

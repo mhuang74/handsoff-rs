@@ -1,11 +1,11 @@
 use crate::utils;
 
-/// Verify if a passphrase matches the stored hash
-pub fn verify_passphrase(input: &str, stored_hash: &str) -> bool {
-    utils::verify_passphrase(input, stored_hash)
+/// Verify a keycode sequence against the stored hash
+pub fn verify_keycodes(keycodes: &[u32], stored_hash: &str) -> bool {
+    utils::verify_keycodes(keycodes, stored_hash)
 }
 
-/// Hash a new passphrase for storage
-pub fn hash_passphrase(passphrase: &str) -> String {
-    utils::hash_passphrase(passphrase)
+/// Hash a keycode sequence for storage
+pub fn hash_keycodes(keycodes: &[u32]) -> String {
+    utils::hash_keycodes(keycodes)
 }

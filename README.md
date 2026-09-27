@@ -15,7 +15,7 @@ A macOS utility that prevents accidental or unsolicited input from keyboard, tra
 ## Features
 
 - **Complete Input Blocking**: Blocks all keyboard, trackpad, and mouse inputs while keeping the screen visible
-- **Secure Unlocking**: Unlock via passphrase
+- **Secure Unlocking**: Unlock via a physical-key passphrase (works on any keyboard layout)
 - **Auto-Lock**: Automatically locks after 120 seconds of inactivity (configurable)
 - **Smart Buffer Reset**: 3-second input buffer reset to handle accidental input (or press Escape to clear immediately)
 - **Configurable Hotkeys**: Customize the last key while keeping `Cmd+Ctrl+Shift` modifiers
@@ -23,7 +23,7 @@ A macOS utility that prevents accidental or unsolicited input from keyboard, tra
   - `Ctrl+Cmd+Shift+T` (default): Talk hotkey (spacebar passthrough for unmuting)
 - **Microphone & Camera**: Video conferencing apps continue to work normally
 - **Menu Bar Interface**: Unobtrusive menu bar icon showing lock status (locked: red)
-- **Auto-Unlock Safety Feature**: Configurable timeout that automatically unlocks after a set period to prevent permanent lockouts (disabled by default)
+- **Auto-Unlock Safety Feature**: Automatically unlocks after an exponentially increasing wait (60 min → 2 h → 4 h …, capped at 24 h) to prevent permanent lockouts (enabled by default)
 
 
 ## Requirements
@@ -51,9 +51,9 @@ HandsOff is available in two forms: **Tray App** (recommended for most users) an
    ~/Applications/HandsOff.app/Contents/MacOS/handsoff-tray --setup
    ```
    This will prompt you for:
-   - Secret passphrase (typing hidden for security)
+   - Secret passphrase (captured as physical key presses — layout-independent)
    - Auto-lock timeout (default: 120 seconds)
-   - Auto-unlock timeout (default: 0 seconds/disabled)
+   - Auto-unlock (default: enabled — 60-minute base, doubling up to 24 h)
 5. Start the app:
    ```bash
    launchctl start com.handsoff.inputlock
@@ -63,7 +63,7 @@ HandsOff is available in two forms: **Tray App** (recommended for most users) an
 **Key advantages:**
 - ✅ Native menu bar interface with notifications
 - ✅ Automatic startup at login
-- ✅ Passphrase stored encrypted (AES-256-GCM)
+- ✅ Passphrase stored as a SHA-256 hash (no plaintext on disk)
 - ✅ Visual lock status indicator (locked: red)
 - ✅ One-time setup
 
@@ -87,9 +87,9 @@ HandsOff is available in two forms: **Tray App** (recommended for most users) an
    handsoff --setup
    ```
    This will prompt you for:
-   - Secret passphrase (typing hidden for security)
+   - Secret passphrase (captured as physical key presses — layout-independent)
    - Auto-lock timeout (default: 120 seconds)
-   - Auto-unlock timeout (default: 0 seconds in Release builds, 60 seconds in Debug/Dev builds; can be overridden via config or HANDS_OFF_AUTO_UNLOCK)
+   - Auto-unlock (default: enabled — 60-minute base, doubling up to 24 h)
 5. Run the CLI:
    ```bash
    handsoff
@@ -124,9 +124,9 @@ Both CLI and Tray App use the same encrypted configuration file:
 - **CLI**: `handsoff --setup`
 
 The setup wizard will prompt you for:
-- Secret passphrase (stored encrypted using AES-256-GCM)
+- Secret passphrase (stored as a SHA-256 hash of your physical key sequence)
 - Auto-lock timeout (default: 120 seconds)
-- Auto-unlock timeout (default: 0 seconds in Release builds, 60 seconds in Debug/Dev builds; can be overridden via config or HANDS_OFF_AUTO_UNLOCK)
+- Auto-unlock (default: enabled — 60-minute base, doubling up to 24 h)
 
 **Changing configuration:**
 Run the setup command again to reconfigure.
@@ -139,8 +139,8 @@ You can optionally use environment variables to override config file settings:
 # Optional: Override auto-lock timeout (20-600 seconds)
 export HANDS_OFF_AUTO_LOCK=60
 
-# Optional: Override auto-unlock timeout (60-900 seconds, 0=disabled)
-export HANDS_OFF_AUTO_UNLOCK=300
+# Optional: Override auto-unlock base interval (seconds, 0=disabled)
+export HANDS_OFF_AUTO_UNLOCK=3600
 
 # Optional: Override lock hotkey last key (A-Z)
 export HANDS_OFF_LOCK_HOTKEY=L
@@ -216,7 +216,7 @@ When locked, all keyboard/mouse/trackpad input is blocked (except for Talk/Unmut
 
 ### Auto-Lock
 
-The app automatically locks after 30 seconds of no input activity. You can configure this timeout. See [Configuration](#configuration).
+The app automatically locks after 120 seconds of no input activity. You can configure this timeout. See [Configuration](#configuration).
 
 ### Talk Hotkey
 
@@ -225,14 +225,16 @@ When locked, press `Ctrl+Cmd+Shift+T` to temporarily pass through a spacebar key
 
 ## Security
 
-- **Encrypted Storage**: Passphrases are stored encrypted using AES-256-GCM in `~/Library/Application Support/handsoff/config.toml`
-- **Protection Level**: Provides obfuscation against casual file inspection. Note that the encryption key is embedded in the binary and could be extracted through reverse engineering
+- **Hashed Storage**: Passphrases are stored as a SHA-256 hash of your physical key sequence in `~/Library/Application Support/handsoff/config.toml`
+- **Layout-Independent**: The passphrase is matched as a sequence of physical keycodes, so it works on any keyboard layout
 - **File Permissions**: Config file has 600 permissions (readable only by your user account)
 - **No Network**: No network connections or telemetry
 - **Local Only**: All data stays on your device
 
+**Threat model (V5):** HandsOff guards against casual interference — a child, colleague, or screenshare audience. It is not a barrier against a determined local actor, who can reboot the machine (the app relaunches unlocked), kill the app, or simply carry the machine away.
+
 **For maximum security:**
-- Use a strong, unique passphrase
+- Use at least 4 physical keys for your passphrase (it is matched as a key sequence, independent of keyboard layout)
 - Enable FileVault disk encryption on macOS
 - Keep your system and user account secure
 
@@ -278,7 +280,7 @@ Built with:
 - `tao`: Cross-platform event loop (Tray App)
 - `notify-rust`: Native macOS notifications (Tray App)
 - `global-hotkey`: Global hotkey registration
-- `ring`: Cryptographic hashing (SHA-256)
+- `ring`: Cryptographic hashing (SHA-256 over keycode sequences)
 - `clap`: Command-line argument parsing (CLI)
 - `parking_lot`: Fast mutex implementation
 

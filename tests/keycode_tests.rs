@@ -1,5 +1,8 @@
 use handsoff::utils::keycode::keycode_to_char;
 
+// The keycode char map remains ONLY for hotkey/passphrase display rendering
+// (spec §3: removed from the unlock *decision* path — the unlock compares raw
+// keycodes). These tests pin the display mapping used by setup confirmation.
 #[test]
 fn test_letter_keys_no_shift() {
     assert_eq!(keycode_to_char(0, false), Some('a'));

@@ -4,8 +4,9 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use handsoff::app_state::{AUTO_LOCK_MAX_SECONDS, AUTO_LOCK_MIN_SECONDS};
+use handsoff::constants::{AUTO_UNLOCK_BASE_SECONDS, AUTO_UNLOCK_CEILING_SECONDS};
 use handsoff::constants::CFRUNLOOP_POLL_INTERVAL_MS;
-use handsoff::{config, config_file::Config, HandsOffCore};
+use handsoff::{config, config_file::Config, setup, HandsOffCore};
 use log::{error, info, warn};
 use std::io::{self, Write};
 
@@ -30,12 +31,14 @@ SETUP:
   Before using HandsOff, run the setup command to configure your passphrase:
     handsoff --setup
 
-  This will prompt you for:
-    - Secret passphrase (typing hidden for security)
+  Setup captures your passphrase as a PHYSICAL KEY SEQUENCE (layout-independent)
+  using a temporary event tap. It must run in an interactive console session
+  (not over SSH). It will also prompt for:
     - Auto-lock timeout (default: 120 seconds)
-    - Auto-unlock timeout (default: 0 seconds/disabled)
+    - Auto-unlock backoff (enabled by default: first window at 60 min awake-time,
+      doubling up to 24 h; only a successful passphrase unlock resets the schedule)
 
-  Configuration is stored encrypted at:
+  Configuration is stored at:
     ~/Library/Application Support/handsoff/config.toml
 
 HOTKEYS:
@@ -95,25 +98,28 @@ fn prompt_hotkey(prompt: &str, _default: &str) -> Result<Option<String>> {
     }
 }
 
-/// Run interactive setup to configure passphrase and timeouts
+/// Run interactive setup: capture passphrase keycodes, prompt for options
 fn run_setup() -> Result<()> {
     println!("HandsOff Setup");
     println!("==============\n");
 
-    // Prompt for passphrase (non-echoing)
-    let passphrase =
-        rpassword::prompt_password("Enter passphrase: ").context("Failed to read passphrase")?;
+    // Capture the passphrase as a physical keycode sequence via a temporary
+    // event tap (interactive console sessions only — refused over SSH).
+    println!("Resolving configured hotkeys for passphrase validation…");
+    let (lock_keycode, talk_keycode) = current_hotkey_keycodes()?;
 
-    if passphrase.is_empty() {
-        anyhow::bail!("Error: Passphrase cannot be empty");
-    }
+    let keys = setup::capture_passphrase(lock_keycode, talk_keycode)
+        .context("Passphrase capture failed")?;
 
-    // Confirm passphrase
-    let confirm = rpassword::prompt_password("Confirm passphrase: ")
-        .context("Failed to read confirmation")?;
-
-    if passphrase != confirm {
-        anyhow::bail!("Error: Passphrases do not match");
+    // Confirm the capture
+    println!("Captured passphrase: {}", setup::display_sequence(&keys));
+    print!("Confirm this passphrase? [Y/n]: ");
+    io::stdout().flush()?;
+    let mut confirm = String::new();
+    io::stdin().read_line(&mut confirm)?;
+    let confirm = confirm.trim().to_lowercase();
+    if !confirm.is_empty() && confirm != "y" && confirm != "yes" {
+        anyhow::bail!("Setup cancelled. Re-run 'handsoff --setup' to try again.");
     }
 
     // Prompt for hotkeys
@@ -126,7 +132,7 @@ fn run_setup() -> Result<()> {
     let talk_key = prompt_hotkey("Talk hotkey (Hotkey to Unmute, default: T): ", "T")?;
 
     // Validate that lock and talk keys are different
-    if let (Some(ref lock), Some(ref talk)) = (&lock_key, &talk_key) {
+    if let (Some(lock), Some(talk)) = (&lock_key, &talk_key) {
         if lock == talk {
             anyhow::bail!("Error: Lock and Talk hotkeys must be different");
         }
@@ -137,11 +143,37 @@ fn run_setup() -> Result<()> {
     println!("---------------------\n");
     let auto_lock = prompt_number("Auto-lock timeout in seconds (default: 120): ", 120)?;
 
-    let auto_unlock = prompt_number("Auto-unlock timeout in seconds (default: 0/disabled): ", 0)?;
+    println!("Auto-unlock backoff is enabled by default:");
+    println!("  first unlock window at {} min of awake time after lock,", AUTO_UNLOCK_BASE_SECONDS / 60);
+    println!("  then doubling (2 h, 4 h, 8 h…) capped at 24 h.");
+    println!("  Only a successful passphrase unlock resets the schedule.");
+    let auto_unlock_input = prompt_number(
+        &format!(
+            "Auto-unlock base interval in seconds ({}=disabled, default: {}): ",
+            0, AUTO_UNLOCK_BASE_SECONDS
+        ),
+        AUTO_UNLOCK_BASE_SECONDS,
+    )?;
+    let auto_unlock_backoff = auto_unlock_input != 0;
+    if auto_unlock_backoff
+        && !(60..=AUTO_UNLOCK_CEILING_SECONDS).contains(&auto_unlock_input)
+    {
+        anyhow::bail!(
+            "Error: Auto-unlock base interval must be 60-{} seconds (or 0 to disable)",
+            AUTO_UNLOCK_CEILING_SECONDS
+        );
+    }
 
     // Create and save config
-    let config = Config::new(&passphrase, auto_lock, auto_unlock, lock_key, talk_key)
-        .context("Failed to create configuration")?;
+    let config = Config::new(
+        &keys.iter().map(|k| k.keycode).collect::<Vec<_>>(),
+        auto_lock,
+        auto_unlock_backoff,
+        auto_unlock_input,
+        lock_key,
+        talk_key,
+    )
+    .context("Failed to create configuration")?;
 
     config.save().context("Failed to save configuration")?;
 
@@ -153,6 +185,27 @@ fn run_setup() -> Result<()> {
     println!("\nYou can now run 'handsoff' to start the application.");
 
     Ok(())
+}
+
+/// Resolve the currently-effective hotkey keycodes (env var > config file > default).
+/// Used during setup to know which keys are reserved.
+fn current_hotkey_keycodes() -> Result<(i64, i64)> {
+    let cfg = Config::load().ok();
+
+    let lock_key = config::parse_lock_hotkey()
+        .and_then(|k| Config::parse_key_string(&k).ok())
+        .or_else(|| cfg.as_ref().and_then(|c| c.get_lock_key_code().ok()))
+        .unwrap_or(global_hotkey::hotkey::Code::KeyL);
+    let talk_key = config::parse_talk_hotkey()
+        .and_then(|k| Config::parse_key_string(&k).ok())
+        .or_else(|| cfg.as_ref().and_then(|c| c.get_talk_key_code().ok()))
+        .unwrap_or(global_hotkey::hotkey::Code::KeyT);
+
+    let lock_keycode = handsoff::utils::keycode::code_to_keycode(lock_key)
+        .context("Failed to resolve lock hotkey keycode")?;
+    let talk_keycode = handsoff::utils::keycode::code_to_keycode(talk_key)
+        .context("Failed to resolve talk hotkey keycode")?;
+    Ok((lock_keycode, talk_keycode))
 }
 
 fn main() -> Result<()> {
@@ -188,29 +241,16 @@ fn main() -> Result<()> {
         }
     };
 
-    // Decrypt passphrase
-    let passphrase = match cfg.get_passphrase() {
-        Ok(p) => {
-            info!(
-                "Configuration loaded from: {}",
-                Config::config_path().display()
-            );
-            p
-        }
-        Err(e) => {
-            error!("Failed to decrypt passphrase: {}", e);
-            error!("Your configuration file may be corrupted.");
-            error!("Run 'handsoff --setup' to reconfigure.");
-            std::process::exit(1);
-        }
-    };
+    // Create HandsOffCore instance from the stored passphrase hash
+    let mut core = HandsOffCore::new(cfg.passphrase_hash.clone().unwrap());
 
-    // Create HandsOffCore instance
-    let mut core = HandsOffCore::new(&passphrase).context("Failed to initialize HandsOff")?;
-
-    // Configure auto-unlock timeout (precedence: env var > config file > build default)
-    let auto_unlock_timeout = config::resolve_auto_unlock_timeout(cfg.auto_unlock_timeout);
-    core.set_auto_unlock_timeout(auto_unlock_timeout);
+    // Configure auto-unlock backoff (precedence: env var > config file mode + base > default enabled)
+    let auto_unlock_base =
+        config::resolve_auto_unlock(Some(cfg.auto_unlock_backoff_enabled()), cfg.auto_unlock_base_interval);
+    core.set_auto_unlock_backoff(
+        auto_unlock_base.is_some(),
+        auto_unlock_base.unwrap_or(AUTO_UNLOCK_BASE_SECONDS),
+    );
 
     // Configure auto-lock timeout (precedence: CLI arg > env var > config file)
     let auto_lock_timeout = match args.auto_lock {

@@ -8,48 +8,51 @@ use crate::utils::keycode::keycode_to_char;
 use core_graphics::event::{CGEvent, CGEventFlags, CGEventType, EventField};
 use log::{debug, error, info};
 
+const ESCAPE_KEYCODE: i64 = 53;
+
 /// Handle a keyboard event during lock
 ///
 /// Returns true if the event should be blocked, false if it should pass through
+///
+/// Passphrase entry is keycode-based (specs/deep-design-review-v2-2026-09.md §3):
+/// the buffer holds raw macOS virtual keycodes, matched against the SHA-256
+/// hash captured at setup — layout-independent, modifier-independent.
+///
+/// Takes a single state guard for the whole handler (C-1) instead of the
+/// former ~10 per-field lock round-trips.
 pub fn handle_keyboard_event(event: &CGEvent, event_type: CGEventType, state: &AppState) -> bool {
     let keycode = event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE);
     let flags = event.get_flags();
+    let is_key_down = (event_type as u32) == (CGEventType::KeyDown as u32);
 
-    // Get configured hotkey keycodes from AppState
-    let lock_keycode = state.get_lock_keycode();
-    let talk_keycode = state.get_talk_keycode();
-
-    // Check for Lock hotkey (Ctrl+Cmd+Shift+<configured key>)
-    // This only LOCKS, never unlocks (unlock requires passphrase)
-    if keycode == lock_keycode
+    // Lock hotkey (Ctrl+Cmd+Shift+<key>): locks only, never unlocks.
+    if keycode == state.get_lock_keycode()
         && flags.contains(CGEventFlags::CGEventFlagControl)
         && flags.contains(CGEventFlags::CGEventFlagCommand)
         && flags.contains(CGEventFlags::CGEventFlagShift)
     {
-        if (event_type as u32) == (CGEventType::KeyDown as u32) {
-            if !state.is_locked() {
-                info!("Lock hotkey pressed - locking input");
-                state.set_locked(true);
-            } else {
-                info!("Lock hotkey pressed but already locked (use passphrase to unlock)");
-            }
+        if is_key_down && !state.is_locked() {
+            info!("Lock hotkey pressed - locking input");
+            state.set_locked(true);
+        } else if is_key_down {
+            info!("Lock hotkey pressed but already locked (use passphrase to unlock)");
         }
         return true; // Block the hotkey itself
     }
 
-    // Check for Talk hotkey (Ctrl+Cmd+Shift+<configured key>)
-    // Transform it into a spacebar event by modifying the keycode and removing modifiers
-    if keycode == talk_keycode
+    // Talk hotkey (Ctrl+Cmd+Shift+<key>): transform to spacebar while locked.
+    // When unlocked there is no tap, so no transformation can leak (U-5).
+    if keycode == state.get_talk_keycode()
         && flags.contains(CGEventFlags::CGEventFlagControl)
         && flags.contains(CGEventFlags::CGEventFlagCommand)
         && flags.contains(CGEventFlags::CGEventFlagShift)
     {
         const SPACEBAR_KEYCODE: i64 = 49;
 
-        if (event_type as u32) == (CGEventType::KeyDown as u32) {
+        if is_key_down {
             info!("Talk hotkey pressed - transforming to spacebar");
             state.set_talk_key_pressed(true);
-        } else if (event_type as u32) == (CGEventType::KeyUp as u32) {
+        } else {
             info!("Talk hotkey released - transforming to spacebar");
             state.set_talk_key_pressed(false);
         }
@@ -61,57 +64,59 @@ pub fn handle_keyboard_event(event: &CGEvent, event_type: CGEventType, state: &A
         return false; // Allow the transformed event to pass through
     }
 
-    // If not locked, pass through all non-hotkey events
-    if !state.is_locked() {
-        state.update_input_time();
+    // Take one guard for everything below (C-1)
+    let mut state_guard = state.lock();
+
+    if !state_guard.is_locked {
+        state_guard.last_input_time = std::time::Instant::now();
         return false; // Pass through
     }
 
-    // From here on, we're locked - block events and handle passphrase entry
-
-    // Only process KeyDown events for passphrase entry
-    // CGEventType doesn't implement PartialEq, so we compare as u32
-    if (event_type as u32) != (CGEventType::KeyDown as u32) {
+    // Locked: block everything and handle passphrase entry.
+    // Only KeyDown events contribute to the buffer.
+    if !is_key_down {
         return true; // Block KeyUp events too
     }
 
-    let shift = flags.contains(CGEventFlags::CGEventFlagShift);
+    // Any locked keyboard input counts as input for the auto-unlock window's
+    // idle clock (§2.2: "any input resets the idle timer and extends it") —
+    // not just mouse events.
+    state_guard.last_input_time = std::time::Instant::now();
 
-    // Handle Escape key to immediately clear buffer
-    const ESCAPE_KEYCODE: i64 = 53;
+    // Escape immediately clears the buffer
     if keycode == ESCAPE_KEYCODE {
-        state.clear_buffer();
+        state_guard.input_buffer.clear();
         debug!("Buffer cleared via Escape key");
-        return true; // Block the escape key event
+        return true;
     }
 
-    // Handle backspace
+    // Backspace pops the last keycode
     if keycode == BACKSPACE_KEYCODE {
-        let mut buffer = state.get_buffer();
-        if !buffer.is_empty() {
-            buffer.pop();
-            state.lock().input_buffer = buffer;
-        }
-        state.update_key_time();
-        return true; // Block the event
+        state_guard.input_buffer.pop();
+        state_guard.last_key_time = Some(std::time::Instant::now());
+        return true;
     }
 
-    // Convert keycode to character
-    if let Some(ch) = keycode_to_char(keycode, shift) {
-        state.append_to_buffer(ch);
-        state.update_key_time();
+    // Recordable passphrase keys: any keycode the US-QWERTY map can render.
+    // Control/function/arrow keys return None and are ignored (not recorded,
+    // not rejected) — they neither advance nor clear the passphrase.
+    if keycode_to_char(keycode, false).is_none() {
+        return true;
+    }
 
-        debug!("Buffer updated: {}", state.get_buffer());
+    state_guard.input_buffer.push(keycode as u32);
+    state_guard.last_key_time = Some(std::time::Instant::now());
 
-        // Check if passphrase matches
-        if let Some(hash) = state.get_passphrase_hash() {
-            let buffer = state.get_buffer();
-            if auth::verify_passphrase(&buffer, &hash) {
-                info!("Passphrase verified - input unlocked");
-                state.set_locked(false);
-                state.clear_buffer();
-                return true; // Block the final matching event
-            }
+    // S-1: never log buffer contents — length only.
+    debug!("Buffer updated: {} keys", state_guard.input_buffer.len());
+
+    // Check for a full match against the stored hash
+    if let Some(hash) = state_guard.passphrase_hash.clone() {
+        if auth::verify_keycodes(&state_guard.input_buffer, &hash) {
+            info!("Passphrase verified - input unlocked");
+            drop(state_guard);
+            state.complete_passphrase_unlock();
+            return true; // Block the final matching event
         }
     }
 

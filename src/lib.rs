@@ -6,16 +6,16 @@ pub mod auth;
 pub mod config;
 pub mod config_file;
 pub mod constants;
-pub mod crypto;
 pub mod input_blocking;
+pub mod setup;
 pub mod utils;
 
 use anyhow::{Context, Result};
 use app_state::AppState;
 use constants::{
-    AUTO_LOCK_CHECK_INTERVAL_SECS, AUTO_UNLOCK_CHECK_INTERVAL_SECS,
-    BUFFER_RESET_CHECK_INTERVAL_MS, CALLBACK_TELEMETRY_INTERVAL_SECS,
-    CFRUNLOOP_POLL_INTERVAL_MS, PERMISSION_CHECK_INTERVAL_SECS,
+    AUTO_LOCK_CHECK_INTERVAL_SECS, AUTO_UNLOCK_BASE_SECONDS, AUTO_UNLOCK_CHECK_INTERVAL_SECS,
+    AUTO_UNLOCK_CEILING_SECONDS, BUFFER_RESET_CHECK_INTERVAL_MS,
+    CALLBACK_TELEMETRY_INTERVAL_SECS, CFRUNLOOP_POLL_INTERVAL_MS, PERMISSION_CHECK_INTERVAL_SECS,
 };
 use core_graphics::sys::CGEventTapRef;
 use input_blocking::event_tap;
@@ -60,13 +60,12 @@ pub struct HandsOffCore {
 }
 
 impl HandsOffCore {
-    /// Create a new HandsOffCore instance with the given passphrase hash
-    pub fn new(passphrase: &str) -> Result<Self> {
+    /// Create a new HandsOffCore instance with the given passphrase keycode hash
+    pub fn new(passphrase_hash: String) -> Self {
         let state = Arc::new(AppState::new());
-        let hash = auth::hash_passphrase(passphrase);
-        state.set_passphrase_hash(hash);
+        state.set_passphrase_hash(passphrase_hash);
 
-        Ok(Self {
+        Self {
             state,
             event_tap: None,
             run_loop_source: None,
@@ -75,7 +74,7 @@ impl HandsOffCore {
             talk_key: global_hotkey::hotkey::Code::KeyT,
             cfrunloop_thread: None,
             event_tap_state_ptr: None,
-        })
+        }
     }
 
     /// Set the hotkey configuration
@@ -138,11 +137,15 @@ impl HandsOffCore {
         }
     }
 
-    /// Set the auto-unlock timeout in seconds
-    pub fn set_auto_unlock_timeout(&self, timeout: Option<u64>) {
-        self.state.set_auto_unlock_timeout(timeout);
-        if let Some(timeout) = timeout {
-            info!("Auto-unlock timeout set to {} seconds", timeout);
+    /// Enable or disable the auto-unlock backoff schedule (called at startup).
+    /// `base_interval_secs` sets the first window's interval (config/env override).
+    pub fn set_auto_unlock_backoff(&self, enabled: bool, base_interval_secs: u64) {
+        self.state.set_auto_unlock_enabled(enabled, base_interval_secs);
+        if enabled {
+            info!(
+                "Auto-unlock backoff enabled: first window at {}s, doubling up to {}s",
+                base_interval_secs, AUTO_UNLOCK_CEILING_SECONDS
+            );
         }
     }
 
@@ -166,14 +169,14 @@ impl HandsOffCore {
         self.state.get_auto_lock_remaining_secs()
     }
 
-    /// Get remaining time until auto-unlock (in seconds)
+    /// Seconds until the currently-pending auto-unlock window opens (awake-time)
     pub fn get_auto_unlock_remaining_secs(&self) -> Option<u64> {
         self.state.get_auto_unlock_remaining_secs()
     }
 
-    /// Get the configured auto-unlock timeout (in seconds)
-    pub fn get_auto_unlock_timeout(&self) -> Option<u64> {
-        self.state.get_auto_unlock_timeout()
+    /// Interval of the currently-pending auto-unlock window in seconds
+    pub fn get_auto_unlock_interval_secs(&self) -> Option<u64> {
+        self.state.get_auto_unlock_interval_secs()
     }
 
     /// Check if accessibility permissions are currently granted
@@ -205,19 +208,14 @@ impl HandsOffCore {
         Ok(())
     }
 
-    /// Unlock input with passphrase
-    pub fn unlock(&self, passphrase: &str) -> Result<bool> {
-        let hash = auth::hash_passphrase(passphrase);
-        let expected_hash = self.state.get_passphrase_hash();
-
-        if Some(hash) == expected_hash {
-            self.state.set_locked(false);
-            info!("Input unlocked");
-            Ok(true)
-        } else {
-            warn!("Invalid passphrase attempt");
-            Ok(false)
-        }
+    /// Force-unlock via state (no passphrase verification).
+    ///
+    /// Used by the tray Reset menu: under keycode-sequence passphrases there is
+    /// no plaintext to re-verify (S-2) — the owner operating the menu is
+    /// already past the guard.
+    pub fn force_unlock(&self) {
+        self.state.complete_passphrase_unlock();
+        info!("Input unlocked via state reset");
     }
 
     /// Start CFRunLoop in a background thread
@@ -461,8 +459,8 @@ impl HandsOffCore {
             self.start_hotkey_listener_thread(manager);
         }
 
-        // Start auto-unlock thread if timeout is configured
-        if self.state.get_auto_unlock_timeout().is_some() {
+        // Start auto-unlock thread if the backoff schedule is enabled
+        if self.state.auto_unlock_enabled() {
             self.start_auto_unlock_thread();
         }
 
@@ -485,8 +483,7 @@ impl HandsOffCore {
             }
 
             if state.should_reset_buffer() {
-                let buffer = state.get_buffer();
-                if !buffer.is_empty() {
+                if state.buffer_len() > 0 {
                     info!("Resetting input buffer after timeout");
                     state.clear_buffer();
                 }
@@ -568,13 +565,19 @@ impl HandsOffCore {
         });
     }
 
-    /// Background thread to trigger auto-unlock after timeout
+    /// Background thread to trigger auto-unlock when the backoff window opens.
+    ///
+    /// Schedule (specs/deep-design-review-v2-2026-09.md §2): windows open at
+    /// base×2^n awake-time gaps since the locked stretch began. A fired window
+    /// unlocks WITHOUT resetting the backoff counter — only successful
+    /// passphrase auth resets it (§2.3). `trigger_auto_unlock` consumes the
+    /// window (advances the counter) as part of the transition.
     fn start_auto_unlock_thread(&self) {
         let state = self.state.clone();
         thread::Builder::new()
             .name("auto-unlock".to_string())
             .spawn(move || {
-                info!("Auto-unlock monitoring thread started");
+                info!("Auto-unlock backoff monitoring thread started");
 
                 loop {
                     thread::sleep(Duration::from_secs(AUTO_UNLOCK_CHECK_INTERVAL_SECS));
@@ -585,11 +588,9 @@ impl HandsOffCore {
                     }
 
                     if state.should_auto_unlock() {
-                        warn!("Auto-unlock timeout expired - disabling input interception");
-
-                        // Unlock the device
+                        warn!("Auto-unlock window opened - releasing input (unauthenticated)");
                         state.trigger_auto_unlock();
-                        info!("Input unlocked due to auto-unlock timeout");
+                        info!("Input unlocked due to auto-unlock window");
                     }
                 }
             })
