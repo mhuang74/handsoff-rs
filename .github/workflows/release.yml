@@ -17,7 +17,7 @@ env:
   BUNDLE_ID: com.handsoff.inputlock
 
 jobs:
-  build-macos-pkg:
+  build-macos-pkg-arm64:
     runs-on: macos-latest
     permissions:
       contents: write
@@ -290,6 +290,336 @@ jobs:
           security delete-keychain $KEYCHAIN_PATH || true
         fi
 
+    - name: Upload PKG as artifact
+      uses: actions/upload-artifact@v5
+      with:
+        name: handsoff-pkg-macos-arm64
+        path: dist/${{ env.APP_NAME }}-v${{ steps.version.outputs.version }}-arm64.pkg
+        retention-days: 30
+
+    - name: Upload CLI tarball as artifact
+      uses: actions/upload-artifact@v5
+      with:
+        name: handsoff-cli-macos-arm64
+        path: dist/handsoff-cli-v${{ steps.version.outputs.version }}-arm64.tar.gz
+        retention-days: 30
+
+  build-macos-pkg-x86_64:
+    runs-on: macos-latest
+    permissions:
+      contents: write
+
+    steps:
+    - uses: actions/checkout@v5
+
+    - name: Get version from tag
+      id: version
+      run: |
+        if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          TAG="${{ inputs.tag }}"
+        else
+          TAG=${GITHUB_REF#refs/tags/}
+        fi
+        VERSION=${TAG#v}
+        echo "tag=$TAG" >> $GITHUB_OUTPUT
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        echo "Building version: $VERSION"
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: x86_64-apple-darwin
+
+    - name: Install cargo-bundle
+      run: cargo install cargo-bundle
+
+    - name: Cache cargo registry
+      uses: actions/cache@v5
+      with:
+        path: ~/.cargo/registry
+        key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Cache cargo index
+      uses: actions/cache@v5
+      with:
+        path: ~/.cargo/git
+        key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Cache cargo build
+      uses: actions/cache@v5
+      with:
+        path: target
+        key: ${{ runner.os }}-cargo-build-release-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Setup code signing
+      env:
+        MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+        MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+        MACOS_KEYCHAIN_PWD: ${{ secrets.MACOS_KEYCHAIN_PWD }}
+      run: |
+        # Skip if no certificate configured
+        if [ -z "$MACOS_CERTIFICATE" ]; then
+          echo "No signing certificate configured, skipping code signing setup"
+          exit 0
+        fi
+
+        # Create temporary keychain
+        KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+        security create-keychain -p "$MACOS_KEYCHAIN_PWD" $KEYCHAIN_PATH
+        security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
+        security unlock-keychain -p "$MACOS_KEYCHAIN_PWD" $KEYCHAIN_PATH
+
+        # Import certificate
+        echo $MACOS_CERTIFICATE | base64 --decode > certificate.p12
+        security import certificate.p12 -k $KEYCHAIN_PATH -P "$MACOS_CERTIFICATE_PWD" -T /usr/bin/codesign -T /usr/bin/productsign
+        security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$MACOS_KEYCHAIN_PWD" $KEYCHAIN_PATH
+        rm -f certificate.p12
+
+        # Set as default keychain
+        security list-keychain -d user -s $KEYCHAIN_PATH
+
+        # List available signing identities
+        echo "Available signing identities:"
+        security find-identity -v -p codesigning
+        security find-identity -v -p basic
+
+    - name: Build release binary
+      run: |
+        cargo build --release --target x86_64-apple-darwin --verbose
+
+    - name: Create app bundle
+      run: |
+        cargo bundle --release --target x86_64-apple-darwin --bin handsoff-tray
+
+        # Rename bundle to proper case if needed
+        BUNDLE_PATH="target/x86_64-apple-darwin/release/bundle/osx/handsoff.app"
+        FINAL_BUNDLE_PATH="target/x86_64-apple-darwin/release/bundle/osx/${{ env.APP_NAME }}.app"
+
+        if [ -d "$BUNDLE_PATH" ] && [ ! -d "$FINAL_BUNDLE_PATH" ]; then
+          mv "$BUNDLE_PATH" "$FINAL_BUNDLE_PATH"
+        fi
+
+        # Fix Info.plist to add LSUIElement (menu bar only app)
+        plutil -insert LSUIElement -bool true "$FINAL_BUNDLE_PATH/Contents/Info.plist"
+        echo "Added LSUIElement to Info.plist"
+        plutil -p "$FINAL_BUNDLE_PATH/Contents/Info.plist" | grep -E "(LSUIElement|CFBundleDisplayName)"
+
+    - name: Package CLI binary
+      run: |
+        VERSION="${{ steps.version.outputs.version }}"
+        DIST_DIR="dist"
+        CLI_DIR="handsoff-cli"
+        CLI_BINARY="target/x86_64-apple-darwin/release/handsoff"
+        TARBALL="${DIST_DIR}/handsoff-cli-v${VERSION}-x86_64.tar.gz"
+
+        echo "Packaging CLI binary..."
+
+        # Create staging directory
+        mkdir -p "${CLI_DIR}"
+
+        # Copy CLI binary
+        cp "${CLI_BINARY}" "${CLI_DIR}/"
+
+        # Create tarball
+        mkdir -p "${DIST_DIR}"
+        tar -czf "${TARBALL}" "${CLI_DIR}"
+
+        # Clean up staging directory
+        rm -rf "${CLI_DIR}"
+
+        echo "CLI tarball created at: ${TARBALL}"
+        ls -lh "${TARBALL}"
+
+    - name: Sign app bundle
+      run: |
+        FINAL_BUNDLE_PATH="target/x86_64-apple-darwin/release/bundle/osx/${{ env.APP_NAME }}.app"
+
+        if [ -n "${{ secrets.MACOS_CERTIFICATE }}" ]; then
+          # Sign with Developer ID certificate
+          IDENTITY=$(security find-identity -v -p codesigning | grep "Developer ID Application" | head -1 | awk '{print $2}')
+          if [ -z "$IDENTITY" ]; then
+            echo "Warning: No Developer ID Application certificate found, using first available identity"
+            IDENTITY=$(security find-identity -v -p codesigning | grep -v "0 valid identities found" | head -1 | awk '{print $2}')
+          fi
+          echo "Signing with identity: $IDENTITY"
+          codesign --force --deep --sign "$IDENTITY" --options runtime --timestamp "$FINAL_BUNDLE_PATH"
+          echo "App signed with Developer ID"
+        else
+          echo "No signing certificate configured, creating unsigned package"
+          echo "To enable code signing, add MACOS_CERTIFICATE, MACOS_CERTIFICATE_PWD, and MACOS_KEYCHAIN_PWD secrets"
+        fi
+
+    - name: Create PKG installer
+      run: |
+        VERSION="${{ steps.version.outputs.version }}"
+        BUNDLE_PATH="target/x86_64-apple-darwin/release/bundle/osx/${{ env.APP_NAME }}.app"
+        DIST_DIR="dist"
+        INSTALLER_DIR="installer"
+        SCRIPTS_DIR="${INSTALLER_DIR}/scripts"
+        PKG_ROOT="${INSTALLER_DIR}/pkg-root"
+        PKG_COMPONENT="${INSTALLER_DIR}/${{ env.APP_NAME }}-component.pkg"
+        PKG_UNSIGNED="${INSTALLER_DIR}/${{ env.APP_NAME }}-v${VERSION}-unsigned.pkg"
+        PKG_FINAL="${DIST_DIR}/${{ env.APP_NAME }}-v${VERSION}-x86_64.pkg"
+
+        echo "Building PKG installer..."
+
+        # Prepare package root
+        rm -rf "${PKG_ROOT}"
+        mkdir -p "${PKG_ROOT}/Applications"
+
+        # Copy the app bundle
+        cp -R "${BUNDLE_PATH}" "${PKG_ROOT}/Applications/"
+
+
+        # Create component package
+        pkgbuild \
+            --root "${PKG_ROOT}" \
+            --identifier "${{ env.BUNDLE_ID }}" \
+            --version "${VERSION}" \
+            --install-location "/" \
+            --scripts "${SCRIPTS_DIR}" \
+            "${PKG_COMPONENT}"
+
+        # Create distribution XML
+        DISTRIBUTION_XML="${INSTALLER_DIR}/distribution.xml"
+        cat > "${DISTRIBUTION_XML}" << 'EOF'
+        <?xml version="1.0" encoding="utf-8"?>
+        <installer-gui-script minSpecVersion="1">
+            <title>${{ env.APP_NAME }}</title>
+            <organization>${{ env.BUNDLE_ID }}</organization>
+            <domains enable_currentUserHome="true"/>
+            <options customize="never" require-scripts="false" hostArchitectures="x86_64"/>
+
+            <welcome file="welcome.html" mime-type="text/html" />
+            <license file="EULA" />
+            <conclusion file="conclusion.html" mime-type="text/html" />
+
+            <pkg-ref id="${{ env.BUNDLE_ID }}">
+                <bundle-version>
+                    <bundle id="${{ env.BUNDLE_ID }}" CFBundleVersion="${VERSION}" path="Applications/${{ env.APP_NAME }}.app" />
+                </bundle-version>
+            </pkg-ref>
+
+            <choices-outline>
+                <line choice="default">
+                    <line choice="${{ env.BUNDLE_ID }}"/>
+                </line>
+            </choices-outline>
+
+            <choice id="default"/>
+            <choice id="${{ env.BUNDLE_ID }}" visible="false">
+                <pkg-ref id="${{ env.BUNDLE_ID }}"/>
+            </choice>
+
+            <pkg-ref id="${{ env.BUNDLE_ID }}" version="${VERSION}" onConclusion="none">${{ env.APP_NAME }}-component.pkg</pkg-ref>
+        </installer-gui-script>
+        EOF
+
+        # Verify installer resources (HTML templates are in the repository)
+        if [ ! -f "${INSTALLER_DIR}/welcome.html" ]; then
+            echo "ERROR: welcome.html not found in ${INSTALLER_DIR}/"
+            exit 1
+        fi
+
+        if [ ! -f "${INSTALLER_DIR}/conclusion.html" ]; then
+            echo "ERROR: conclusion.html not found in ${INSTALLER_DIR}/"
+            exit 1
+        fi
+
+        # Copy EULA file
+        if [ -f "EULA" ]; then
+            cp EULA "${INSTALLER_DIR}/"
+        fi
+
+        # Build product package
+        mkdir -p "${DIST_DIR}"
+        productbuild \
+            --distribution "${DISTRIBUTION_XML}" \
+            --package-path "${INSTALLER_DIR}" \
+            --resources "${INSTALLER_DIR}" \
+            "${PKG_UNSIGNED}"
+
+        # Sign the package if certificate is available
+        if [ -n "${{ secrets.MACOS_CERTIFICATE }}" ]; then
+          IDENTITY=$(security find-identity -v -p basic | grep "Developer ID Installer" | head -1 | awk '{print $2}')
+          if [ -z "$IDENTITY" ]; then
+            echo "Warning: No Developer ID Installer certificate found, using first available identity"
+            IDENTITY=$(security find-identity -v -p basic | grep -v "0 valid identities found" | head -1 | awk '{print $2}')
+          fi
+          echo "Signing package with identity: $IDENTITY"
+          productsign --sign "$IDENTITY" "${PKG_UNSIGNED}" "${PKG_FINAL}"
+          rm -f "${PKG_UNSIGNED}"
+
+          # Verify signature
+          echo "Verifying package signature:"
+          pkgutil --check-signature "${PKG_FINAL}"
+        else
+          # No certificate, use unsigned package
+          mv "${PKG_UNSIGNED}" "${PKG_FINAL}"
+          echo "Package created (unsigned)"
+        fi
+
+        # Clean up intermediate files
+        rm -rf "${PKG_ROOT}"
+        rm -f "${PKG_COMPONENT}"
+        rm -f "${DISTRIBUTION_XML}"
+        rm -f "${INSTALLER_DIR}/EULA"
+
+        echo "PKG installer created at: ${PKG_FINAL}"
+        ls -lh "${PKG_FINAL}"
+
+    - name: Cleanup keychain
+      if: always()
+      run: |
+        # Clean up keychain if it exists
+        KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+        if [ -f "$KEYCHAIN_PATH" ]; then
+          security delete-keychain $KEYCHAIN_PATH || true
+        fi
+
+    - name: Upload PKG as artifact
+      uses: actions/upload-artifact@v5
+      with:
+        name: handsoff-pkg-macos-x86_64
+        path: dist/${{ env.APP_NAME }}-v${{ steps.version.outputs.version }}-x86_64.pkg
+        retention-days: 30
+
+    - name: Upload CLI tarball as artifact
+      uses: actions/upload-artifact@v5
+      with:
+        name: handsoff-cli-macos-x86_64
+        path: dist/handsoff-cli-v${{ steps.version.outputs.version }}-x86_64.tar.gz
+        retention-days: 30
+
+  changelog:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      changelog: ${{ steps.changelog.outputs.changelog }}
+
+    steps:
+    - uses: actions/checkout@v5
+      with:
+        ref: main
+        fetch-depth: 0
+
+    - name: Get version from tag
+      id: version
+      run: |
+        if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          TAG="${{ inputs.tag }}"
+        else
+          TAG=${GITHUB_REF#refs/tags/}
+        fi
+        VERSION=${TAG#v}
+        echo "tag=$TAG" >> $GITHUB_OUTPUT
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        echo "Building version: $VERSION"
+
     - name: Build Changelog
       id: changelog
       uses: mikepenz/release-changelog-builder-action@v6
@@ -347,17 +677,6 @@ jobs:
 
     - name: Commit CHANGELOG.md
       run: |
-        # Save the updated CHANGELOG.md
-        cp CHANGELOG.md /tmp/CHANGELOG.md
-
-        # Checkout main branch (workflow checks out tag, putting us in detached HEAD)
-        git fetch origin main
-        git checkout -- CHANGELOG.md
-        git checkout main
-
-        # Restore the updated CHANGELOG.md
-        cp /tmp/CHANGELOG.md CHANGELOG.md
-
         git config user.name "github-actions[bot]"
         git config user.email "github-actions[bot]@users.noreply.github.com"
         git add CHANGELOG.md
@@ -370,14 +689,26 @@ jobs:
           echo "CHANGELOG.md committed and pushed"
         fi
 
-    - name: Generate release notes
-      id: release_notes
-      run: |
-        VERSION="${{ steps.version.outputs.version }}"
-        cat > release_notes.md << 'EOF'
-        ## HandsOff v${{ steps.version.outputs.version }}
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    needs: [build-macos-pkg-arm64, build-macos-pkg-x86_64, changelog]
 
-        ${{steps.changelog.outputs.changelog}}
+    steps:
+    - name: Download build artifacts
+      uses: actions/download-artifact@v5
+      with:
+        pattern: handsoff-*-macos-*
+        merge-multiple: true
+        path: dist
+
+    - name: Generate release notes
+      run: |
+        cat > release_notes.md << 'EOF'
+        ## HandsOff v${{ needs.changelog.outputs.version }}
+
+        ${{ needs.changelog.outputs.changelog }}
 
         ---
 
@@ -390,20 +721,26 @@ jobs:
     - name: Create GitHub Release
       uses: softprops/action-gh-release@v2
       with:
-        tag_name: ${{ steps.version.outputs.tag }}
-        name: Release ${{ steps.version.outputs.tag }}
+        tag_name: ${{ needs.changelog.outputs.tag }}
+        name: Release ${{ needs.changelog.outputs.tag }}
         body_path: release_notes.md
         draft: false
         prerelease: false
         files: |
-          dist/${{ env.APP_NAME }}-v${{ steps.version.outputs.version }}-arm64.pkg
-          dist/handsoff-cli-v${{ steps.version.outputs.version }}-arm64.tar.gz
+          dist/${{ env.APP_NAME }}-v${{ needs.changelog.outputs.version }}-arm64.pkg
+          dist/${{ env.APP_NAME }}-v${{ needs.changelog.outputs.version }}-x86_64.pkg
+          dist/handsoff-cli-v${{ needs.changelog.outputs.version }}-arm64.tar.gz
+          dist/handsoff-cli-v${{ needs.changelog.outputs.version }}-x86_64.tar.gz
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-    - name: Upload PKG as artifact
+    - name: Upload release bundles as artifact
       uses: actions/upload-artifact@v5
       with:
-        name: handsoff-pkg-macos-arm64
-        path: dist/${{ env.APP_NAME }}-v${{ steps.version.outputs.version }}-arm64.pkg
+        name: release-bundles
+        path: |
+          dist/${{ env.APP_NAME }}-v${{ needs.changelog.outputs.version }}-arm64.pkg
+          dist/${{ env.APP_NAME }}-v${{ needs.changelog.outputs.version }}-x86_64.pkg
+          dist/handsoff-cli-v${{ needs.changelog.outputs.version }}-arm64.tar.gz
+          dist/handsoff-cli-v${{ needs.changelog.outputs.version }}-x86_64.tar.gz
         retention-days: 30

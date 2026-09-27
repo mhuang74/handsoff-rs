@@ -39,7 +39,9 @@ HandsOff is available in two forms: **Tray App** (recommended for most users) an
 
 **Download the PKG installer from [GitHub Releases](https://github.com/mhuang74/handsoff-rs/releases):**
 
-1. Download `HandsOff-v{VERSION}-arm64.pkg` from the latest release
+1. Download the PKG installer for your Mac's architecture from the latest release:
+   - Apple Silicon: `HandsOff-v{VERSION}-arm64.pkg`
+   - Intel: `HandsOff-v{VERSION}-x86_64.pkg`
 2. Run the installer (installs to `~/Applications/HandsOff.app` and configures launch agent automatically)
 3. Grant Accessibility permissions:
    - Go to System Settings > Privacy & Security > Accessibility
@@ -69,10 +71,12 @@ HandsOff is available in two forms: **Tray App** (recommended for most users) an
 
 **Download the CLI tarball from [GitHub Releases](https://github.com/mhuang74/handsoff-rs/releases):**
 
-1. Download `handsoff-cli-v{VERSION}-arm64.tar.gz` from the latest release
+1. Download the CLI tarball for your Mac's architecture from the latest release:
+   - Apple Silicon: `handsoff-cli-v{VERSION}-arm64.tar.gz`
+   - Intel: `handsoff-cli-v{VERSION}-x86_64.tar.gz`
 2. Extract and install:
    ```bash
-   tar -xzf handsoff-cli-v{VERSION}-arm64.tar.gz
+   tar -xzf handsoff-cli-v{VERSION}-<arch>.tar.gz
    sudo mv handsoff-cli/handsoff /usr/local/bin/
    ```
 3. Grant Accessibility permissions:
