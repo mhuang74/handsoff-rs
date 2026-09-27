@@ -79,11 +79,7 @@ HandsOff is built with Rust and leverages the following libraries:
 - **`core-graphics`**: CoreGraphics event handling (CGEventTap implementation)
 - **`core-foundation`**: CFRunLoop integration for event tap
 - **`security-framework`**: macOS Security Framework bindings
-- **`ring`**: Cryptographic hashing (SHA-256 for passphrase verification)
-- **`aes-gcm`**: AES-256-GCM authenticated encryption for passphrase storage
-- **`sha2`**: SHA-256 for encryption key derivation
-- **`base64`**: Encoding/decoding encrypted data
-- **`getrandom`**: Cryptographically secure random number generation
+- **`ring`**: Cryptographic hashing (SHA-256 over passphrase keycode sequences for storage)
 - **`parking_lot`**: Fast mutex implementation for shared state
 - **`anyhow`**: Error handling and context
 - **`log`** / **`env_logger`**: Logging infrastructure
@@ -104,7 +100,7 @@ HandsOff is built with Rust and leverages the following libraries:
 - **`toml`**: TOML file parsing for config.toml
 - **`serde`**: Serialization/deserialization framework
 - **`dirs`**: Standard config directory paths
-- **`rpassword`**: Non-echoing password input for setup command
+- **`rpassword`**: Non-echoing text input for setup confirmations
 
 ### Input Handling
 
@@ -126,8 +122,8 @@ src/
 │   ├── mod.rs              # SHA-256 hashing utilities
 │   └── keycode.rs          # Keycode to character mapping
 ├── config.rs               # Environment variable parsing (optional overrides)
-├── crypto.rs               # AES-256-GCM encryption/decryption
-├── config_file.rs          # Encrypted config file management
+├── setup.rs                # Keycode-sequence capture for --setup (event tap)
+├── config_file.rs          # Config file management (hashed passphrase)
 └── bin/                    # Binary entry points
     ├── handsoff.rs         # CLI binary
     └── handsoff-tray.rs    # Tray App binary
@@ -140,124 +136,115 @@ src/
 
 ---
 
-## Passphrase Encryption
+## Passphrase Hashing
 
-The application uses AES-256-GCM encryption to protect the passphrase stored in `config.toml`. The encryption key is derived from a static seed using SHA-256, ensuring config files remain compatible across different builds and versions.
+The application stores a SHA-256 hash of the passphrase's **physical keycode sequence** in `config.toml` (format `keycode-v1`, per `specs/deep-design-review-v2-2026-09.md` §3). Passphrases are layout-independent: what matters is which keys are pressed, not the characters they produce.
 
 ### Key Features
 
-- **Static encryption key** across all versions
-- **Config files portable** between updates
-- **No need to reconfigure** after upgrading
-- **Random nonces** for each encryption operation
-- **AES-256-GCM** provides both encryption and authentication
+- **Keycode-sequence capture**: setup uses a temporary event tap (interactive console sessions only — refused over SSH)
+- **Layout-independent**: no char decoding in the unlock path; raw keycodes are hashed and compared
+- **Reserved keys rejected**: Escape, Backspace, and the lock/talk hotkey keys cannot be passphrase members; minimum 4 keys
+- **No plaintext**: only the SHA-256 hex hash is stored; Reset force-unlocks via state, so no plaintext is ever retained
 
 ### Implementation Details
 
-**File:** `src/crypto.rs`
+**File:** `src/utils/mod.rs`
 
-The encryption module uses:
-- Static seed: `com.handsoff.inputlock.config.encryption.v1`
-- Key derivation: SHA-256(seed) → 32-byte AES-256 key
-- Encryption: AES-256-GCM with random 12-byte nonces
-- Output format: Base64(nonce || ciphertext || auth_tag)
+- Hash = SHA-256 over the big-endian encoding of each u32 keycode
+- Comparison of hex digests; length check + fold-XOR compare
+
+**File:** `src/setup.rs`
+
+- `capture_passphrase()` installs a throwaway `CGEventTap` during `--setup`, runs a nested CFRunLoop, blocks captured keys from reaching apps, tears down the tap before returning
 
 **File:** `src/config_file.rs`
 
 Configuration management:
 - Location: `~/Library/Application Support/handsoff/config.toml`
-- Format: TOML with encrypted_passphrase field
+- Format: TOML with `passphrase_hash` field
 - Permissions: 600 (user read/write only)
-- Fields: encrypted_passphrase, auto_lock_timeout, auto_unlock_timeout
+- Fields: `passphrase_hash`, `passphrase_format`, `auto_lock_timeout`, `auto_unlock_mode`, `lock_hotkey`, `talk_hotkey`
 
 ### Security Considerations
 
 **What this protects against:**
-- ✅ Casual file inspection (cat, grep, etc.)
-- ✅ Accidental exposure in backups
-- ✅ Process listing showing plaintext environment variables
-- ✅ Other applications reading LaunchAgent plist files
+- ✅ Casual interference (child/colleague/screenshare — the V5 threat model)
+- ✅ Keyboard layout mismatches (legacy weakness L-1) — sequences are layout-independent
+- ✅ Untypeable passphrases — what is captured is what must be typed back
 
-**What this does NOT protect against:**
-- ❌ Attacker with binary access and reverse engineering skills
-- ❌ Memory dumps while application is running
-- ❌ Root/admin access to the system
+**What this does NOT protect against (accepted residuals, spec §3.1/§5):**
+- ❌ Offline brute force of the hash by a local account (4-key sequences ≈ 50⁴)
+- ❌ Determined local actors (reboot bypass, killing the app)
 
-**Trade-offs:**
-- **Advantage**: Config files work across all versions (no reconfiguration needed after updates)
-- **Disadvantage**: Same encryption key across all installations (not user-specific)
-- **Balance**: Provides good protection against casual threats while prioritizing user experience
+### Migration
 
-### Building
-
-No special build configuration required - encryption key is static and embedded at compile time:
-
-```bash
-cargo build --release
-```
-
-Config files created by one build will work with all future builds.
+Legacy configs with `encrypted_passphrase` (or any `passphrase_format` other than `keycode-v1`) are **rejected on load** and force a one-time re-setup. The app never silently keeps an unverifiable passphrase.
 
 ---
 
 ## Auto-Unlock Safety Feature
 
-The auto-unlock feature provides a fail-safe mechanism that automatically disables input interception after a configurable timeout. This prevents permanent lockouts due to bugs, forgotten passphrases during development, or other unexpected issues.
+The auto-unlock feature is an **exponential backoff schedule**, not a single timeout (per `specs/deep-design-review-v2-2026-09.md` §2). It prevents permanent lockouts from bugs, forgotten passphrases, or other unexpected issues.
 
-By default:
-- Release builds: auto-unlock is disabled (0 seconds) unless explicitly enabled via config or HANDS_OFF_AUTO_UNLOCK.
-- Debug/Dev builds: auto-unlock is enabled by default with a 60-second timeout via AUTO_UNLOCK_DEFAULT_SECONDS for safer developer workflows.
+**Enabled by default** (V2). The first unlock window opens at the base interval (60 min) of **awake time** after lock, then the interval doubles each window: 60 min → 2 h → 4 h → 8 h … capped at 24 h. `Instant` clocks pause during sleep, so the schedule counts awake-time only (§2.4) — a locked-then-slept machine does not unlock on wall-clock.
 
-**⚠️ Important:** This feature is designed for **development, testing, and personal emergency use only**. It should NOT be enabled in production environments where security is critical.
+**Reset rule (§2.3, the linchpin):** the backoff counter advances across a locked stretch. Auto-lock re-engagements and fired windows do NOT reset it — **only a successful passphrase unlock resets the schedule to the base interval**. Without this rule, every 120 s auto-lock re-engagement would restart the schedule at 60 min and the doubling would never engage.
 
-### Enabling Auto-Unlock
+**Window semantics (§2.2):** a window is `auto_lock_timeout` (default 120 s) of no input; any input resets the idle timer and extends it. The effective lifetime of the lock against stray input is the base interval.
 
-Set the `HANDS_OFF_AUTO_UNLOCK` environment variable to the desired timeout in seconds:
+**Relaunch/reboot (§2.5):** the app starts unlocked after a relaunch — a reboot ends the locked state (accepted bypass).
+
+### Configuring Auto-Unlock
+
+Set the `HANDS_OFF_AUTO_UNLOCK` environment variable to override the **base interval** in seconds:
 
 ```bash
-# Enable with 30-second timeout (for quick testing)
-HANDS_OFF_AUTO_UNLOCK=30 cargo run
+# Override base interval to 5 minutes (for quick testing)
+HANDS_OFF_AUTO_UNLOCK=300 cargo run
 
-# Enable with 5-minute timeout (for development)
-HANDS_OFF_AUTO_UNLOCK=300 ./handsoff
+# Override base interval to 2 hours
+HANDS_OFF_AUTO_UNLOCK=7200 ./handsoff
 
-# Enable with 10-minute timeout (more conservative)
-HANDS_OFF_AUTO_UNLOCK=600 ./handsoff
+# Disable auto-unlock entirely
+HANDS_OFF_AUTO_UNLOCK=0 ./handsoff
 
-# Disabled (default behavior - no auto-unlock)
+# Unset (default): base interval from config schema (60 min), enabled
 ./handsoff
 ```
 
 ### Valid Configuration Values
 
-- **Minimum:** 60 seconds
-- **Maximum:** 900 seconds (15 minutes)
-- **Disabled:** 0 or unset (default)
-- **Invalid values** (below 60 or above 900) will disable the feature with a warning
+- **Base interval minimum:** 60 seconds
+- **Base interval maximum:** 86400 seconds (24 h — the window ceiling)
+- **Disabled:** `0`
+- **Invalid values** will be ignored with a warning
+
+In `config.toml`, auto-unlock is stored as a **mode** (`auto_unlock_mode: "backoff"` or `"disabled"`), not a scalar timeout (§2.7).
 
 ### How It Works
 
-1. When you lock the device, a timer starts counting
-2. Every 10 seconds, the app checks if the timeout has been exceeded
-3. If the timeout expires while locked:
-   - Input interception is automatically disabled
-   - A prominent notification appears: "HandsOff Auto-Unlock Activated"
+1. When you lock the device, the schedule is anchored and the pending window interval is `base × 2^window_index`
+2. Every 10 seconds, the auto-unlock thread checks whether the window has opened (awake-time)
+3. When a window opens:
+   - The counter advances (next window doubles)
+   - Input interception is automatically disabled — **silently** (V10: no unlock notification)
    - The menu bar icon updates to unlocked state
    - The event is logged at WARNING level for audit purposes
-4. If you manually unlock before the timeout, the timer resets
+4. Only a successful passphrase unlock resets the counter to the base interval
 
 ### Use Cases
 
 **Development/Testing:**
 ```bash
-# Quick testing during development
-HANDS_OFF_AUTO_UNLOCK=30 cargo run
+# Quick testing with a 5-minute base interval
+HANDS_OFF_AUTO_UNLOCK=300 cargo run
 ```
 
 **Personal Use (Emergency Failsafe):**
 ```bash
-# Set a 10-minute failsafe in case you forget your passphrase
-HANDS_OFF_AUTO_UNLOCK=600 ./handsoff
+# First window at ~1 hour of awake time; doubling up to 24 h
+HANDS_OFF_AUTO_UNLOCK=3600 ./handsoff
 ```
 
 **Launch Agent (Permanent Configuration):**
@@ -266,28 +253,21 @@ HANDS_OFF_AUTO_UNLOCK=600 ./handsoff
 <key>EnvironmentVariables</key>
 <dict>
     <key>HANDS_OFF_AUTO_UNLOCK</key>
-    <string>300</string>  <!-- 5 minutes -->
+    <string>3600</string>  <!-- 60-minute base interval -->
 </dict>
 ```
 
 ### Security Implications
 
 **Benefits:**
-- Prevents denial-of-service if bugs occur
-- Provides emergency access during development
+- Prevents permanent lockout from bugs or forgotten passphrases
+- The doubling schedule means an unauthenticated unlock gets progressively harder to rely on
 - Logged for audit purposes
 
 **Risks:**
-- Reduces security if timeout is too short
-- An attacker who knows the feature exists could wait for auto-unlock
+- An attacker who knows the feature exists could wait for a window
+- Windows extend under input (idle-capped) — an at-keyboard masher can hold a window open, but only within the first 60-min stretch (§2.2 accepted consequence)
 - Not suitable for public/shared computers
-
-**Recommendations:**
-- ✅ Use for development and testing
-- ✅ Use with longer timeouts (5-10 minutes) for personal devices
-- ❌ Do NOT use in production/public environments
-- ❌ Do NOT set timeouts shorter than 60 seconds for actual use
-- ❌ Do NOT enable on shared computers
 
 ### Verification
 
@@ -295,16 +275,15 @@ When auto-unlock is enabled, check the logs at startup:
 
 ```bash
 # You should see this in the logs
-INFO  Auto-unlock safety feature enabled: 30 seconds
-INFO  Auto-unlock monitoring thread started
+INFO  Auto-unlock backoff enabled: first window at 3600s, doubling up to 86400s
+INFO  Auto-unlock backoff monitoring thread started
 ```
 
-When auto-unlock triggers:
+When a window fires:
 
 ```bash
-WARN  Auto-unlock timeout expired - disabling input interception
-WARN  AUTO-UNLOCK TRIGGERED after 30 seconds
-INFO  Auto-unlock notification delivered
+WARN  Auto-unlock window opened - releasing input (unauthenticated)
+WARN  AUTO-UNLOCK WINDOW FIRED after Ns awake-time
 ```
 
 ### Troubleshooting Auto-Unlock
@@ -317,43 +296,24 @@ INFO  Auto-unlock notification delivered
 echo $HANDS_OFF_AUTO_UNLOCK
 
 # Run with logging to see status
-RUST_LOG=info HANDS_OFF_AUTO_UNLOCK=30 ./handsoff
+RUST_LOG=info HANDS_OFF_AUTO_UNLOCK=300 ./handsoff
 ```
 
 **Common issues:**
-- Environment variable not set or set to invalid value
-- Value is outside valid range (60-900 seconds)
+- Auto-unlock disabled via `HANDS_OFF_AUTO_UNLOCK=0` or `auto_unlock_mode = "disabled"` in config
 - Device was not actually locked (check menu bar icon)
-- Manual unlock occurred before timeout expired
+- Machine is asleep — the schedule counts awake-time only (§2.4)
 
 **Expected behavior:**
-- Feature logs "Auto-unlock safety feature enabled: X seconds" at startup
-- Auto-unlock thread logs "Auto-unlock monitoring thread started"
-- Triggers within 10 seconds of configured timeout (thread sleeps 10s between checks)
-
-#### Auto-unlock notification not appearing
-
-**Check notification permissions:**
-```bash
-# Ensure app can send notifications
-# System Settings > Notifications > HandsOff
-```
-
-**Check logs for errors:**
-```bash
-RUST_LOG=debug ./handsoff
-# Look for: "Failed to get notification center" or similar errors
-```
-
-**Try manually opening Notification Center** while the app is running to ensure notifications are enabled
+- Auto-unlock thread logs "Auto-unlock backoff monitoring thread started" at startup
+- Triggers within 10 seconds of the window opening (thread sleeps 10s between checks)
 
 #### Auto-unlock timer seems inaccurate
 
 This is **expected behavior**, not a bug:
 - The monitoring thread sleeps for 10 seconds between checks
-- Auto-unlock will trigger within 0-10 seconds after the configured timeout
-- Example: With `HANDS_OFF_AUTO_UNLOCK=30`, unlock will occur between 30-40 seconds after lock
-- This design balances accuracy with CPU efficiency
+- A window fires within 0–10 seconds after it opens
+- Sleep/wake pauses the schedule (awake-time semantics) — a locked-then-slept machine will unlock later than wall-clock predicts
 
 #### Locked out despite auto-unlock being enabled
 
@@ -365,15 +325,9 @@ This is **expected behavior**, not a bug:
    pkill -f HandsOff
    ```
 
-2. **Hard Reboot** (last resort):
+2. **Hard Reboot** (last resort, accepted bypass per §2.5):
    - Hold power button until Mac shuts down
-   - If HandsOff locks right away after login, try booting into Safe Mode
-
-**Prevention:**
-- Always test auto-unlock works before relying on it
-- Start with short timeout (30s) for testing
-- Increase to longer timeout (5-10 minutes) for actual use
-- Keep terminal window visible to see logs during testing
+   - The app relaunches unlocked
 
 ---
 

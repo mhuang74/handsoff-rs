@@ -24,26 +24,21 @@ pub const AUTO_LOCK_MAX_SECONDS: u64 = 600;
 pub const AUTO_LOCK_DEFAULT_SECONDS: u64 = 120;
 
 // ============================================================================
-// AUTO-UNLOCK CONFIGURATION
+// AUTO-UNLOCK CONFIGURATION (backoff schedule)
 // ============================================================================
+// Auto-unlock is an exponential-backoff schedule, not a single timeout
+// (specs/deep-design-review-v2-2026-09.md §2). The first window opens at
+// AUTO_UNLOCK_BASE_SECONDS after the locked stretch begins, then the interval
+// doubles each window, never exceeding AUTO_UNLOCK_CEILING_SECONDS.
 
-/// Default auto-unlock timeout (release builds: disabled, debug: 60s for testing).
-/// Unit: seconds (0 = disabled)
-/// Recommended range: 0 (disabled) or 60-300
-#[cfg(not(debug_assertions))]
-pub const AUTO_UNLOCK_DEFAULT_SECONDS: u64 = 0;
-#[cfg(debug_assertions)]
-pub const AUTO_UNLOCK_DEFAULT_SECONDS: u64 = 60;
-
-/// Minimum auto-unlock timeout when enabled.
+/// Base interval for the auto-unlock backoff schedule (enabled by default).
+/// First window opens this long after lock (awake-time).
 /// Unit: seconds
-/// Range: Fixed minimum, prevents accidental instant unlock
-pub const AUTO_UNLOCK_MIN_SECONDS: u64 = 60;
+pub const AUTO_UNLOCK_BASE_SECONDS: u64 = 3600;
 
-/// Maximum auto-unlock timeout allowed.
+/// Ceiling on any single auto-unlock interval (24 hours).
 /// Unit: seconds
-/// Range: Fixed maximum (15 minutes)
-pub const AUTO_UNLOCK_MAX_SECONDS: u64 = 900;
+pub const AUTO_UNLOCK_CEILING_SECONDS: u64 = 86400;
 
 // ============================================================================
 // INPUT BUFFER CONFIGURATION
@@ -164,12 +159,3 @@ pub const CONFIG_FILE_PERMISSIONS: u32 = 0o600;
 /// Unit: Unix permission bits (octal)
 /// Range: Fixed, used for security validation
 pub const CONFIG_PERMISSION_MASK_GROUP_OTHER: u32 = 0o077;
-
-// ============================================================================
-// CRYPTOGRAPHY
-// ============================================================================
-
-/// AES-256-GCM nonce length.
-/// Unit: bytes
-/// Range: Fixed at 12 bytes (96 bits) per GCM specification
-pub const NONCE_LENGTH_BYTES: usize = 12;

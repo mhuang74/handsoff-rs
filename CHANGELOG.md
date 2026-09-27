@@ -1,5 +1,16 @@
 # Changelog
 
+## [Unreleased]
+
+- feat: keycode-sequence passphrases (`keycode-v1`) — setup captures physical key-codes via a temporary event tap (interactive only); hash stored in config; legacy encrypted configs force re-setup (V1, V6)
+- feat: auto-unlock exponential backoff — enabled by default, base 60 min, doubling capped at 24 h; only a successful passphrase unlock resets the schedule; awake-time semantics (V2, V7–V9)
+- feat: first-run setup enforcement in tray — default `qwet` passphrase auto-creation removed, tooltip hint removed (S-3, L-5)
+- fix: passphrase buffer contents no longer written to logs; length only (S-1)
+- feat: Reset force-unlocks via state, no plaintext stored (S-2)
+- feat: silent unlock — no notification when input is restored (V10)
+- feat: tooltip shows auto-unlock countdown only when < 5 min away (V11)
+- refactor: single-guard keystroke handler; removed `crypto.rs` (AES-256-GCM) and its dependencies
+
 ## [0.6.10] - 2026-09-27
 
 ## 📦 Uncategorized

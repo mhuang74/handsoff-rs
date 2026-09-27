@@ -18,7 +18,7 @@ cargo test --test keycode_tests
 
 ### Run specific test
 ```bash
-cargo test test_hash_passphrase
+cargo test test_hash_keycodes
 cargo test test_buffer_operations
 ```
 
