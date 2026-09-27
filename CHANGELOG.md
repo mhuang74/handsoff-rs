@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.6.10] - 2026-09-27
+
+## 📦 Uncategorized
+
+- CI: x86_64 macOS release builds, release job restructure, AI code-review updates
+   - PR: #20
+
+
+
 ## [0.6.9] - 2026-03-28
 
 ## 📦 Uncategorized
