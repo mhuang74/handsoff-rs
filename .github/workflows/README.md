@@ -2,7 +2,7 @@
 
 ## Release Workflow
 
-The `release.yml` workflow automatically builds and releases macOS Apple Silicon PKG installers for HandsOff.
+The `release.yml` workflow automatically builds and releases macOS PKG installers and CLI tarballs for HandsOff, for both Apple Silicon (arm64) and Intel (x86_64).
 
 ### Triggering a Release
 
@@ -21,14 +21,26 @@ The workflow can be triggered in two ways:
 
 ### What the Workflow Does
 
-1. Builds the Rust project for Apple Silicon (aarch64-apple-darwin)
+The workflow runs four jobs:
+
+1. **Build arm64** (`build-macos-pkg-arm64`): builds and packages the app for Apple Silicon (aarch64-apple-darwin)
+2. **Build x86_64** (`build-macos-pkg-x86_64`): builds and packages the app for Intel (x86_64-apple-darwin)
+3. **Changelog** (`changelog`): generates changelog entries and updates `CHANGELOG.md` on `main`
+4. **Release** (`release`): waits for the above jobs, then creates the GitHub Release with generated notes
+
+Each build job:
+1. Builds the Rust project for its target architecture
 2. Creates the macOS app bundle using cargo-bundle
 3. Fixes the Info.plist to add LSUIElement (menu bar app)
 4. Signs the app bundle (if certificates are configured)
 5. Creates a PKG installer with launch agent setup
 6. Signs the PKG installer (if certificates are configured)
-7. Creates a GitHub Release
-8. Uploads the PKG to the release
+7. Uploads the PKG installer and CLI tarball as workflow artifacts
+
+The release job:
+1. Downloads all four build artifacts (per-architecture PKG installers and CLI tarballs)
+2. Creates a GitHub Release with generated release notes
+3. Uploads all four artifacts to the release
 
 ### Code Signing Setup (Optional)
 
@@ -92,25 +104,23 @@ Users installing unsigned packages will need to:
 ### Workflow Output
 
 The workflow creates:
-1. **GitHub Release**: Automatically created with release notes
-2. **PKG Installer**: `HandsOff-v{VERSION}-arm64.pkg`
-   - Uploaded to the GitHub release
-   - Also available as a workflow artifact for 30 days
+1. **GitHub Release**: Automatically created with release notes, containing:
+   - `HandsOff-v{VERSION}-arm64.pkg` (Apple Silicon PKG installer)
+   - `HandsOff-v{VERSION}-x86_64.pkg` (Intel PKG installer)
+   - `handsoff-cli-v{VERSION}-arm64.tar.gz` (Apple Silicon CLI)
+   - `handsoff-cli-v{VERSION}-x86_64.tar.gz` (Intel CLI)
+2. **Workflow artifacts**: each build job uploads its PKG and CLI tarball (retained for 30 days); the release job uploads a combined `release-bundles` artifact containing all four files
 
 ### Architecture Support
 
-Currently, the workflow only builds for **Apple Silicon (ARM64)**. If you need Intel (x86_64) support, you would need to:
-1. Add a separate job or matrix strategy
-2. Build with `--target x86_64-apple-darwin`
-3. Create a universal binary using `lipo`, or
-4. Create separate installers for each architecture
+The workflow builds for both **Apple Silicon (arm64)** and **Intel (x86_64)** in parallel jobs, producing separate per-architecture installers and CLI tarballs. The x86_64 build cross-compiles from the arm64 macOS runner (both targets are Tier 1 for macOS).
 
 ### Customization
 
 To customize the workflow:
 
-- **Change target architecture**: Modify the `--target` flag in build steps
-- **Add universal binary support**: Use `lipo` to combine x86_64 and arm64 binaries
+- **Change target architectures**: Modify the `--target` flags in the build steps of both build jobs
+- **Add universal binary support**: Use `lipo` to combine the arm64 and x86_64 binaries
 - **Notarization**: Add notarization steps after signing (requires Apple Developer account and app-specific password)
 - **Auto-update version**: Sync version numbers between Cargo.toml and git tags
 
