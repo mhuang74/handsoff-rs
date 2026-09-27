@@ -1,5 +1,40 @@
 # GitHub Actions Workflows
 
+## AI Code Review Workflow
+
+The `code-review.yml` workflow automatically reviews pull requests using an AI model via OpenRouter.
+
+### Triggering
+
+Runs automatically on pull request events: `opened`, `synchronize`, `reopened`, and `ready_for_review`.
+
+### What the Workflow Does
+
+1. Checks out the PR code
+2. Sends the diff to the OpenRouter AI review action (`jonit-dev/openrouter-github-action`, pinned to a full commit SHA because the action's `main` branch no longer ships a built `dist/`)
+3. Runs the AI review if the PR carries the `ai-review` label (`review_label` acts as a gate — only labeled PRs are reviewed; the label is not applied to comments)
+
+The review prompt instructs the model to act as a senior engineer — explore the repository, understand intended behavior, inspect callers/tests, and report only actionable defects, limited to 3 critical/high-priority suggestions.
+
+### Model Configuration
+
+The review model is set via `model_id` in the workflow. Current model: **`z-ai/glm-5.3-flash`** (cheap, fast). Commented-out alternatives in the workflow:
+
+- `openai/gpt-4o-mini` — cheap and fast
+- `anthropic/claude-sonnet-4.5` — catches nuanced bugs
+
+To change the model, edit the active `model_id` line in `code-review.yml`.
+
+### Required Secrets
+
+1. **OPEN_ROUTER_KEY** — OpenRouter API key (Settings → Secrets and variables → Actions)
+
+`GITHUB_TOKEN` is provided automatically.
+
+### Concurrency
+
+Reviews are grouped per PR; an in-progress review is cancelled when the PR is updated (`cancel-in-progress: true`).
+
 ## Release Workflow
 
 The `release.yml` workflow automatically builds and releases macOS PKG installers and CLI tarballs for HandsOff, for both Apple Silicon (arm64) and Intel (x86_64).
