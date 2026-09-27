@@ -10,11 +10,11 @@ jobs:
   review:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: AI PR Review
-        # Pinned to v1.0.0: the action's main branch no longer ships a built dist/
-        uses: jonit-dev/openrouter-github-action@v1.0.0
+        # v1.0.0 — pinned because the action's main branch no longer ships a built dist/
+        uses: jonit-dev/openrouter-github-action@88f63615c769f8db6031973503c2c40a9a3f4feb
         with:
           # Required inputs
           github_token: ${{ secrets.GITHUB_TOKEN }} # Automatically provided
@@ -22,17 +22,15 @@ jobs:
 
           # Optional inputs with defaults
           # model_id: 'openai/gpt-4o-mini' # Cheap and Fast
-          model_id: 'anthropic/claude-sonnet-4.5' # Catch nuanced bugs
+          # model_id: 'anthropic/claude-sonnet-4.5' # Catch nuanced bugs
+          model_id: 'z-ai/glm-5.3-flash' # Cheap but goood
           max_tokens: '2048' # Default max tokens
           review_label: 'ai-review' # Optional: Only review PRs with this label
 
           # Optional custom prompt
           custom_prompt: |
-            You are an experienced software developer in a variety of programming languages and methodologies. You create efficient, scalable, and fault-tolerant solutions.
-            Reply on how to improve the code (below).
-            Think step-by-step.
-            Give code examples of specific changes.
-            Limit suggestions to 3 high quality examples.
+            Investigate this PR like a senior engineer. Explore the repository, understand the intended behavior, inspect callers/tests, and report only actionable defects.
+            Limit to 3 critical/high-priority, high quality and actionable suggestions.
            
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
