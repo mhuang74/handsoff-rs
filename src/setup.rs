@@ -419,7 +419,8 @@ fn prompt_hotkey(print: &mut dyn FnMut(&str), prompt: &str) -> Result<Option<Str
 /// Output goes through `print` (CLI/tray pass their own printers); input is
 /// read from stdin (both binaries share the terminal). Flow: banner → hotkey
 /// prompts (lock ≠ talk distinctness check) → passphrase capture with the
-/// chosen hotkeys as the reserved set → confirm → auto-lock → auto-unlock
+/// effective reserved set (env override > chosen hotkeys > defaults, R3) →
+/// confirm → auto-lock → auto-unlock
 /// (0 = disabled, else bounded to
 /// `AUTO_UNLOCK_MIN_BASE_SECONDS..=AUTO_UNLOCK_CEILING_SECONDS`; invalid
 /// entries re-prompt, bailing after 3 consecutive invalid attempts).
@@ -428,9 +429,9 @@ pub fn run_interactive_setup(print: &mut dyn FnMut(&str)) -> Result<SetupOutcome
     print("==============");
     print("");
 
-    // Hotkeys come FIRST (Finding 3): the passphrase is captured against the
-    // keys the user just chose, so a passphrase can never contain a key that
-    // the runtime would later reserve for a hotkey.
+    // Hotkeys come FIRST (Finding 3): the reserved set is fixed before the
+    // passphrase is captured, so a passphrase can never contain a key the
+    // runtime would later reserve for a hotkey.
     print("Hotkey Configuration");
     print("--------------------");
     print("Configure the hotkeys (modifiers Cmd+Ctrl+Shift are mandatory, but choose the last key).");
@@ -447,9 +448,12 @@ pub fn run_interactive_setup(print: &mut dyn FnMut(&str)) -> Result<SetupOutcome
         }
     }
 
-    // Resolve keycodes from the chosen hotkeys — these define the reserved
-    // set for capture. `None` keeps the L/T defaults.
+    // Resolve keycodes for the reserved set with the runtime's precedence
+    // (R3): env override > chosen hotkeys > L/T defaults. Env wins so the
+    // reserved set always matches what the runtime will register.
     let (lock_keycode, talk_keycode) = crate::config::chosen_hotkey_keycodes(
+        crate::config::parse_lock_hotkey(),
+        crate::config::parse_talk_hotkey(),
         lock_key.as_deref(),
         talk_key.as_deref(),
     )?;
