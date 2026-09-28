@@ -69,7 +69,11 @@ For Intel Macs:
 cargo build --release --target x86_64-apple-darwin
 ```
 
+For building the distributable `.app` bundle / `.pkg` installer, see [BUILD.md](BUILD.md).
+
 ### Universal Binary (Both Architectures)
+
+> Full details including prerequisites: see [BUILD.md](BUILD.md).
 
 ```bash
 # Install targets
@@ -87,33 +91,20 @@ lipo -create \
   -output target/release/handsoff-universal
 ```
 
+**On a Mac**, the full native workflow (`make all` for the `.app` bundle,
+`make pkg` for the installer) is documented in [BUILD.md](BUILD.md).
+**On Linux**, full cross-compile validation (compile+link of binaries and test
+harnesses for both darwin targets) is documented in
+[BUILD.md → Cross-Compiling and Validating the macOS Build on Linux](BUILD.md#cross-compiling-and-validating-the-macos-build-on-linux).
+
 ---
 
 ## Building and Validating on Linux
 
-This crate is **macOS-only by dependency structure**: `core-graphics` is an unconditional dependency (`Cargo.toml`), and `src/input_blocking/event_tap.rs`, `src/setup.rs`, and `src/input_blocking/mod.rs` contain ungated `#[link(name = "CoreGraphics")]` / `#[link(name = "ApplicationServices")]` FFI blocks. As a result, on a Linux host:
+A Linux host cannot run `cargo build`/`cargo test` against this crate: `core-graphics` and `security-framework` are unconditional dependencies and the input-blocking modules use macOS FFI, so the Linux `cargo test` fails (`error[E0455]: link kind "framework" is only supported on Apple targets` — pre-existing, not a regression). Two options instead:
 
-- **What works without any Apple SDK:** `cargo fmt --check` only. `cargo build`, `cargo test`, and `cargo clippy` all fail (the linker cannot resolve the CoreGraphics/ApplicationServices symbols).
-- **What works with a macOS cross toolchain:** type-checking the whole tree as macOS, without linking:
-
-  ```bash
-  rustup target add x86_64-apple-darwin
-  cargo check --target x86_64-apple-darwin
-  ```
-
-  `cargo check` does not link, so framework stubs are not needed — but the `ring` build script still compiles C for the darwin target, so you need a cross-compile toolchain providing a clang that accepts `-arch x86_64 -mmacosx-version-min` (e.g. [osxcross](https://github.com/tpoechtrager/osxcross)) plus a macOS SDK, with the environment pointing at them, e.g.:
-
-  ```bash
-  export CC_x86_64_apple_darwin=o64-clang
-  export AR_x86_64_apple_darwin=x86_64-apple-darwin-ar
-  export SDKROOT=/path/to/MacOSX.sdk
-  ```
-
-  Without such a toolchain, `ring`'s build script fails under plain gcc. (Verified on a Linux x64 host: `rustup target add x86_64-apple-darwin` succeeds, then `cargo check --target x86_64-apple-darwin` fails inside the `ring` build script.)
-
-- **The authoritative validation gate is CI** (`.github/workflows/rust.yml`, `macos-latest`: `cargo build --release`, `cargo test`, and a `lipo` binary check), triggered on push/PR to `main`. Actual build/test requires a macOS machine or a CI run.
-
-Gating `core-graphics` and the FFI blocks behind `#[cfg(target_os = "macos")]` so that `cargo check` passes on a bare Linux host is a possible future change, not currently done.
+- **Full cross-compile validation on Linux** (recommended): `cargo zigbuild` with zig + a macOS SDK compiles and links real Mach-O binaries **and test harnesses** for both `aarch64-apple-darwin` and `x86_64-apple-darwin`. This locally covers macOS-only source (`src/setup.rs`, `src/input_blocking/event_tap.rs`) that bare Linux builds never see. Test binaries compile but cannot be *executed* on Linux (they're Mach-O) — running them needs macOS or CI. Toolchain setup and exact commands: see [BUILD.md](BUILD.md#cross-compiling-and-validating-the-macos-build-on-linux).
+- **CI as the authoritative gate**: `.github/workflows/rust.yml` (`macos-latest`) runs `cargo build --release`, `cargo test`, and a `lipo` binary check on push/PR to `main`.
 
 ---
 
