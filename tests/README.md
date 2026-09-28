@@ -76,7 +76,6 @@ The following must be tested manually (see `docs/SAFE-DEVELOPMENT.md`):
 
 - Event tap blocking behavior
 - Menu bar UI interaction
-- Touch ID authentication
 - Notification display
 - Actual input blocking during lock
 - Video conferencing compatibility
@@ -144,7 +143,7 @@ For testing actual input blocking behavior, see:
 ## Test Data
 
 Tests use deterministic data and do not:
-- Access the system keychain (tests use mock data)
+- Access the config directory (tests use temp paths and mock data)
 - Create event taps (requires permissions)
 - Block actual input
 - Interact with the menu bar
@@ -166,9 +165,8 @@ Tests use deterministic data and do not:
 ## Future Test Coverage
 
 Planned additions:
-- Keychain integration tests (with mock keychain)
+- Config-file integration tests against real file permissions (inline tests already cover load/save on temp paths)
 - Hotkey manager unit tests
-- Settings persistence tests
 - Error handling tests
 - Performance benchmarks
 

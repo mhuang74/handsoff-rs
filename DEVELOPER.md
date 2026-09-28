@@ -5,6 +5,7 @@ This guide is for developers who want to build HandsOff from source, understand 
 ## Table of Contents
 
 - [Building from Source](#building-from-source)
+- [Building and Validating on Linux](#building-and-validating-on-linux)
 - [Tech Stack](#tech-stack)
 - [Auto-Unlock Safety Feature](#auto-unlock-safety-feature)
 - [Project Structure](#project-structure)
@@ -38,6 +39,24 @@ cargo build --release --bin handsoff
 cargo build --release --bin handsoff-tray
 ```
 
+### CLI Usage
+
+The CLI binary accepts three flags (see `src/bin/handsoff.rs`):
+
+```bash
+# Interactive setup: capture passphrase as a physical key sequence,
+# choose hotkeys and timeouts, write config.toml
+cargo run -- --setup
+
+# Start with input locked immediately (type passphrase to unlock)
+cargo run -- --locked
+
+# Override auto-lock timeout for this run (20-600 seconds; overrides config file)
+cargo run -- --auto-lock 60
+```
+
+Precedence for auto-lock: `--auto-lock` flag > `HANDS_OFF_AUTO_LOCK` env var > config file > default (120 s).
+
 ### Build for Specific Architecture
 
 For Apple Silicon Macs:
@@ -67,6 +86,34 @@ lipo -create \
   target/aarch64-apple-darwin/release/handsoff \
   -output target/release/handsoff-universal
 ```
+
+---
+
+## Building and Validating on Linux
+
+This crate is **macOS-only by dependency structure**: `core-graphics` is an unconditional dependency (`Cargo.toml`), and `src/input_blocking/event_tap.rs`, `src/setup.rs`, and `src/input_blocking/mod.rs` contain ungated `#[link(name = "CoreGraphics")]` / `#[link(name = "ApplicationServices")]` FFI blocks. As a result, on a Linux host:
+
+- **What works without any Apple SDK:** `cargo fmt --check` only. `cargo build`, `cargo test`, and `cargo clippy` all fail (the linker cannot resolve the CoreGraphics/ApplicationServices symbols).
+- **What works with a macOS cross toolchain:** type-checking the whole tree as macOS, without linking:
+
+  ```bash
+  rustup target add x86_64-apple-darwin
+  cargo check --target x86_64-apple-darwin
+  ```
+
+  `cargo check` does not link, so framework stubs are not needed — but the `ring` build script still compiles C for the darwin target, so you need a cross-compile toolchain providing a clang that accepts `-arch x86_64 -mmacosx-version-min` (e.g. [osxcross](https://github.com/tpoechtrager/osxcross)) plus a macOS SDK, with the environment pointing at them, e.g.:
+
+  ```bash
+  export CC_x86_64_apple_darwin=o64-clang
+  export AR_x86_64_apple_darwin=x86_64-apple-darwin-ar
+  export SDKROOT=/path/to/MacOSX.sdk
+  ```
+
+  Without such a toolchain, `ring`'s build script fails under plain gcc. (Verified on a Linux x64 host: `rustup target add x86_64-apple-darwin` succeeds, then `cargo check --target x86_64-apple-darwin` fails inside the `ring` build script.)
+
+- **The authoritative validation gate is CI** (`.github/workflows/rust.yml`, `macos-latest`: `cargo build --release`, `cargo test`, and a `lipo` binary check), triggered on push/PR to `main`. Actual build/test requires a macOS machine or a CI run.
+
+Gating `core-graphics` and the FFI blocks behind `#[cfg(target_os = "macos")]` so that `cargo check` passes on a bare Linux host is a possible future change, not currently done.
 
 ---
 
@@ -106,9 +153,17 @@ HandsOff is built with Rust and leverages the following libraries:
 
 - **`global-hotkey`**: Global hotkey registration (Ctrl+Cmd+Shift+L, Ctrl+Cmd+Shift+T)
 
+### Implementation Notes
+
+Non-obvious patterns in the event-tap implementation (`src/input_blocking/event_tap.rs`), useful before touching that code:
+
+- **Raw FFI bindings**: the `core-graphics` crate doesn't expose all CGEventTap functions, so `event_tap.rs` declares raw `extern "C"` bindings to the CoreGraphics framework directly (e.g. `CGEventTapCreate`, `CGEventTapEnable`, plus the `CFMachPort` functions from CoreFoundation).
+- **`CGEventType` comparison**: `CGEventType` doesn't implement `PartialEq`. Compare via a cast to `u32`: `(event_type as u32) == (CGEventType::KeyDown as u32)`.
+- **Callback state passing**: the event-tap callback receives state through the C `user_info` pointer. It is boxed and leaked with `Box::into_raw(Box::new(state))` at tap creation, then reconstructed in the callback without taking ownership: `&*(user_info as *const Arc<AppState>)`.
+
 ### Project Structure
 
-```
+```text
 src/
 ├── lib.rs                  # Core library (HandsOffCore)
 ├── app_state.rs            # Shared application state
@@ -122,6 +177,7 @@ src/
 │   ├── mod.rs              # SHA-256 hashing utilities
 │   └── keycode.rs          # Keycode to character mapping
 ├── config.rs               # Environment variable parsing (optional overrides)
+├── constants.rs            # Tunable constants (auto-lock/auto-unlock bounds, poll intervals, buffer timeout)
 ├── setup.rs                # Keycode-sequence capture for --setup (event tap)
 ├── config_file.rs          # Config file management (hashed passphrase)
 └── bin/                    # Binary entry points
@@ -130,7 +186,7 @@ src/
 ```
 
 **Architecture:**
-- **Core Library** (`lib.rs`): Shared functionality (input blocking, state management, auth)
+- **Core Library** (`lib.rs`): Shared functionality (input blocking, state management, auth) and background threads: buffer-reset monitor (250 ms check, 3 s buffer timeout), auto-lock monitor (5 s check), auto-unlock backoff monitor (10 s check), permission monitor (15 s check, also reports callback telemetry)
 - **CLI Binary** (`bin/handsoff.rs`): Terminal-based interface with clap argument parsing
 - **Tray App Binary** (`bin/handsoff-tray.rs`): Native macOS menu bar app with tray-icon and notifications
 
@@ -221,6 +277,19 @@ HANDS_OFF_AUTO_UNLOCK=0 ./handsoff
 - **Invalid values** will be ignored with a warning
 
 In `config.toml`, auto-unlock is stored as a **mode** (`auto_unlock_mode: "backoff"` or `"disabled"`), not a scalar timeout (§2.7).
+
+### Other Environment Variables
+
+All optional; all override the corresponding `config.toml` value:
+
+| Variable | Value | Effect |
+|---|---|---|
+| `HANDS_OFF_AUTO_UNLOCK` | `0`, or `60`–`86400` | Override the auto-unlock **base interval** (seconds). `0` disables auto-unlock entirely. |
+| `HANDS_OFF_AUTO_LOCK` | `20`–`600` | Override the auto-lock timeout (seconds of contiguous inactivity). |
+| `HANDS_OFF_LOCK_HOTKEY` | `A`–`Z` | Override the lock hotkey's final letter key. |
+| `HANDS_OFF_TALK_HOTKEY` | `A`–`Z` | Override the talk hotkey's final letter key. |
+
+Hotkey precedence (R3): environment variable > hotkeys chosen during `--setup` (persisted in config.toml) > defaults (`L` / `T`).
 
 ### How It Works
 

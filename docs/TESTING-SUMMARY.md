@@ -2,43 +2,44 @@
 
 ## Test Results ✅
 
-**All 32 unit tests pass successfully!**
+**All unit tests pass: inline `#[cfg(test)]` modules plus `tests/` integration-style files:**
 
 ```
-Running tests/app_state_tests.rs - 12 tests passed
-Running tests/auth_tests.rs      - 9 tests passed
-Running tests/keycode_tests.rs   - 11 tests passed
-
-Total: 32 passed, 0 failed
-Test duration: ~1.1 seconds
+Running src/config_file.rs     - 17 tests
+Running src/config.rs          - 17 tests
+Running src/app_state.rs       - 12 tests
+Running src/utils/mod.rs       -  8 tests
+Running src/setup.rs           -  5 tests
+Running tests/app_state_tests.rs - 18 tests
+Running tests/auth_tests.rs      - 11 tests
+Running tests/keycode_tests.rs   - 11 tests
 ```
+
+(Counts reflect the current tree; `cargo test` is the source of truth.)
 
 ## Test Coverage
 
 ### What We Successfully Test
 
-#### ✅ Authentication (9 tests)
-- ✅ SHA-256 passphrase hashing
-- ✅ Passphrase verification (correct/incorrect)
-- ✅ Hash determinism (same input = same hash)
-- ✅ Different inputs produce different hashes
-- ✅ Empty passphrase handling
-- ✅ Unicode passphrase support (🔒password🔓)
-- ✅ Long passphrase handling (1000 characters)
-- ✅ Case sensitivity (Password ≠ password)
+#### ✅ Authentication & Config (config.rs, config_file.rs, utils)
+- ✅ SHA-256 keycode-sequence hashing (keycode-v1)
+- ✅ Hash verification (correct/incorrect), determinism, length checks
+- ✅ Legacy config rejection (non-keycode-v1 formats force re-setup)
+- ✅ Env-var parsing: `HANDS_OFF_AUTO_UNLOCK` (0 / 60–86400), `HANDS_OFF_AUTO_LOCK` (20–600), hotkey letters
+- ✅ Auto-unlock resolution precedence (env var > config file > default)
 
 #### ✅ Application State (12 tests)
 - ✅ Initial state verification
 - ✅ Lock/unlock state transitions
 - ✅ Input buffer operations (append, clear, get)
 - ✅ Passphrase hash storage and retrieval
-- ✅ Buffer reset timing (5-second timeout)
+- ✅ Buffer reset timing (3-second timeout)
 - ✅ Auto-lock timing (configurable timeout)
 - ✅ Auto-lock doesn't trigger when already locked
+- ✅ Auto-unlock backoff schedule (window intervals, reset rules, window consumption)
 - ✅ Talk key press/release state tracking
 - ✅ Thread safety for buffer operations
 - ✅ Thread safety for lock state
-- ✅ Unicode character support in buffer
 - ✅ Multiple passphrase hash updates
 
 #### ✅ Keycode Conversion (11 tests)
@@ -71,31 +72,26 @@ See `docs/SAFE-DEVELOPMENT.md` for complete safety guide. Key strategies:
    pkill handsoff  # This can save you if locked out
    ```
 
-2. **Use Development Mode** (auto-unlock after 10 seconds)
+2. **Use a Short Auto-Unlock Window** (first window opens after 60 s awake-time)
    ```bash
-   HANDSOFF_DEV_MODE=1 cargo run
+   HANDS_OFF_AUTO_UNLOCK=60 cargo run -- --locked
    ```
 
-3. **Start with Dry Run** (logs only, doesn't block)
+3. **Use the Shortest Auto-Lock** (20 s of inactivity re-locks)
    ```bash
-   HANDSOFF_DEV_MODE=1 HANDSOFF_DRY_RUN=1 cargo run
+   HANDS_OFF_AUTO_LOCK=20 cargo run -- --locked
    ```
 
 4. **Test Incrementally**
    ```bash
-   # Test mouse blocking first (keyboard still works!)
-   HANDSOFF_DEV_MODE=1 BLOCK_MOUSE=1 cargo run
-
-   # Then test keyboard blocking
-   HANDSOFF_DEV_MODE=1 BLOCK_KEYBOARD=1 cargo run
-
-   # Finally test both together
-   HANDSOFF_DEV_MODE=1 BLOCK_KEYBOARD=1 BLOCK_MOUSE=1 cargo run
+   # Lock via hotkey (Ctrl+Cmd+Shift+L), verify keyboard AND mouse are blocked
+   # Type your passphrase to unlock
+   # Repeat with auto-lock/auto-unlock overrides active
    ```
 
 ### 🚨 If You Get Locked Out
 
-**Option 1**: Wait 10 seconds (if dev mode enabled)
+**Option 1**: Wait for the auto-unlock window (run with `HANDS_OFF_AUTO_UNLOCK=60`; input is released after 60 s awake-time)
 
 **Option 2**: SSH from another device and kill the process
 ```bash
@@ -118,14 +114,13 @@ pkill handsoff
 - Thread safety
 
 ### ⚠️ Integration Testing Required (Semi-automated)
-- Keychain read/write operations
+- config.toml load/save (covered by inline tests against temp paths; real-directory behavior is manual)
 - Hotkey registration and detection
 - Settings persistence
 
 ### ❌ Manual Testing Only (Cannot Automate)
 - Event tap actually blocking input
 - Menu bar UI interaction
-- Touch ID fingerprint authentication
 - Notification display and appearance
 - Full-screen overlay visibility
 - Video conferencing compatibility (Zoom, Meet, etc.)
@@ -141,11 +136,10 @@ pkill handsoff
 cargo test
 ```
 
-### Run specific test file
+### Run a specific module's tests
 ```bash
-cargo test --test auth_tests
-cargo test --test app_state_tests
-cargo test --test keycode_tests
+cargo test app_state
+cargo test config_file
 ```
 
 ### Run specific test
@@ -185,21 +179,19 @@ cargo test -- --show-output
 
 ## Manual Testing Checklist
 
-See `specs/phase-2.md` for complete manual testing procedures. Key areas:
+See `specs/phase-2.md` for the original manual-testing plan (historical). Key areas:
 
 ### Critical Manual Tests (Before Each Release)
 
 #### Lock/Unlock Flow
-- [ ] Set passphrase via UI
-- [ ] Enable lock via menu
+- [ ] Set passphrase via `cargo run -- --setup`
 - [ ] Enable lock via hotkey (Ctrl+Cmd+Shift+L)
 - [ ] Verify keyboard is blocked
 - [ ] Verify mouse is blocked
 - [ ] Verify trackpad is blocked
 - [ ] Enter incorrect passphrase (should stay locked)
-- [ ] Enter gibberish, wait 5 seconds, enter correct passphrase
-- [ ] Unlock with Touch ID (Ctrl+Cmd+Shift+U)
-- [ ] Verify unlock notification is visible
+- [ ] Enter gibberish, wait 3 seconds (buffer reset), enter correct passphrase
+- [ ] Verify silent unlock (no notification — V10)
 
 #### Video Conferencing
 - [ ] Join Zoom/Google Meet call
@@ -207,10 +199,9 @@ See `specs/phase-2.md` for complete manual testing procedures. Key areas:
 - [ ] Verify video continues
 - [ ] Verify audio continues
 - [ ] Test Talk hotkey (Ctrl+Cmd+Shift+T + Spacebar)
-- [ ] Verify unlock notification visible during call
 
 #### Auto-Lock
-- [ ] Set short timeout (30 seconds)
+- [ ] Set short timeout (`HANDS_OFF_AUTO_LOCK=20` or `--auto-lock 20`)
 - [ ] Idle for timeout period
 - [ ] Verify lock engages automatically
 - [ ] Move mouse - verify timer resets
@@ -251,10 +242,9 @@ For continuous integration pipelines:
 
 ## Next Steps
 
-1. **Add keychain integration tests** (Phase 2)
-   - Mock keychain for testing
-   - Test store/retrieve operations
-   - Test error handling
+1. **Add config-file persistence tests where still thin** (inline tests already cover `config_file.rs` load/save against temp paths)
+   - Test permission-bit enforcement on real files
+   - Test error handling for corrupt/partial config files
 
 2. **Add hotkey manager tests** (Phase 2)
    - Test registration logic

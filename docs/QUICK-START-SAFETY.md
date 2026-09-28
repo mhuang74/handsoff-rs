@@ -27,37 +27,36 @@ pkill handsoff  # This will save you if locked out
 ### Step 2: First Run - Safe Mode
 ```bash
 # Copy this command exactly:
-HANDSOFF_DEV_MODE=1 HANDSOFF_DRY_RUN=1 cargo run
+HANDS_OFF_AUTO_UNLOCK=60 cargo run -- --locked
 
 # What this does:
-# - DEV_MODE: Auto-unlocks after 10 seconds
-# - DRY_RUN: Logs what would be blocked but doesn't actually block
+# - Starts locked (no need to lock manually)
+# - Auto-unlock: the first window opens after 60 s of awake time
+#   (60 is the minimum base interval; the window stays open until you
+#   lock it again or touch input for auto-lock's grace period)
 ```
 
 **What to test:**
-1. Set a passphrase (remember it!)
-2. Click "Enable Lock"
-3. Try typing - it should still work
-4. Watch logs to see what would be blocked
-5. Type your passphrase to unlock
+1. Set a passphrase first (`cargo run -- --setup`) — remember it!
+2. The app starts locked — try typing: input is blocked
+3. Type your passphrase to unlock
+4. For the shortest auto-lock, also use `HANDS_OFF_AUTO_LOCK=20 cargo run -- --locked`
 
 ---
 
 ### Step 3: Progressive Testing
-Once dry-run works, test incrementally:
+Once the basic cycle works, exercise the full lock → block → unlock path:
 
 ```bash
-# Test 1: Block mouse only (keyboard still works!)
-HANDSOFF_DEV_MODE=1 BLOCK_MOUSE=1 cargo run
-# → Try moving mouse, verify you can still type passphrase
+# Lock via the hotkey (Ctrl+Cmd+Shift+L by default)
+# → Verify keyboard AND mouse are blocked
+# → Type your passphrase to unlock
+# → Repeat: lock again, unlock again
 
-# Test 2: Block keyboard only
-HANDSOFF_DEV_MODE=1 BLOCK_KEYBOARD=1 cargo run
-# → Try typing, verify you can still use mouse to quit
-
-# Test 3: Full blocking with 10-second auto-unlock
-HANDSOFF_DEV_MODE=1 BLOCK_KEYBOARD=1 BLOCK_MOUSE=1 cargo run
-# → Lock it, wait 10 seconds, it auto-unlocks
+# With the shortest auto-lock (20 s):
+HANDS_OFF_AUTO_LOCK=20 cargo run -- --locked
+# → Wait 20 s idle: it re-locks itself
+# → Type your passphrase to unlock
 ```
 
 ---
@@ -66,9 +65,8 @@ HANDSOFF_DEV_MODE=1 BLOCK_KEYBOARD=1 BLOCK_MOUSE=1 cargo run
 
 ### If You Get Locked Out:
 
-**Method 1: Wait (if in dev mode)**
-- Dev mode auto-unlocks after 10 seconds
-- Just wait it out!
+**Method 1: Wait (if auto-unlock is enabled)**
+- Run with `HANDS_OFF_AUTO_UNLOCK=60` during testing: the first window opens after 60 s of awake time and input is released (no notification)
 
 **Method 2: SSH Kill (RECOMMENDED)**
 ```bash
@@ -90,7 +88,7 @@ Before EVERY development session:
 
 - [ ] SSH is enabled and tested
 - [ ] I know my passphrase (write it down!)
-- [ ] HANDSOFF_DEV_MODE=1 is in my command
+- [ ] `HANDS_OFF_AUTO_UNLOCK=60` is in my command during testing
 - [ ] Another terminal/device ready to kill process
 - [ ] Changes committed to git
 - [ ] I've read this guide
@@ -102,20 +100,20 @@ Before EVERY development session:
 Unit tests are completely safe and don't block input:
 
 ```bash
-# Run all tests
+# Run all tests (inline #[cfg(test)] modules plus tests/ integration-style files)
 cargo test
 
-# Run specific test file
+# Run one file's tests, e.g.
 cargo test --test auth_tests
 
 # Tests complete in ~1 second
 ```
 
-**32 tests covering:**
+**Inline unit tests cover:**
 - ✅ Passphrase hashing/verification
-- ✅ State management
 - ✅ Keycode conversion
-- ✅ Thread safety
+- ✅ Config parsing (config.toml + env overrides)
+- ✅ State management (lock state, backoff schedule)
 
 ---
 
@@ -127,7 +125,8 @@ Memorize these BEFORE testing:
 |--------|--------|---------|
 | Lock | `Ctrl+Cmd+Shift+L` | Enable input lock |
 | Talk | `Ctrl+Cmd+Shift+T` | Hold + Spacebar to unmute |
-| Touch ID | `Ctrl+Cmd+Shift+U` | Trigger Touch ID unlock |
+
+Hotkeys are configurable via `config.toml` (set during `--setup`) or the `HANDS_OFF_LOCK_HOTKEY` / `HANDS_OFF_TALK_HOTKEY` environment variables.
 
 ---
 
@@ -147,11 +146,11 @@ After running unit tests, manually test:
 2. Unlock via passphrase
 3. Lock again
 4. Hold `Ctrl+Cmd+Shift+T` and press Spacebar
-5. Unlock via `Ctrl+Cmd+Shift+U` (Touch ID)
+5. Lock a third time, unlock again via passphrase
 
 ### Phase 3: Auto-Lock
-1. Set timeout to 30 seconds in code
-2. Wait 30 seconds idle
+1. Set auto-lock to its minimum via `HANDS_OFF_AUTO_LOCK=20` (or `cargo run -- --auto-lock 20`); the default is 120 s
+2. Wait 20 seconds idle
 3. Verify auto-lock triggers
 4. Move mouse - verify timer resets
 
@@ -166,9 +165,9 @@ After running unit tests, manually test:
 
 ## 📚 Full Documentation
 
-- **Complete safety guide**: `docs/SAFE-DEVELOPMENT.md`
-- **Test details**: `docs/TESTING-SUMMARY.md`
-- **Phase 2 plan**: `specs/phase-2.md`
+- **Developer guide**: `DEVELOPER.md`
+- **Auto-unlock testing**: `docs/TESTING-AUTO-UNLOCK.md`
+- **Auto-unlock quick reference**: `docs/AUTO-UNLOCK-QUICK-REFERENCE.md`
 - **Original spec**: `specs/handsoff-design.md`
 
 ---
@@ -187,8 +186,9 @@ After running unit tests, manually test:
 # From another terminal or SSH:
 pkill handsoff
 
-# Or delete keychain entry:
-security delete-generic-password -s com.handsoff.inputlock -a passphrase_hash
+# Delete the config (clears the stored passphrase hash), then re-run setup:
+rm ~/Library/Application\ Support/handsoff/config.toml
+cargo run -- --setup
 ```
 
 ### "App won't quit"
@@ -211,7 +211,7 @@ pkill -9 handsoff
 4. **Use a VM** for risky testing
 5. **Never test in production mode** without SSH ready
 6. **Commit your code** before testing (in case of force restart)
-7. **Set short timeouts** during testing (10 seconds, not 3 minutes)
+7. **Set short timeouts** during testing (`HANDS_OFF_AUTO_LOCK=20`, not the 120 s default)
 
 ---
 
@@ -226,11 +226,11 @@ sudo systemsetup -setremotelogin on
 # 2. Run tests (always safe)
 cargo test
 
-# 3. First safe run
-HANDSOFF_DEV_MODE=1 HANDSOFF_DRY_RUN=1 cargo run
+# 3. First safe run (auto-unlock window opens after 60 s awake-time)
+HANDS_OFF_AUTO_UNLOCK=60 cargo run -- --locked
 
-# 4. If that worked, try:
-HANDSOFF_DEV_MODE=1 BLOCK_MOUSE=1 cargo run
+# 4. If that worked, test the shortest auto-lock:
+HANDS_OFF_AUTO_LOCK=20 cargo run -- --locked
 ```
 
 ---
