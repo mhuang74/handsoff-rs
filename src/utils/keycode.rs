@@ -39,7 +39,12 @@ pub fn code_to_keycode(code: global_hotkey::hotkey::Code) -> Option<i64> {
 /// DISPLAY-ONLY per specs/deep-design-review-v2-2026-09.md §3: the unlock
 /// decision compares raw keycode sequences and never decodes characters; this
 /// map survives for human-readable confirmation of captured passphrases
-/// (setup) and hotkey labels.
+/// (setup display via `display_label`) and hotkey labels.
+///
+/// MUST NOT gate passphrase membership: passphrase membership is governed by
+/// `crate::setup::is_rejected_keycode` (the §3 rejection set); keys the map
+/// cannot render (F-keys, keypad, arrows) are valid passphrase members and
+/// display as `<key N>`.
 pub fn keycode_to_char(keycode: i64, shift: bool) -> Option<char> {
     match keycode {
         // Letters

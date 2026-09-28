@@ -24,14 +24,12 @@ pub struct AppState {
 /// successful passphrase unlock resets it (§2.3).
 #[derive(Debug)]
 pub struct AutoUnlockState {
-    /// Whether auto-unlock is enabled at all
-    pub enabled: bool,
     /// Base interval in seconds (configurable via config/env override);
     /// windows open at `base * 2^window_index` of awake-time, capped at the
     /// ceiling.
     pub base_interval_secs: u64,
     /// Awake-time instant the current window clock is anchored to
-    /// (re-anchored at every lock event)
+    /// (set only on the unlocked → locked transition of a locked stretch)
     pub stretch_start: Instant,
     /// Index of the next auto-unlock window (0-based; the Nth window opens
     /// `interval(N)` after the current anchor, where interval doubles per N
@@ -120,30 +118,37 @@ impl AppState {
 
     /// Engage the lock.
     ///
-    /// Records the lock time; if this is the first lock of a new locked stretch
-    /// (no auto-unlock schedule running), starts the backoff schedule.
+    /// Records the lock time; on the unlocked → locked transition of a locked
+    /// stretch, starts (or re-anchors) the backoff schedule. Auto-lock
+    /// re-engagements (locked → locked) leave the schedule anchor untouched:
+    /// the counter is keyed to the locked stretch, not lock events (§2.3).
     pub fn set_locked(&self, locked: bool) {
         let mut state = self.inner.lock();
+        let was_locked = state.is_locked;
         state.is_locked = locked;
 
         if locked {
             // Record when lock was engaged
             state.lock_start_time = Some(Instant::now());
 
-            // Re-anchor the window clock at every lock event but KEEP the
-            // window index: auto-lock re-engagements do not reset the counter
-            // (§2.3 — only a successful passphrase unlock resets it), so the
-            // doubling continues across re-locks within a stretch. Re-anchoring
-            // also prevents an already-open window from instantly re-unlocking
-            // a freshly locked machine, and makes each interval a gap between
+            // Anchor the window clock only on the unlocked → locked transition.
+            // Re-locking inside a stretch keeps the anchor untouched: auto-lock
+            // re-engagements do not reset the counter (§2.3 — only a
+            // successful passphrase unlock resets it), so the doubling
+            // continues across re-locks within a stretch. This also prevents
+            // an already-open window from instantly re-unlocking a freshly
+            // locked machine, and keeps each interval a gap between
             // consecutive unlock opportunities (§2.1 cumulative timeline).
             if let Some(unlock) = &mut state.auto_unlock {
-                unlock.stretch_start = Instant::now();
-                log::debug!(
-                    "Lock engaged; auto-unlock window {} opens after {}s",
-                    unlock.window_index,
-                    Self::auto_unlock_interval_secs(unlock.base_interval_secs, unlock.window_index),
-                );
+                if !was_locked {
+                    unlock.stretch_start = Instant::now();
+                    log::debug!(
+                        "Locked stretch started; auto-unlock window {} opens after {}s",
+                        unlock.window_index,
+                        Self::auto_unlock_interval_secs(unlock.base_interval_secs, unlock.window_index),
+                    );
+                }
+                // locked → locked: leave stretch_start untouched (§2.3)
             }
             log::debug!("Lock engaged at {:?}", state.lock_start_time);
         } else {
@@ -154,21 +159,22 @@ impl AppState {
     }
 
     /// Configure auto-unlock (called at startup).
-    /// `enabled = false` fully disables the schedule; `base_interval_secs`
-    /// sets the first window's interval (overridable via config/env).
-    pub fn set_auto_unlock_enabled(&self, enabled: bool, base_interval_secs: u64) {
+    ///
+    /// `AutoUnlockConfig::Disabled` fully disables the schedule;
+    /// `AutoUnlockConfig::Backoff` sets the first window's interval
+    /// (overridable via config/env). The anchor is a placeholder until the
+    /// first unlocked → locked transition.
+    pub fn set_auto_unlock_config(&self, config: crate::config::AutoUnlockConfig) {
         let mut state = self.inner.lock();
-        state.auto_unlock = if enabled {
-            Some(AutoUnlockState {
-                enabled: true,
-                base_interval_secs: base_interval_secs.max(1),
-                // Anchored for real when the first lock happens; Instant::now()
-                // here is a placeholder so the struct is always valid.
-                stretch_start: Instant::now(),
-                window_index: 0,
-            })
-        } else {
-            None
+        state.auto_unlock = match config {
+            crate::config::AutoUnlockConfig::Disabled => None,
+            crate::config::AutoUnlockConfig::Backoff { base_interval_secs } => {
+                Some(AutoUnlockState {
+                    base_interval_secs: base_interval_secs.get(),
+                    stretch_start: Instant::now(),
+                    window_index: 0,
+                })
+            }
         };
     }
 
@@ -216,6 +222,11 @@ impl AppState {
     ///
     /// Also resets `last_input_time` so auto-lock does not immediately
     /// re-engage right after unlock.
+    ///
+    /// Accepted second reset path (Q2, review decision): the tray Reset menu /
+    /// force-unlock (`HandsOffCore::force_unlock`) reuses this method and thus
+    /// also resets the schedule to base — treated as an intentional
+    /// owner-initiated reset, not a schedule violation.
     pub fn complete_passphrase_unlock(&self) {
         let mut state = self.inner.lock();
 
@@ -508,6 +519,12 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
+    fn enable_backoff(state: &AppState, base_secs: u64) {
+        state.set_auto_unlock_config(crate::config::AutoUnlockConfig::Backoff {
+            base_interval_secs: std::num::NonZeroU64::new(base_secs).unwrap(),
+        });
+    }
+
     #[test]
     fn test_auto_unlock_disabled_by_default() {
         let state = AppState::new();
@@ -537,7 +554,7 @@ mod tests {
     #[test]
     fn test_first_window_opens_at_base() {
         let state = AppState::new();
-        state.set_auto_unlock_enabled(true, AUTO_UNLOCK_BASE_SECONDS);
+        enable_backoff(&state, AUTO_UNLOCK_BASE_SECONDS);
         state.set_locked(true);
 
         // Window not open yet (base = 3600s, we just locked)
@@ -549,7 +566,7 @@ mod tests {
     fn test_relock_does_not_reset_schedule() {
         // §2.3: re-locks inside a stretch must NOT restart the schedule.
         let state = AppState::new();
-        state.set_auto_unlock_enabled(true, AUTO_UNLOCK_BASE_SECONDS);
+        enable_backoff(&state, AUTO_UNLOCK_BASE_SECONDS);
 
         // Simulate a stretch where the first window already fired.
         state.set_locked(true);
@@ -577,7 +594,7 @@ mod tests {
     fn test_passphrase_unlock_resets_schedule_to_base() {
         // §2.3 linchpin: only successful auth resets the counter.
         let state = AppState::new();
-        state.set_auto_unlock_enabled(true, AUTO_UNLOCK_BASE_SECONDS);
+        enable_backoff(&state, AUTO_UNLOCK_BASE_SECONDS);
         state.set_locked(true);
         {
             let mut inner = state.lock();
@@ -602,7 +619,7 @@ mod tests {
     #[test]
     fn test_complete_passphrase_unlock_clears_state() {
         let state = AppState::new();
-        state.set_auto_unlock_enabled(true, AUTO_UNLOCK_BASE_SECONDS);
+        enable_backoff(&state, AUTO_UNLOCK_BASE_SECONDS);
         state.append_to_buffer(0);
         state.append_to_buffer(12);
         state.set_locked(true);
@@ -618,7 +635,7 @@ mod tests {
     #[test]
     fn test_trigger_auto_unlock_clears_state_and_advances_counter() {
         let state = AppState::new();
-        state.set_auto_unlock_enabled(true, AUTO_UNLOCK_BASE_SECONDS);
+        enable_backoff(&state, AUTO_UNLOCK_BASE_SECONDS);
         state.append_to_buffer(0);
         state.set_locked(true);
 
@@ -635,7 +652,7 @@ mod tests {
     #[test]
     fn test_auto_unlock_only_when_locked() {
         let state = AppState::new();
-        state.set_auto_unlock_enabled(true, AUTO_UNLOCK_BASE_SECONDS);
+        enable_backoff(&state, AUTO_UNLOCK_BASE_SECONDS);
         {
             let mut inner = state.lock();
             inner.auto_unlock.as_mut().unwrap().stretch_start =
@@ -661,9 +678,9 @@ mod tests {
     #[test]
     fn test_auto_unlock_disable_clears_schedule() {
         let state = AppState::new();
-        state.set_auto_unlock_enabled(true, AUTO_UNLOCK_BASE_SECONDS);
+        enable_backoff(&state, AUTO_UNLOCK_BASE_SECONDS);
         assert!(state.auto_unlock_enabled());
-        state.set_auto_unlock_enabled(false, AUTO_UNLOCK_BASE_SECONDS);
+        state.set_auto_unlock_config(crate::config::AutoUnlockConfig::Disabled);
         assert!(!state.auto_unlock_enabled());
         state.set_locked(true);
         assert!(!state.should_auto_unlock());

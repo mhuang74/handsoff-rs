@@ -4,7 +4,6 @@ pub mod hotkeys;
 use crate::app_state::AppState;
 use crate::auth;
 use crate::constants::BACKSPACE_KEYCODE;
-use crate::utils::keycode::keycode_to_char;
 use core_graphics::event::{CGEvent, CGEventFlags, CGEventType, EventField};
 use log::{debug, error, info};
 
@@ -97,11 +96,17 @@ pub fn handle_keyboard_event(event: &CGEvent, event_type: CGEventType, state: &A
         return true;
     }
 
-    // Recordable passphrase keys: any keycode the US-QWERTY map can render.
-    // Control/function/arrow keys return None and are ignored (not recorded,
-    // not rejected) — they neither advance nor clear the passphrase.
-    if keycode_to_char(keycode, false).is_none() {
-        return true;
+    // Passphrase membership: any keycode not in the §3 rejection set
+    // (Escape/Backspace/Enter/Enter-keypad handled above or reserved; hotkey
+    // last-keys reserved). Keys the US-QWERTY map cannot render (F-keys,
+    // keypad, arrows) ARE recorded — the character map is display-only (§3)
+    // and MUST NOT gate membership.
+    if crate::setup::is_rejected_keycode(
+        keycode,
+        state_guard.lock_keycode,
+        state_guard.talk_keycode,
+    ) {
+        return true; // reserved keys never join the passphrase buffer
     }
 
     state_guard.input_buffer.push(keycode as u32);
