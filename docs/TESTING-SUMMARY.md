@@ -12,7 +12,6 @@ Running src/utils/mod.rs       -  8 tests
 Running src/setup.rs           -  5 tests
 Running tests/app_state_tests.rs - 18 tests
 Running tests/auth_tests.rs      - 11 tests
-Running tests/keycode_tests.rs   - 11 tests
 ```
 
 (Counts reflect the current tree; `cargo test` is the source of truth.)

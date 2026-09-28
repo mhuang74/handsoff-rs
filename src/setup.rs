@@ -8,32 +8,39 @@
 //! - Rejects Escape, Backspace, and the configured lock/talk hotkey combos as
 //!   passphrase members. Minimum 4 keys.
 
-use crate::constants::{BACKSPACE_KEYCODE, DEFAULT_LOCK_KEYCODE, DEFAULT_TALK_KEYCODE};
+use crate::constants::{
+    BACKSPACE_KEYCODE, DEFAULT_LOCK_KEYCODE, DEFAULT_TALK_KEYCODE, ENTER_KEYCODE,
+    ENTER_KEYCODE_KEYPAD,
+};
 use crate::utils::MIN_PASSPHRASE_KEYS;
 use anyhow::{anyhow, Result};
 
 const ESCAPE_KEYCODE: i64 = 53;
-const ENTER_KEYCODE: i64 = 36;
-const ENTER_KEYCODE_KEYPAD: i64 = 76;
 
-/// A key recorded during setup capture.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CapturedKey {
-    /// Raw macOS virtual keycode
-    pub keycode: u32,
-    /// Human-readable rendering for confirmation. US-QWERTY characters when
-    /// the map can render the key; `<key N>` for keys it cannot (F-keys,
-    /// keypad, arrows) so every recorded member displays meaningfully.
-    pub display: String,
+/// Unlock-path blocked keys: only the keys that are control keys in the
+/// unlock flow (Enter / keypad Enter) and can never be passphrase members
+/// (capture never records them). Hotkey last-keys are deliberately NOT
+/// blocked here: the capture reserved set and the runtime's registered
+/// hotkeys can drift (env set in one process but not the other; tray
+/// ignores env entirely), and a bare hotkey-key press is unambiguous —
+/// the modified combo is intercepted before the buffer (spec §3: "hotkey
+/// combos"). Blocking them here caused silent, unrecoverable lockouts.
+pub fn is_unlock_blocked_keycode(keycode: i64) -> bool {
+    keycode == ENTER_KEYCODE || keycode == ENTER_KEYCODE_KEYPAD
 }
 
-/// The §3 rejection set: keycodes that may never join a passphrase.
+/// The §3 rejection set for *capture*: keycodes that may never join a
+/// passphrase when it is being recorded.
 ///
 /// Members: Escape (53), Backspace, Enter (36), keypad Enter (76), and the
-/// lock/talk hotkey last keys. Membership-only — Enter/Escape/Backspace
-/// remain *control keys* in both capture and unlock paths (commit / restart /
+/// effective lock/talk hotkey last keys. Membership-only — Enter/Escape/
+/// Backspace remain *control keys* in the capture flow (commit / restart /
 /// delete); this set governs which keys are eligible to be recorded.
-pub fn is_rejected_keycode(keycode: i64, lock_hotkey_keycode: i64, talk_hotkey_keycode: i64) -> bool {
+pub fn is_rejected_keycode(
+    keycode: i64,
+    lock_hotkey_keycode: i64,
+    talk_hotkey_keycode: i64,
+) -> bool {
     keycode == ESCAPE_KEYCODE
         || keycode == BACKSPACE_KEYCODE
         || keycode == ENTER_KEYCODE
@@ -43,7 +50,7 @@ pub fn is_rejected_keycode(keycode: i64, lock_hotkey_keycode: i64, talk_hotkey_k
 }
 
 /// Validate a completed capture: minimum key count (§3).
-pub fn validate_sequence(keys: &[CapturedKey]) -> Result<()> {
+pub fn validate_sequence(keys: &[u32]) -> Result<()> {
     if keys.len() < MIN_PASSPHRASE_KEYS {
         return Err(anyhow!(
             "Passphrase must be at least {} keys (got {})",
@@ -52,23 +59,6 @@ pub fn validate_sequence(keys: &[CapturedKey]) -> Result<()> {
         ));
     }
     Ok(())
-}
-
-/// Render a captured sequence for display (e.g. `[a] [b] [c] [d]`).
-/// Characters come from the US-QWERTY map and are for confirmation only —
-/// the stored value is the raw keycode sequence.
-pub fn display_sequence(keys: &[CapturedKey]) -> String {
-    keys.iter()
-        .map(|k| format!("[{}]", k.display))
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-/// Display fallback for keys the US-QWERTY map cannot render.
-fn display_label(keycode: i64) -> String {
-    crate::utils::keycode::keycode_to_char(keycode, false)
-        .map(|c| c.to_string())
-        .unwrap_or_else(|| format!("<key {}>", keycode))
 }
 
 /// Detect whether we can capture physical key events at all.
@@ -96,16 +86,20 @@ pub fn check_interactive_session() -> Result<()> {
 /// (when the minimum length is met), Backspace deletes, Escape restarts from
 /// empty. All captured keys are blocked from reaching the focused app.
 ///
+/// `prompt` describes this pass (e.g. first capture vs confirm re-entry).
+///
 /// # Errors
 /// - Non-interactive session
 /// - Accessibility permission missing
 /// - Tap creation failed
 /// - Capture abandoned (timeout)
+/// - Setup cancelled by the user (Ctrl+C)
 #[cfg(target_os = "macos")]
 pub fn capture_passphrase(
     lock_hotkey_keycode: i64,
     talk_hotkey_keycode: i64,
-) -> Result<Vec<CapturedKey>> {
+    prompt: &str,
+) -> Result<Vec<u32>> {
     check_interactive_session()?;
 
     if !crate::input_blocking::check_accessibility_permissions() {
@@ -119,25 +113,32 @@ pub fn capture_passphrase(
     use std::sync::Arc;
 
     struct CaptureState {
-        keys: Vec<CapturedKey>,
+        keys: Vec<u32>,
         done: bool,
+        aborted: bool,
     }
 
     let state = Arc::new(Mutex::new(CaptureState {
         keys: Vec::new(),
         done: false,
+        aborted: false,
     }));
 
     println!("\nPassphrase capture");
     println!("------------------");
+    println!("{}", prompt);
     println!(
         "Type your passphrase using PHYSICAL keys (at least {} keys).",
         MIN_PASSPHRASE_KEYS
     );
     println!("Layout-independent: what matters is which keys you press, not the characters.");
-    println!("  Enter        commit (at least {} keys)", MIN_PASSPHRASE_KEYS);
+    println!(
+        "  Enter        commit (at least {} keys)",
+        MIN_PASSPHRASE_KEYS
+    );
     println!("  Backspace    delete last key");
     println!("  Escape       restart capture from empty");
+    println!("  Ctrl+C       abort setup");
     println!(
         "Reserved keys (Escape, Backspace, Enter, and the hotkey keys you chose) cannot be passphrase members.\n"
     );
@@ -219,6 +220,19 @@ pub fn capture_passphrase(
             return std::ptr::null_mut(); // swallow everything after commit
         }
 
+        // Abort chord: Ctrl+C (Control only, no Cmd/Shift/Option). The tap
+        // swallows all keys, so terminal SIGINT never fires — the abort must
+        // be recognized here.
+        if keycode == 8
+            && flags.contains(CGEventFlags::CGEventFlagControl)
+            && !flags.contains(CGEventFlags::CGEventFlagCommand)
+            && !flags.contains(CGEventFlags::CGEventFlagShift)
+            && !flags.contains(CGEventFlags::CGEventFlagAlternate)
+        {
+            st.aborted = true;
+            return std::ptr::null_mut();
+        }
+
         if keycode == ENTER_KEYCODE || keycode == ENTER_KEYCODE_KEYPAD {
             if st.keys.len() >= MIN_PASSPHRASE_KEYS {
                 st.done = true;
@@ -265,11 +279,7 @@ pub fn capture_passphrase(
         // Every non-rejected keycode is recorded — including keys the
         // US-QWERTY map cannot render (F-keys, keypad, arrows). The map is
         // display-only (§3) and MUST NOT gate passphrase membership.
-        let display = display_label(keycode);
-        st.keys.push(CapturedKey {
-            keycode: keycode as u32,
-            display,
-        });
+        st.keys.push(keycode as u32);
         print!("•");
         let _ = std::io::Write::flush(&mut std::io::stdout());
 
@@ -330,6 +340,9 @@ pub fn capture_passphrase(
             if st.done {
                 break Ok(st.keys.clone());
             }
+            if st.aborted {
+                break Err(anyhow!("Setup cancelled by user (Ctrl+C)."));
+            }
         }
         if std::time::Instant::now() > deadline {
             break Err(anyhow!(
@@ -358,7 +371,8 @@ pub fn capture_passphrase(
 pub fn capture_passphrase(
     _lock_hotkey_keycode: i64,
     _talk_hotkey_keycode: i64,
-) -> Result<Vec<CapturedKey>> {
+    _prompt: &str,
+) -> Result<Vec<u32>> {
     check_interactive_session()?;
     Err(anyhow!("Keycode capture is only supported on macOS"))
 }
@@ -418,9 +432,10 @@ fn prompt_hotkey(print: &mut dyn FnMut(&str), prompt: &str) -> Result<Option<Str
 ///
 /// Output goes through `print` (CLI/tray pass their own printers); input is
 /// read from stdin (both binaries share the terminal). Flow: banner → hotkey
-/// prompts (lock ≠ talk distinctness check) → passphrase capture with the
-/// effective reserved set (env override > chosen hotkeys > defaults, R3) →
-/// confirm → auto-lock → auto-unlock
+/// prompts (lock ≠ talk distinctness check) → double passphrase capture
+/// (silent confirm, never displayed; Ctrl+C aborts) with the effective
+/// reserved set (env override > chosen hotkeys > defaults, R3) → auto-lock →
+/// auto-unlock
 /// (0 = disabled, else bounded to
 /// `AUTO_UNLOCK_MIN_BASE_SECONDS..=AUTO_UNLOCK_CEILING_SECONDS`; invalid
 /// entries re-prompt, bailing after 3 consecutive invalid attempts).
@@ -434,7 +449,9 @@ pub fn run_interactive_setup(print: &mut dyn FnMut(&str)) -> Result<SetupOutcome
     // runtime would later reserve for a hotkey.
     print("Hotkey Configuration");
     print("--------------------");
-    print("Configure the hotkeys (modifiers Cmd+Ctrl+Shift are mandatory, but choose the last key).");
+    print(
+        "Configure the hotkeys (modifiers Cmd+Ctrl+Shift are mandatory, but choose the last key).",
+    );
     print("Enter a single letter A-Z, or press Enter to use the default.");
     print("");
 
@@ -460,20 +477,23 @@ pub fn run_interactive_setup(print: &mut dyn FnMut(&str)) -> Result<SetupOutcome
 
     // Capture the passphrase as a physical keycode sequence via a temporary
     // event tap (interactive console sessions only — refused over SSH).
-    let keys = capture_passphrase(lock_keycode, talk_keycode)
+    // Double-capture confirm (user decision): capture twice and compare
+    // silently — the passphrase is never displayed in cleartext. No retry
+    // limit; the user can abort with Ctrl+C or hit the 300 s timeout.
+    let keycodes = loop {
+        let first = capture_passphrase(lock_keycode, talk_keycode, "Enter your passphrase:")
+            .map_err(|e| anyhow!("Passphrase capture failed: {}", e))?;
+        let second = capture_passphrase(
+            lock_keycode,
+            talk_keycode,
+            "Re-enter the same passphrase to confirm:",
+        )
         .map_err(|e| anyhow!("Passphrase capture failed: {}", e))?;
-
-    // Confirm the capture
-    print(&format!("Captured passphrase: {}", display_sequence(&keys)));
-    print!("Confirm this passphrase? [Y/n]: ");
-    use std::io::Write as _;
-    let _ = std::io::stdout().flush();
-    let mut confirm = String::new();
-    std::io::stdin().read_line(&mut confirm)?;
-    let confirm = confirm.trim().to_lowercase();
-    if !confirm.is_empty() && confirm != "y" && confirm != "yes" {
-        anyhow::bail!("Setup cancelled. Re-run setup to try again.");
-    }
+        if first == second {
+            break first;
+        }
+        print("Passphrases do not match — starting over.");
+    };
 
     // Prompt for timeouts
     print("");
@@ -528,7 +548,7 @@ pub fn run_interactive_setup(print: &mut dyn FnMut(&str)) -> Result<SetupOutcome
     };
 
     Ok(SetupOutcome {
-        keycodes: keys.iter().map(|k| k.keycode).collect(),
+        keycodes,
         auto_lock,
         auto_unlock,
         lock_key,
@@ -572,9 +592,23 @@ mod tests {
     }
 
     #[test]
+    fn test_is_unlock_blocked_keycode() {
+        // Only Enter/keypad-Enter are blocked on the unlock path.
+        assert!(is_unlock_blocked_keycode(ENTER_KEYCODE));
+        assert!(is_unlock_blocked_keycode(ENTER_KEYCODE_KEYPAD));
+        // Hotkey last-keys are NOT blocked (reserved-set drift must not
+        // lock a passphrase out of the buffer).
+        assert!(!is_unlock_blocked_keycode(DEFAULT_LOCK_KEYCODE));
+        assert!(!is_unlock_blocked_keycode(DEFAULT_TALK_KEYCODE));
+        // Ordinary members pass.
+        assert!(!is_unlock_blocked_keycode(0)); // 'a'
+        assert!(!is_unlock_blocked_keycode(122)); // F5
+    }
+
+    #[test]
     fn test_is_rejected_keycode_allows_unrenderable_keys() {
         // F-keys, keypad digits, arrows are NOT members of the rejection set
-        // even though keycode_to_char cannot render them (R2 core fix).
+        // even though they cannot be rendered as characters (R2 core fix).
         for keycode in [F5_KEYCODE, KEYPAD_1_KEYCODE, ARROW_UP_KEYCODE] {
             assert!(
                 !is_rejected_keycode(keycode, DEFAULT_LOCK_KEYCODE, DEFAULT_TALK_KEYCODE),
@@ -582,22 +616,5 @@ mod tests {
                 keycode
             );
         }
-    }
-
-    #[test]
-    fn test_captured_key_display_fallback() {
-        // Renderable keys show their US-QWERTY character…
-        assert_eq!(display_label(0), "a");
-        // …unrenderable keys fall back to <key N>.
-        assert_eq!(display_label(F5_KEYCODE), "<key 122>");
-    }
-
-    #[test]
-    fn test_display_sequence_with_unrenderable_keys() {
-        let keys = vec![
-            CapturedKey { keycode: 0, display: "a".to_string() },
-            CapturedKey { keycode: 122, display: "<key 122>".to_string() },
-        ];
-        assert_eq!(display_sequence(&keys), "[a] [<key 122>]");
     }
 }

@@ -146,6 +146,16 @@ pub const DEFAULT_LOCK_KEYCODE: i64 = 37;
 /// Recommended: Any letter key (0-50 range)
 pub const DEFAULT_TALK_KEYCODE: i64 = 17;
 
+/// macOS keycode for the Return/Enter key.
+/// Unit: macOS virtual keycode
+/// Range: Fixed, do not change (hardware constant)
+pub const ENTER_KEYCODE: i64 = 36;
+
+/// macOS keycode for the keypad Enter key.
+/// Unit: macOS virtual keycode
+/// Range: Fixed, do not change (hardware constant)
+pub const ENTER_KEYCODE_KEYPAD: i64 = 76;
+
 // ============================================================================
 // FILE PERMISSIONS
 // ============================================================================

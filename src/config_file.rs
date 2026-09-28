@@ -68,7 +68,8 @@ impl Config {
     ///
     /// # Arguments
     ///
-    /// * `keycodes` - Physical keycodes captured during setup (validated by caller)
+    /// * `keycodes` - Physical keycodes captured during setup (validated
+    ///   here: at least `MIN_PASSPHRASE_KEYS` entries)
     /// * `auto_lock` - Auto-lock timeout in seconds
     /// * `auto_unlock_backoff` - Whether the backoff auto-unlock schedule is enabled
     /// * `auto_unlock_base` - Base interval in seconds for the backoff schedule
@@ -85,6 +86,16 @@ impl Config {
         lock_key: Option<String>,
         talk_key: Option<String>,
     ) -> Result<Self> {
+        // Passphrase length is the constructor's contract: a too-short
+        // sequence would produce a hash that can never verify.
+        if keycodes.len() < crate::utils::MIN_PASSPHRASE_KEYS {
+            anyhow::bail!(
+                "Passphrase must contain at least {} keys (got {})",
+                crate::utils::MIN_PASSPHRASE_KEYS,
+                keycodes.len()
+            );
+        }
+
         // Validate hotkeys if provided
         if let Some(key) = &lock_key {
             Self::validate_hotkey(key)?;
@@ -207,7 +218,8 @@ impl Config {
         let contents = fs::read_to_string(path)
             .with_context(|| format!("Failed to read config file: {}", path.display()))?;
 
-        let config: Config = toml::from_str(&contents).context("Failed to parse config file")?;
+        let mut config: Config =
+            toml::from_str(&contents).context("Failed to parse config file")?;
 
         // Validate loaded config
         // 1. Passphrase format must be keycode-v1 (legacy formats are rejected:
@@ -234,6 +246,25 @@ impl Config {
             anyhow::bail!(
                 "No valid passphrase hash found in config file (it may be from an \
                  older version of HandsOff).\n\
+                 A one-time re-setup is required: run 'handsoff --setup'."
+            );
+        }
+
+        // Normalize hex case in place: `verify_keycodes` compares against
+        // lowercase `hex::encode` output byte-for-byte, but hex case is
+        // semantically meaningless — a hand-edited-but-correct uppercase hash
+        // must still work, not silently mismatch forever.
+        if let Some(hash) = &mut config.passphrase_hash {
+            hash.make_ascii_lowercase();
+        }
+
+        // The empty-sequence digest is never a valid passphrase: no capture
+        // can produce zero keys (minimum enforced), so this hash can never
+        // verify and always indicates a corrupted/hand-edited config.
+        if config.passphrase_hash.as_deref() == Some(crate::utils::hash_keycodes(&[]).as_str()) {
+            anyhow::bail!(
+                "Passphrase hash is the SHA-256 of an empty sequence — the config \
+                 cannot contain a usable passphrase.\n\
                  A one-time re-setup is required: run 'handsoff --setup'."
             );
         }
@@ -427,9 +458,15 @@ mod tests {
     #[test]
     fn test_config_new() {
         let keycodes = vec![0u32, 12, 15, 37];
-        let config =
-            Config::new(&keycodes, 120, true, 3600, Some("L".to_string()), Some("T".to_string()))
-                .expect("Failed to create config");
+        let config = Config::new(
+            &keycodes,
+            120,
+            true,
+            3600,
+            Some("L".to_string()),
+            Some("T".to_string()),
+        )
+        .expect("Failed to create config");
 
         assert_eq!(config.passphrase_format, "keycode-v1");
         assert_eq!(config.auto_lock_timeout, 120);
@@ -488,8 +525,8 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let path = temp_config_path();
-        let config =
-            Config::new(&[0, 12, 15, 37], 120, false, 3600, None, None).expect("Failed to create config");
+        let config = Config::new(&[0, 12, 15, 37], 120, false, 3600, None, None)
+            .expect("Failed to create config");
 
         // save_to_path does not set permissions; save() does. Simulate by
         // checking the constant and the real save path via config_path().
@@ -509,7 +546,11 @@ mod tests {
         let result = Config::load_from_path(Path::new("/nonexistent/handsoff/config.toml"));
         assert!(result.is_err());
         let err = format!("{}", result.unwrap_err());
-        assert!(err.contains("--setup"), "Error should direct to setup: {}", err);
+        assert!(
+            err.contains("--setup"),
+            "Error should direct to setup: {}",
+            err
+        );
     }
 
     #[test]
@@ -527,7 +568,10 @@ auto_unlock_base_interval = 36
         fs::write(&path, bad).expect("Failed to write config");
 
         let result = Config::load_from_path(&path);
-        assert!(result.is_err(), "Out-of-range base interval must be rejected");
+        assert!(
+            result.is_err(),
+            "Out-of-range base interval must be rejected"
+        );
         let err = format!("{}", result.unwrap_err());
         assert!(
             err.contains("auto_unlock_base_interval") && err.contains("--setup"),
@@ -577,6 +621,72 @@ auto_unlock_base_interval = 60
         // In-range boundaries are accepted.
         assert!(Config::new(&[0, 12, 15, 37], 120, true, 60, None, None).is_ok());
         assert!(Config::new(&[0, 12, 15, 37], 120, true, 86_400, None, None).is_ok());
+    }
+
+    #[test]
+    fn test_config_new_rejects_short_keycodes() {
+        // Config::new validates passphrase length (Finding 3): fewer than
+        // MIN_PASSPHRASE_KEYS keys would produce a hash that can never
+        // verify, so it must be rejected at construction.
+        assert!(Config::new(&[0, 12, 15], 120, true, 3600, None, None).is_err());
+        assert!(Config::new(&[], 120, true, 3600, None, None).is_err());
+        // Minimum length is accepted.
+        assert!(Config::new(&[0, 12, 15, 37], 120, true, 3600, None, None).is_ok());
+    }
+
+    #[test]
+    fn test_load_normalizes_uppercase_hash() {
+        // Hex case is meaningless: an uppercase hand-edited hash must load
+        // and be normalized to the lowercase form verify_keycodes expects.
+        let path = temp_config_path();
+        let uppercase = crate::utils::hash_keycodes(&[0, 12, 15, 37]).to_uppercase();
+        let toml_src = format!(
+            r#"
+passphrase_hash = "{}"
+passphrase_format = "keycode-v1"
+auto_lock_timeout = 120
+auto_unlock_mode = "backoff"
+"#,
+            uppercase
+        );
+        fs::write(&path, toml_src).expect("Failed to write config");
+
+        let loaded = Config::load_from_path(&path).expect("Uppercase hash must load");
+        assert_eq!(
+            loaded.passphrase_hash,
+            Some(crate::utils::hash_keycodes(&[0, 12, 15, 37])),
+            "Hash must be normalized to lowercase"
+        );
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_load_rejects_empty_sequence_hash() {
+        // The empty-sequence digest can never verify (no capture can produce
+        // zero keys), so load must reject it with re-setup guidance.
+        let path = temp_config_path();
+        let toml_src = format!(
+            r#"
+passphrase_hash = "{}"
+passphrase_format = "keycode-v1"
+auto_lock_timeout = 120
+auto_unlock_mode = "backoff"
+"#,
+            crate::utils::hash_keycodes(&[])
+        );
+        fs::write(&path, toml_src).expect("Failed to write config");
+
+        let result = Config::load_from_path(&path);
+        assert!(result.is_err(), "Empty-sequence hash must be rejected");
+        let err = format!("{}", result.unwrap_err());
+        assert!(
+            err.contains("empty sequence") && err.contains("--setup"),
+            "Error must explain the problem and direct to setup: {}",
+            err
+        );
+
+        let _ = fs::remove_file(&path);
     }
 
     #[test]
@@ -678,22 +788,43 @@ auto_lock_timeout = 120
 
     #[test]
     fn test_duplicate_hotkeys_in_new() {
-        let result =
-            Config::new(&[0, 12, 15, 37], 120, true, 3600, Some("L".to_string()), Some("L".to_string()));
+        let result = Config::new(
+            &[0, 12, 15, 37],
+            120,
+            true,
+            3600,
+            Some("L".to_string()),
+            Some("L".to_string()),
+        );
         assert!(result.is_err(), "Duplicate hotkeys must be rejected");
     }
 
     #[test]
     fn test_duplicate_hotkeys_case_insensitive() {
-        let result =
-            Config::new(&[0, 12, 15, 37], 120, true, 3600, Some("l".to_string()), Some("L".to_string()));
-        assert!(result.is_err(), "Case-insensitive duplicates must be rejected");
+        let result = Config::new(
+            &[0, 12, 15, 37],
+            120,
+            true,
+            3600,
+            Some("l".to_string()),
+            Some("L".to_string()),
+        );
+        assert!(
+            result.is_err(),
+            "Case-insensitive duplicates must be rejected"
+        );
     }
 
     #[test]
     fn test_different_hotkeys_accepted() {
-        let result =
-            Config::new(&[0, 12, 15, 37], 120, true, 3600, Some("L".to_string()), Some("T".to_string()));
+        let result = Config::new(
+            &[0, 12, 15, 37],
+            120,
+            true,
+            3600,
+            Some("L".to_string()),
+            Some("T".to_string()),
+        );
         assert!(result.is_ok());
     }
 
