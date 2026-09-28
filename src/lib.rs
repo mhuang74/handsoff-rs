@@ -13,7 +13,7 @@ pub mod utils;
 use anyhow::{Context, Result};
 use app_state::AppState;
 use constants::{
-    AUTO_LOCK_CHECK_INTERVAL_SECS, AUTO_UNLOCK_BASE_SECONDS, AUTO_UNLOCK_CHECK_INTERVAL_SECS,
+    AUTO_LOCK_CHECK_INTERVAL_SECS, AUTO_UNLOCK_CHECK_INTERVAL_SECS,
     AUTO_UNLOCK_CEILING_SECONDS, BUFFER_RESET_CHECK_INTERVAL_MS,
     CALLBACK_TELEMETRY_INTERVAL_SECS, CFRUNLOOP_POLL_INTERVAL_MS, PERMISSION_CHECK_INTERVAL_SECS,
 };
@@ -137,16 +137,18 @@ impl HandsOffCore {
         }
     }
 
-    /// Enable or disable the auto-unlock backoff schedule (called at startup).
-    /// `base_interval_secs` sets the first window's interval (config/env override).
-    pub fn set_auto_unlock_backoff(&self, enabled: bool, base_interval_secs: u64) {
-        self.state.set_auto_unlock_enabled(enabled, base_interval_secs);
-        if enabled {
+    /// Configure the auto-unlock backoff schedule (called at startup).
+    ///
+    /// Logs an info line only when the backoff schedule is enabled.
+    pub fn set_auto_unlock_config(&self, config: config::AutoUnlockConfig) {
+        if let config::AutoUnlockConfig::Backoff { base_interval_secs } = &config {
             info!(
                 "Auto-unlock backoff enabled: first window at {}s, doubling up to {}s",
-                base_interval_secs, AUTO_UNLOCK_CEILING_SECONDS
+                base_interval_secs.get(),
+                AUTO_UNLOCK_CEILING_SECONDS
             );
         }
+        self.state.set_auto_unlock_config(config);
     }
 
     /// Set the initial lock state

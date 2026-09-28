@@ -1,6 +1,13 @@
 use handsoff::app_state::{AppState, AppStateInner};
+use handsoff::config::AutoUnlockConfig;
 use std::thread;
 use std::time::Duration;
+
+fn enable_backoff(state: &AppState, base_secs: u64) {
+    state.set_auto_unlock_config(AutoUnlockConfig::Backoff {
+        base_interval_secs: std::num::NonZeroU64::new(base_secs).unwrap(),
+    });
+}
 
 #[test]
 fn test_initial_state() {
@@ -153,7 +160,7 @@ fn test_multiple_hash_updates() {
 fn test_backoff_full_stretch_progression() {
     // Simulate the schedule with short intervals by backdating stretch_start.
     let state = AppState::new();
-    state.set_auto_unlock_enabled(true, 3600);
+    enable_backoff(&state, 3600);
     state.set_locked(true);
 
     // Window 0 (base interval) — backdate past 3600s; machine unattended
@@ -194,6 +201,30 @@ fn test_backoff_full_stretch_progression() {
 }
 
 #[test]
+fn test_relock_does_not_reanchor_stretch() {
+    // R1: locked → locked re-engagements (e.g. auto-lock re-firing during a
+    // window) must NOT re-anchor the schedule — the counter is keyed to the
+    // locked stretch, not lock events (§2.3).
+    let state = AppState::new();
+    enable_backoff(&state, 3600);
+    state.set_locked(true);
+
+    // Backdate the stretch so the base window is already open.
+    {
+        let mut inner = state.lock();
+        inner.auto_unlock.as_mut().unwrap().stretch_start =
+            std::time::Instant::now() - Duration::from_secs(3601);
+    }
+
+    // Two consecutive re-engagements while still locked.
+    state.set_locked(true);
+    state.set_locked(true);
+
+    // The anchor survived both re-engagements: window 0 is still open.
+    assert_eq!(state.get_auto_unlock_remaining_secs(), Some(0));
+}
+
+#[test]
 fn test_auto_unlock_does_not_fire_when_disabled() {
     let state = AppState::new();
     state.set_locked(true);
@@ -205,7 +236,7 @@ fn test_auto_unlock_does_not_fire_when_disabled() {
 #[test]
 fn test_force_path_via_passphrase_unlock_resets_everything() {
     let state = AppState::new();
-    state.set_auto_unlock_enabled(true, 3600);
+    enable_backoff(&state, 3600);
     state.set_locked(true);
     {
         let mut inner = state.lock();
@@ -230,10 +261,9 @@ fn test_force_path_via_passphrase_unlock_resets_everything() {
 fn test_inner_auto_unlock_state_shape() {
     // AppStateInner must carry the schedule in one struct (§2.7)
     let state = AppState::new();
-    state.set_auto_unlock_enabled(true, 3600);
+    enable_backoff(&state, 3600);
     let inner: parking_lot::MutexGuard<AppStateInner> = state.lock();
     let unlock = inner.auto_unlock.as_ref().expect("enabled => Some");
-    assert!(unlock.enabled);
     assert_eq!(unlock.base_interval_secs, 3600);
     assert_eq!(unlock.window_index, 0);
 }
@@ -246,7 +276,7 @@ fn test_window_fires_on_schedule_only() {
     // thread. (A blocked-key masher must NOT be able to hold the lock by
     // keeping last_input_time fresh — that would be an indefinite lockout.)
     let state = AppState::new();
-    state.set_auto_unlock_enabled(true, 3600);
+    enable_backoff(&state, 3600);
     {
         let mut inner = state.lock();
         inner.auto_lock_timeout = 2; // small cap for testing
@@ -265,7 +295,7 @@ fn test_window_fires_on_schedule_only() {
 
     // Before the interval elapses, no fire even with fresh input.
     let state2 = AppState::new();
-    state2.set_auto_unlock_enabled(true, 3600);
+    enable_backoff(&state2, 3600);
     state2.set_locked(true);
     assert!(!state2.should_auto_unlock());
     state2.update_input_time();
@@ -277,7 +307,7 @@ fn test_window_fires_on_schedule_only() {
 fn test_custom_base_interval_used() {
     // The resolved base interval (config/env override) must reach the schedule
     let state = AppState::new();
-    state.set_auto_unlock_enabled(true, 300);
+    enable_backoff(&state, 300);
     state.set_locked(true);
     assert_eq!(state.get_auto_unlock_interval_secs(), Some(300));
 }
