@@ -210,14 +210,10 @@ impl HandsOffCore {
         Ok(())
     }
 
-    /// Force-unlock via state (no passphrase verification).
-    ///
-    /// Used by the tray Reset menu: under keycode-sequence passphrases there is
-    /// no plaintext to re-verify (S-2) — the owner operating the menu is
-    /// already past the guard.
-    pub fn force_unlock(&self) {
-        self.state.complete_passphrase_unlock();
-        info!("Input unlocked via state reset");
+    /// Resets app state to unlocked with all timers cleared — the tray Reset
+    /// action; not a passphrase authentication event.
+    pub fn reset(&self) {
+        self.state.reset_all();
     }
 
     /// Start CFRunLoop in a background thread

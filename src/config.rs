@@ -195,10 +195,10 @@ fn resolve_auto_unlock_internal(
     // 2. Config file mode (None = no config file at all → build default)
     match config_backoff_enabled {
         Some(true) => {
-            // Hand-edited configs can carry an out-of-range base interval
-            // (e.g. 0, which would mean an instant auto-unlock window).
-            // Clamp into the allowed range instead of panicking or trusting
-            // the value — mirrors the env-var parse bounds.
+            // Defense-in-depth backstop: config-file loading (§load_from_path)
+            // and Config::new already reject out-of-range base intervals
+            // loudly, so this clamp only guards direct callers bypassing
+            // config load. Not the primary guard (Finding 1).
             let secs = config_base_interval
                 .unwrap_or(AUTO_UNLOCK_BASE_SECONDS)
                 .clamp(AUTO_UNLOCK_MIN_BASE_SECONDS, AUTO_UNLOCK_CEILING_SECONDS);
@@ -234,42 +234,28 @@ pub fn resolve_auto_unlock(
     )
 }
 
-/// Resolve the currently-effective hotkey keycodes for setup (R3).
+/// Resolve keycodes for explicitly-chosen hotkey letters (setup flow).
 ///
-/// Precedence: env var (`HANDS_OFF_LOCK_HOTKEY` / `HANDS_OFF_TALK_HOTKEY`) >
-/// config file (`lock_hotkey` / `talk_hotkey`) > `Code::KeyL` / `Code::KeyT`
-/// defaults, then `code_to_keycode`.
+/// Setup prompts for the hotkeys BEFORE passphrase capture (Finding 3), so
+/// the reserved-key set is derived from the keys the user just chose —
+/// whatever the runtime later loads (env var or config file), the passphrase
+/// was captured against the keys being saved.
 ///
-/// Shared by both binaries' `--setup` flows so reserved-key validation sees
-/// the same keys the runtime will register. Tray *runtime* hotkey loading is
-/// untouched (config-file-only by design).
-pub fn current_hotkey_keycodes() -> Result<(i64, i64)> {
-    current_hotkey_keycodes_from(
-        parse_lock_hotkey(),
-        parse_talk_hotkey(),
-        Config::load().ok().as_ref(),
-    )
-}
-
-/// Env-injectable core of [`current_hotkey_keycodes`], unit-testable without
-/// touching process-global env state.
-fn current_hotkey_keycodes_from(
-    env_lock: Option<String>,
-    env_talk: Option<String>,
-    config: Option<&Config>,
+/// `None` = keep the default (`L` / `T`).
+pub fn chosen_hotkey_keycodes(
+    lock_key: Option<&str>,
+    talk_key: Option<&str>,
 ) -> Result<(i64, i64)> {
-    let lock_key = env_lock
-        .and_then(|k| Config::parse_key_string(&k).ok())
-        .or_else(|| config.and_then(|c| c.get_lock_key_code().ok()))
+    let lock = lock_key
+        .and_then(|k| Config::parse_key_string(k).ok())
         .unwrap_or(global_hotkey::hotkey::Code::KeyL);
-    let talk_key = env_talk
-        .and_then(|k| Config::parse_key_string(&k).ok())
-        .or_else(|| config.and_then(|c| c.get_talk_key_code().ok()))
+    let talk = talk_key
+        .and_then(|k| Config::parse_key_string(k).ok())
         .unwrap_or(global_hotkey::hotkey::Code::KeyT);
 
-    let lock_keycode = crate::utils::keycode::code_to_keycode(lock_key)
+    let lock_keycode = crate::utils::keycode::code_to_keycode(lock)
         .context("Failed to resolve lock hotkey keycode")?;
-    let talk_keycode = crate::utils::keycode::code_to_keycode(talk_key)
+    let talk_keycode = crate::utils::keycode::code_to_keycode(talk)
         .context("Failed to resolve talk hotkey keycode")?;
     Ok((lock_keycode, talk_keycode))
 }
@@ -454,9 +440,9 @@ mod tests {
 
     #[test]
     fn test_resolve_config_clamps_out_of_range_base_interval() {
-        // Hand-edited configs can carry base_interval = 0 (would mean an
-        // instant unlock window) or values beyond the ceiling; the resolver
-        // clamps instead of panicking.
+        // Backstop behavior only: config load and Config::new reject
+        // out-of-range base intervals loudly; direct resolver callers that
+        // bypass config load get clamped instead of panicking.
         assert_eq!(
             resolve_auto_unlock_internal(None, Some(true), Some(0)),
             backoff(AUTO_UNLOCK_MIN_BASE_SECONDS)
@@ -468,23 +454,21 @@ mod tests {
     }
 
     #[test]
-    fn test_current_hotkey_keycodes_env_overrides() {
-        // Env override present → keycodes reflect the override (Q for lock
-        // instead of the config-file/default L), not config defaults.
-        let (lock, _talk) = current_hotkey_keycodes_from(
-            Some("Q".to_string()),
-            None,
-            None,
-        )
-        .expect("Q is a valid hotkey");
+    fn test_chosen_hotkey_keycodes_explicit_choice() {
+        // Explicitly chosen letters map to their macOS keycodes (Q=12), not
+        // the defaults (L=37 / T=17).
+        let (lock, _talk) =
+            chosen_hotkey_keycodes(Some("Q"), None).expect("Q is a valid hotkey");
         assert_eq!(lock, 12, "Q must map to macOS keycode 12, not default L (37)");
+        let (_lock, talk) =
+            chosen_hotkey_keycodes(None, Some("P")).expect("P is a valid hotkey");
+        assert_eq!(talk, 35, "P must map to macOS keycode 35, not default T (17)");
     }
 
     #[test]
-    fn test_current_hotkey_keycodes_defaults() {
-        // No env, no config → defaults L(37) / T(17).
-        let (lock, talk) =
-            current_hotkey_keycodes_from(None, None, None).expect("defaults resolve");
+    fn test_chosen_hotkey_keycodes_defaults() {
+        // No chosen keys → defaults L(37) / T(17).
+        let (lock, talk) = chosen_hotkey_keycodes(None, None).expect("defaults resolve");
         assert_eq!(lock, 37);
         assert_eq!(talk, 17);
     }

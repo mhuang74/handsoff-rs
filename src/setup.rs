@@ -139,7 +139,7 @@ pub fn capture_passphrase(
     println!("  Backspace    delete last key");
     println!("  Escape       restart capture from empty");
     println!(
-        "Reserved keys (Escape, Backspace, Enter, lock/talk hotkey keys) cannot be passphrase members.\n"
+        "Reserved keys (Escape, Backspace, Enter, and the hotkey keys you chose) cannot be passphrase members.\n"
     );
     print!("Passphrase: ");
     use std::io::Write as _;
@@ -418,8 +418,9 @@ fn prompt_hotkey(print: &mut dyn FnMut(&str), prompt: &str) -> Result<Option<Str
 ///
 /// Output goes through `print` (CLI/tray pass their own printers); input is
 /// read from stdin (both binaries share the terminal). Flow: banner → hotkey
-/// resolution → passphrase capture → confirm → hotkey prompts → auto-lock →
-/// auto-unlock (0 = disabled, else bounded to
+/// prompts (lock ≠ talk distinctness check) → passphrase capture with the
+/// chosen hotkeys as the reserved set → confirm → auto-lock → auto-unlock
+/// (0 = disabled, else bounded to
 /// `AUTO_UNLOCK_MIN_BASE_SECONDS..=AUTO_UNLOCK_CEILING_SECONDS`; invalid
 /// entries re-prompt, bailing after 3 consecutive invalid attempts).
 pub fn run_interactive_setup(print: &mut dyn FnMut(&str)) -> Result<SetupOutcome> {
@@ -427,10 +428,31 @@ pub fn run_interactive_setup(print: &mut dyn FnMut(&str)) -> Result<SetupOutcome
     print("==============");
     print("");
 
-    // Resolve the currently-effective hotkey keycodes for reserved-key
-    // validation (env var > config file > defaults — R3).
-    print("Resolving configured hotkeys for passphrase validation…");
-    let (lock_keycode, talk_keycode) = crate::config::current_hotkey_keycodes()?;
+    // Hotkeys come FIRST (Finding 3): the passphrase is captured against the
+    // keys the user just chose, so a passphrase can never contain a key that
+    // the runtime would later reserve for a hotkey.
+    print("Hotkey Configuration");
+    print("--------------------");
+    print("Configure the hotkeys (modifiers Cmd+Ctrl+Shift are mandatory, but choose the last key).");
+    print("Enter a single letter A-Z, or press Enter to use the default.");
+    print("");
+
+    let lock_key = prompt_hotkey(print, "Lock hotkey (default: L): ")?;
+    let talk_key = prompt_hotkey(print, "Talk hotkey (Hotkey to Unmute, default: T): ")?;
+
+    // Validate that lock and talk keys are different
+    if let (Some(lock), Some(talk)) = (&lock_key, &talk_key) {
+        if lock == talk {
+            anyhow::bail!("Error: Lock and Talk hotkeys must be different");
+        }
+    }
+
+    // Resolve keycodes from the chosen hotkeys — these define the reserved
+    // set for capture. `None` keeps the L/T defaults.
+    let (lock_keycode, talk_keycode) = crate::config::chosen_hotkey_keycodes(
+        lock_key.as_deref(),
+        talk_key.as_deref(),
+    )?;
 
     // Capture the passphrase as a physical keycode sequence via a temporary
     // event tap (interactive console sessions only — refused over SSH).
@@ -447,24 +469,6 @@ pub fn run_interactive_setup(print: &mut dyn FnMut(&str)) -> Result<SetupOutcome
     let confirm = confirm.trim().to_lowercase();
     if !confirm.is_empty() && confirm != "y" && confirm != "yes" {
         anyhow::bail!("Setup cancelled. Re-run setup to try again.");
-    }
-
-    // Prompt for hotkeys
-    print("");
-    print("Hotkey Configuration");
-    print("--------------------");
-    print("Configure the hotkeys (modifiers Cmd+Ctrl+Shift are mandatory, but choose the last key).");
-    print("Enter a single letter A-Z, or press Enter to use the default.");
-    print("");
-
-    let lock_key = prompt_hotkey(print, "Lock hotkey (default: L): ")?;
-    let talk_key = prompt_hotkey(print, "Talk hotkey (Hotkey to Unmute, default: T): ")?;
-
-    // Validate that lock and talk keys are different
-    if let (Some(lock), Some(talk)) = (&lock_key, &talk_key) {
-        if lock == talk {
-            anyhow::bail!("Error: Lock and Talk hotkeys must be different");
-        }
     }
 
     // Prompt for timeouts
