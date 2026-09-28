@@ -234,23 +234,28 @@ pub fn resolve_auto_unlock(
     )
 }
 
-/// Resolve keycodes for explicitly-chosen hotkey letters (setup flow).
+/// Resolve keycodes for the setup reserved-key set.
 ///
-/// Setup prompts for the hotkeys BEFORE passphrase capture (Finding 3), so
-/// the reserved-key set is derived from the keys the user just chose —
-/// whatever the runtime later loads (env var or config file), the passphrase
-/// was captured against the keys being saved.
-///
-/// `None` = keep the default (`L` / `T`).
+/// The passphrase is captured against the keys the runtime will actually
+/// register, so the precedence here MUST match the runtime's (R3):
+/// env var (`HANDS_OFF_LOCK_HOTKEY` / `HANDS_OFF_TALK_HOTKEY`, honored by the
+/// CLI runtime at launch) > the keys chosen during this setup run > defaults
+/// (`L` / `T`). An env override deliberately wins over the just-chosen key:
+/// if the operator runs the runtime with `HANDS_OFF_LOCK_HOTKEY=Q`, Q is
+/// reserved there even when setup saved L, so capture must reject Q too.
 pub fn chosen_hotkey_keycodes(
-    lock_key: Option<&str>,
-    talk_key: Option<&str>,
+    env_lock: Option<String>,
+    env_talk: Option<String>,
+    chosen_lock: Option<&str>,
+    chosen_talk: Option<&str>,
 ) -> Result<(i64, i64)> {
-    let lock = lock_key
-        .and_then(|k| Config::parse_key_string(k).ok())
+    let lock = env_lock
+        .and_then(|k| Config::parse_key_string(&k).ok())
+        .or_else(|| chosen_lock.and_then(|k| Config::parse_key_string(k).ok()))
         .unwrap_or(global_hotkey::hotkey::Code::KeyL);
-    let talk = talk_key
-        .and_then(|k| Config::parse_key_string(k).ok())
+    let talk = env_talk
+        .and_then(|k| Config::parse_key_string(&k).ok())
+        .or_else(|| chosen_talk.and_then(|k| Config::parse_key_string(k).ok()))
         .unwrap_or(global_hotkey::hotkey::Code::KeyT);
 
     let lock_keycode = crate::utils::keycode::code_to_keycode(lock)
@@ -457,18 +462,31 @@ mod tests {
     fn test_chosen_hotkey_keycodes_explicit_choice() {
         // Explicitly chosen letters map to their macOS keycodes (Q=12), not
         // the defaults (L=37 / T=17).
-        let (lock, _talk) =
-            chosen_hotkey_keycodes(Some("Q"), None).expect("Q is a valid hotkey");
+        let (lock, _talk) = chosen_hotkey_keycodes(None, None, Some("Q"), None)
+            .expect("Q is a valid hotkey");
         assert_eq!(lock, 12, "Q must map to macOS keycode 12, not default L (37)");
-        let (_lock, talk) =
-            chosen_hotkey_keycodes(None, Some("P")).expect("P is a valid hotkey");
+        let (_lock, talk) = chosen_hotkey_keycodes(None, None, None, Some("P"))
+            .expect("P is a valid hotkey");
         assert_eq!(talk, 35, "P must map to macOS keycode 35, not default T (17)");
     }
 
     #[test]
+    fn test_chosen_hotkey_keycodes_env_wins_over_chosen() {
+        // Env override beats the just-chosen key (R3 precedence match): the
+        // runtime honors HANDS_OFF_LOCK_HOTKEY at launch, so capture must
+        // reserve the env key even when setup saved something else.
+        let (lock, talk) =
+            chosen_hotkey_keycodes(Some("Q".to_string()), None, Some("L"), Some("R"))
+                .expect("valid hotkeys");
+        assert_eq!(lock, 12, "env Q must win over chosen L");
+        assert_eq!(talk, 15, "chosen R must map to macOS keycode 15");
+    }
+
+    #[test]
     fn test_chosen_hotkey_keycodes_defaults() {
-        // No chosen keys → defaults L(37) / T(17).
-        let (lock, talk) = chosen_hotkey_keycodes(None, None).expect("defaults resolve");
+        // No env, no chosen keys → defaults L(37) / T(17).
+        let (lock, talk) =
+            chosen_hotkey_keycodes(None, None, None, None).expect("defaults resolve");
         assert_eq!(lock, 37);
         assert_eq!(talk, 17);
     }

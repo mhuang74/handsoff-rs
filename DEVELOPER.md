@@ -144,7 +144,7 @@ The application stores a SHA-256 hash of the passphrase's **physical keycode seq
 
 - **Keycode-sequence capture**: setup uses a temporary event tap (interactive console sessions only — refused over SSH)
 - **Layout-independent**: no char decoding in the unlock path; raw keycodes are hashed and compared
-- **Reserved keys rejected**: Escape, Backspace, and the hotkey keys chosen during setup cannot be passphrase members (setup prompts for hotkeys before capture, so the reserved set always matches what the runtime will register); minimum 4 keys
+- **Reserved keys rejected**: Escape, Backspace, and the effective hotkey keys cannot be passphrase members; minimum 4 keys. Setup prompts for hotkeys before capture, and the reserved set follows the runtime's precedence (env var > chosen hotkeys > defaults, R3), so capture always matches what the runtime will register
 - **No plaintext**: only the SHA-256 hex hash is stored; Reset is an explicit user recovery action that clears lock state and restarts the backoff schedule (logged as `Reset: state cleared…`, distinct from passphrase auth), so no plaintext is ever retained
 
 ### Implementation Details
