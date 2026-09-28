@@ -72,7 +72,9 @@ impl Config {
     /// * `auto_lock` - Auto-lock timeout in seconds
     /// * `auto_unlock_backoff` - Whether the backoff auto-unlock schedule is enabled
     /// * `auto_unlock_base` - Base interval in seconds for the backoff schedule
-    ///   (used only when `auto_unlock_backoff` is true; validated by caller)
+    ///   (used only when `auto_unlock_backoff` is true; must be within
+    ///   `AUTO_UNLOCK_MIN_BASE_SECONDS..=AUTO_UNLOCK_CEILING_SECONDS` — this
+    ///   constructor is authoritative for the range check)
     /// * `lock_key` - Optional lock hotkey (A-Z), defaults to None (which becomes L)
     /// * `talk_key` - Optional talk hotkey (A-Z), defaults to None (which becomes T)
     pub fn new(
@@ -89,6 +91,22 @@ impl Config {
         }
         if let Some(key) = &talk_key {
             Self::validate_hotkey(key)?;
+        }
+
+        // Base interval must be in range when backoff is enabled — the
+        // constructor is authoritative (callers must not rely on the runtime
+        // clamp in resolve_auto_unlock_internal, which is a backstop only).
+        if auto_unlock_backoff
+            && !(crate::config::AUTO_UNLOCK_MIN_BASE_SECONDS
+                ..=crate::app_state::AUTO_UNLOCK_CEILING_SECONDS)
+                .contains(&auto_unlock_base)
+        {
+            anyhow::bail!(
+                "Invalid auto_unlock_base_interval '{}' (must be {}-{})",
+                auto_unlock_base,
+                crate::config::AUTO_UNLOCK_MIN_BASE_SECONDS,
+                crate::app_state::AUTO_UNLOCK_CEILING_SECONDS
+            );
         }
 
         // Validate that lock and talk keys are different
@@ -231,6 +249,26 @@ impl Config {
                 AUTO_UNLOCK_MODE_BACKOFF,
                 AUTO_UNLOCK_MODE_DISABLED
             );
+        }
+
+        // 3.5. Base interval must be in range when backoff is enabled
+        // (Finding 1: a hand-edited typo must fail loudly at load, not be
+        // silently clamped by the runtime resolver).
+        if config.auto_unlock_mode == AUTO_UNLOCK_MODE_BACKOFF {
+            if let Some(v) = config.auto_unlock_base_interval {
+                if !(crate::config::AUTO_UNLOCK_MIN_BASE_SECONDS
+                    ..=crate::app_state::AUTO_UNLOCK_CEILING_SECONDS)
+                    .contains(&v)
+                {
+                    anyhow::bail!(
+                        "Invalid auto_unlock_base_interval '{}' (must be {}-{}). \
+                         Run 'handsoff --setup' to reconfigure.",
+                        v,
+                        crate::config::AUTO_UNLOCK_MIN_BASE_SECONDS,
+                        crate::app_state::AUTO_UNLOCK_CEILING_SECONDS
+                    );
+                }
+            }
         }
 
         // 4. Validate hotkey format if provided
@@ -472,6 +510,73 @@ mod tests {
         assert!(result.is_err());
         let err = format!("{}", result.unwrap_err());
         assert!(err.contains("--setup"), "Error should direct to setup: {}", err);
+    }
+
+    #[test]
+    fn test_load_rejects_out_of_range_base_interval() {
+        // Finding 1: a hand-edited typo must fail loudly at config load with
+        // re-setup guidance, not be silently clamped by the runtime.
+        let path = temp_config_path();
+        let bad = r#"
+passphrase_hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+passphrase_format = "keycode-v1"
+auto_lock_timeout = 120
+auto_unlock_mode = "backoff"
+auto_unlock_base_interval = 36
+"#;
+        fs::write(&path, bad).expect("Failed to write config");
+
+        let result = Config::load_from_path(&path);
+        assert!(result.is_err(), "Out-of-range base interval must be rejected");
+        let err = format!("{}", result.unwrap_err());
+        assert!(
+            err.contains("auto_unlock_base_interval") && err.contains("--setup"),
+            "Error must name the field and direct to setup: {}",
+            err
+        );
+
+        // Above the ceiling is equally rejected.
+        let high = r#"
+passphrase_hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+passphrase_format = "keycode-v1"
+auto_lock_timeout = 120
+auto_unlock_mode = "backoff"
+auto_unlock_base_interval = 999999
+"#;
+        fs::write(&path, high).expect("Failed to write config");
+        assert!(
+            Config::load_from_path(&path).is_err(),
+            "Base interval above the ceiling must be rejected"
+        );
+
+        // In-range values still load fine (boundary: minimum itself).
+        let ok = r#"
+passphrase_hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+passphrase_format = "keycode-v1"
+auto_lock_timeout = 120
+auto_unlock_mode = "backoff"
+auto_unlock_base_interval = 60
+"#;
+        fs::write(&path, ok).expect("Failed to write config");
+        let loaded = Config::load_from_path(&path).expect("In-range base must load");
+        assert_eq!(loaded.auto_unlock_base_interval, Some(60));
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_config_new_rejects_out_of_range_base_interval() {
+        // Config::new is authoritative for the range (Finding 1): setup flows
+        // already validate interactively, but direct callers must not be able
+        // to persist a bad value.
+        assert!(Config::new(&[0, 12, 15, 37], 120, true, 0, None, None).is_err());
+        assert!(Config::new(&[0, 12, 15, 37], 120, true, 59, None, None).is_err());
+        assert!(Config::new(&[0, 12, 15, 37], 120, true, 999_999, None, None).is_err());
+        // Disabled mode stores no base interval — value irrelevant, no error.
+        assert!(Config::new(&[0, 12, 15, 37], 120, false, 0, None, None).is_ok());
+        // In-range boundaries are accepted.
+        assert!(Config::new(&[0, 12, 15, 37], 120, true, 60, None, None).is_ok());
+        assert!(Config::new(&[0, 12, 15, 37], 120, true, 86_400, None, None).is_ok());
     }
 
     #[test]

@@ -234,7 +234,7 @@ fn test_auto_unlock_does_not_fire_when_disabled() {
 }
 
 #[test]
-fn test_force_path_via_passphrase_unlock_resets_everything() {
+fn test_reset_resets_everything() {
     let state = AppState::new();
     enable_backoff(&state, 3600);
     state.set_locked(true);
@@ -246,7 +246,7 @@ fn test_force_path_via_passphrase_unlock_resets_everything() {
         inner.last_input_time = std::time::Instant::now() - Duration::from_secs(90000);
     }
 
-    state.complete_passphrase_unlock();
+    state.reset_all();
 
     assert!(!state.is_locked());
     assert_eq!(state.get_auto_unlock_interval_secs(), Some(3600));

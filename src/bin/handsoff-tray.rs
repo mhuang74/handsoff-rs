@@ -419,10 +419,10 @@ fn handle_reset(core: Rc<RefCell<HandsOffCore>>) {
     // Check if disabled - if so, enable instead of just restarting
     let is_disabled = core.state.is_disabled();
 
-    // Unlock if currently locked (state-based force unlock — S-2: no plaintext
+    // Unlock if currently locked (user-initiated recovery — S-2: no plaintext
     // verification under keycode passphrases; the operator is past the guard)
     if core.is_locked() {
-        core.force_unlock();
+        core.reset();
         info!("App state reset: unlocked successfully");
     }
 

@@ -222,15 +222,31 @@ impl AppState {
     ///
     /// Also resets `last_input_time` so auto-lock does not immediately
     /// re-engage right after unlock.
-    ///
-    /// Accepted second reset path (Q2, review decision): the tray Reset menu /
-    /// force-unlock (`HandsOffCore::force_unlock`) reuses this method and thus
-    /// also resets the schedule to base — treated as an intentional
-    /// owner-initiated reset, not a schedule violation.
     pub fn complete_passphrase_unlock(&self) {
         let mut state = self.inner.lock();
 
         log::info!("Passphrase accepted - input unlocked");
+
+        state.last_input_time = Instant::now();
+        state.is_locked = false;
+        state.lock_start_time = None;
+        state.input_buffer.clear();
+        state.last_key_time = None;
+
+        if let Some(unlock) = &mut state.auto_unlock {
+            unlock.window_index = 0;
+            unlock.stretch_start = Instant::now();
+        }
+    }
+
+    /// User-initiated Reset: clears locked state and restarts the schedule
+    /// from base. This is an intentional recovery action by the operator
+    /// (menu access = past the guard), not a passphrase authentication event
+    /// — logged as such.
+    pub fn reset_all(&self) {
+        let mut state = self.inner.lock();
+
+        log::info!("Reset: state cleared, backoff schedule restarted from base");
 
         state.last_input_time = Instant::now();
         state.is_locked = false;
@@ -584,7 +600,8 @@ mod tests {
         assert!(!state.is_locked());
 
         // Re-lock must keep the advanced position, not restart at base.
-        // set_locked re-anchors the clock but keeps window_index=1.
+        // set_locked keeps both the anchor and window_index; only unlock
+        // (passphrase auth or Reset) resets the schedule.
         state.set_locked(true);
         assert_eq!(state.get_auto_unlock_interval_secs(), Some(7200));
         assert!(!state.should_auto_unlock());
@@ -630,6 +647,37 @@ mod tests {
         assert!(state.buffer_len() == 0, "Buffer should be cleared");
         let inner = state.lock();
         assert!(inner.lock_start_time.is_none());
+    }
+
+    #[test]
+    fn test_reset_restarts_schedule_from_base() {
+        // Reset is a user-intended recovery action (menu access = past the
+        // guard): it clears locked state and restarts the schedule from base,
+        // without logging a passphrase authentication event.
+        let state = AppState::new();
+        enable_backoff(&state, AUTO_UNLOCK_BASE_SECONDS);
+        state.append_to_buffer(0);
+        state.set_locked(true);
+        {
+            let mut inner = state.lock();
+            let u = inner.auto_unlock.as_mut().unwrap();
+            u.stretch_start = Instant::now() - Duration::from_secs(40000);
+            u.window_index = 3; // 28800s interval, long past
+            inner.last_input_time = Instant::now() - Duration::from_secs(40000);
+        }
+        assert!(state.should_auto_unlock());
+
+        state.reset_all();
+
+        assert!(!state.is_locked());
+        assert_eq!(state.get_auto_unlock_interval_secs(), Some(AUTO_UNLOCK_BASE_SECONDS));
+        assert_eq!(state.buffer_len(), 0, "Buffer should be cleared");
+        assert_eq!(state.get_auto_unlock_remaining_secs(), None); // unlocked
+
+        // Re-lock: first window again at base.
+        state.set_locked(true);
+        assert_eq!(state.get_auto_unlock_interval_secs(), Some(AUTO_UNLOCK_BASE_SECONDS));
+        assert!(!state.should_auto_unlock());
     }
 
     #[test]
