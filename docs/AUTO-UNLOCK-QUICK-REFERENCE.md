@@ -7,13 +7,16 @@
 ## TL;DR
 
 ```bash
-# Enable with 30-second timeout (testing)
-HANDS_OFF_AUTO_UNLOCK=30 cargo run
+# Shortest useful base interval (testing) — first window after 60 s awake-time
+HANDS_OFF_AUTO_UNLOCK=60 cargo run -- --locked
 
-# Enable with 5-minute timeout (development)
+# 5-minute base interval (development)
 HANDS_OFF_AUTO_UNLOCK=300 ./handsoff
 
-# Disabled (default)
+# Explicitly disabled
+HANDS_OFF_AUTO_UNLOCK=0 ./handsoff
+
+# Unset (default): enabled with base interval 3600 s (60 min) from the config schema
 ./handsoff
 ```
 
@@ -21,15 +24,19 @@ HANDS_OFF_AUTO_UNLOCK=300 ./handsoff
 
 ## Configuration
 
+Auto-unlock is an **exponential backoff schedule** (per `specs/deep-design-review-v2-2026-09.md` §2), configured via the `HANDS_OFF_AUTO_UNLOCK` env var, `config.toml` (`auto_unlock_mode` + `auto_unlock_base_interval`), or defaults:
+
 | Setting | Value | Notes |
 |---------|-------|-------|
-| **Environment Variable** | `HANDS_OFF_AUTO_UNLOCK` | Must be set before app starts |
-| **Minimum Timeout** | 60 seconds | Below this = disabled with warning |
-| **Maximum Timeout** | 900 seconds (15 minutes) | Above this = disabled with warning |
-| **Default** | Disabled (unset or 0) | Feature is opt-in |
-| **Recommended for Testing** | 30-60 seconds | Quick iteration |
-| **Recommended for Development** | 300-600 seconds (5-10 min) | Safety net |
-| **Production** | DO NOT USE | Security risk |
+| **Environment Variable** | `HANDS_OFF_AUTO_UNLOCK` | Base interval override, in seconds |
+| **Minimum Base Interval** | 60 seconds | Below this = warning, env var ignored |
+| **Maximum Base Interval** | 86400 seconds (24 h) | Also the interval ceiling |
+| **Disabled** | `0` | Explicitly disables the failsafe |
+| **Default** | Enabled, base 3600 s (60 min) | Enabled by default (V2), not opt-in |
+| **Recommended for Testing** | 60 seconds | Minimum; quick iteration |
+| **Recommended for Development** | 300–3600 seconds | Safety net |
+
+In `config.toml`, auto-unlock is stored as a **mode** (`auto_unlock_mode: "backoff"` or `"disabled"`) plus a persisted base interval (`auto_unlock_base_interval`), not a scalar timeout (§2.7).
 
 ---
 
@@ -37,11 +44,13 @@ HANDS_OFF_AUTO_UNLOCK=300 ./handsoff
 
 | Action | Result |
 |--------|--------|
-| **Lock device** | Timer starts counting |
-| **Timeout expires** | Auto-unlock triggers |
-| **Manual unlock before timeout** | Timer resets, no auto-unlock |
-| **Lock again** | Timer starts fresh |
-| **Invalid config value** | Feature disabled with warning |
+| **Lock device (new locked stretch)** | Schedule anchored at the base interval |
+| **Base interval of awake-time elapses** | Window opens: input released silently, counter advances (next window doubles) |
+| **Passphrase unlock** | Schedule resets to the base interval (the ONLY reset besides tray Reset) |
+| **Auto-lock re-engagement** | Does NOT reset the schedule (§2.3 linchpin) |
+| **Window fires** | Does NOT reset the schedule; next window doubles |
+| **Invalid config value** | Env var ignored with warning; config file / default applies (never silently disabled) |
+| **System sleep** | Schedule counts awake-time only (`Instant` pauses, §2.4) |
 
 ---
 
@@ -49,31 +58,32 @@ HANDS_OFF_AUTO_UNLOCK=300 ./handsoff
 
 ### Startup (INFO)
 ```
-Auto-unlock safety feature enabled: 30 seconds
-Auto-unlock monitoring thread started
+Auto-unlock backoff enabled: first window at 3600s, doubling up to 86400s
+Auto-unlock backoff monitoring thread started
 ```
 
-### Lock/Unlock (DEBUG)
+### Locked Stretch (DEBUG)
 ```
-Lock engaged at Instant { ... }
-Lock disengaged
-```
-
-### Auto-Unlock Triggered (WARN)
-```
-Auto-unlock timeout expired - disabling input interception
-AUTO-UNLOCK TRIGGERED after 30 seconds
+Locked stretch started; auto-unlock window 0 opens after 3600s
 ```
 
-### Notification (INFO)
+### Window Fired (WARN + INFO)
 ```
-Auto-unlock notification delivered
+Auto-unlock window opened - releasing input (unauthenticated)
+AUTO-UNLOCK WINDOW FIRED after Ns awake-time
+Auto-unlock backoff advanced: next window opens after 7200s
+Input unlocked due to auto-unlock window
+```
+
+### Explicit Disable (INFO)
+```
+Auto-unlock disabled via HANDS_OFF_AUTO_UNLOCK=0
 ```
 
 ### Invalid Config (WARN)
 ```
-Invalid auto-unlock timeout: 5 (must be 60-900 or 0). Feature disabled.
-Failed to parse HANDS_OFF_AUTO_UNLOCK: invalid digit found in string. Feature disabled.
+Invalid auto-unlock base interval: 5 (must be 60-86400 or 0). Ignoring environment variable.
+Failed to parse HANDS_OFF_AUTO_UNLOCK: invalid digit found in string. Ignoring environment variable.
 ```
 
 ---
@@ -85,19 +95,19 @@ Failed to parse HANDS_OFF_AUTO_UNLOCK: invalid digit found in string. Feature di
 echo $HANDS_OFF_AUTO_UNLOCK
 
 # Run with logging
-RUST_LOG=info HANDS_OFF_AUTO_UNLOCK=30 cargo run
+RUST_LOG=info HANDS_OFF_AUTO_UNLOCK=60 cargo run -- --locked
 
 # Run with debug logging
-RUST_LOG=debug HANDS_OFF_AUTO_UNLOCK=30 cargo run
+RUST_LOG=debug HANDS_OFF_AUTO_UNLOCK=60 cargo run -- --locked
 
-# Test valid values
-HANDS_OFF_AUTO_UNLOCK=10 cargo run    # Minimum
-HANDS_OFF_AUTO_UNLOCK=3600 cargo run  # Maximum
+# Test boundary values
+HANDS_OFF_AUTO_UNLOCK=60 cargo run      # Minimum base interval
+HANDS_OFF_AUTO_UNLOCK=86400 cargo run   # Maximum
 
-# Test invalid values (should warn and disable)
-HANDS_OFF_AUTO_UNLOCK=5 cargo run     # Too low
-HANDS_OFF_AUTO_UNLOCK=5000 cargo run  # Too high
-HANDS_OFF_AUTO_UNLOCK=abc cargo run   # Invalid
+# Test invalid values (should warn and fall back to config/default)
+HANDS_OFF_AUTO_UNLOCK=30 cargo run      # Below minimum
+HANDS_OFF_AUTO_UNLOCK=90000 cargo run   # Above maximum
+HANDS_OFF_AUTO_UNLOCK=abc cargo run     # Unparseable
 
 # Explicitly disable
 HANDS_OFF_AUTO_UNLOCK=0 cargo run
@@ -111,44 +121,40 @@ cargo test -- --nocapture  # With output
 
 ## Notification
 
-When auto-unlock triggers, you'll see:
-
-**Title:** HandsOff Auto-Unlock Activated
-
-**Message:** Input interception disabled by safety timeout. You can use your computer normally.
-
-**Sound:** System default notification sound
+**None.** Auto-unlock is **silent by design** (V10): no notification is posted when a window opens. Check the menu bar icon and logs instead.
 
 ---
 
 ## Timing
 
-| Configured Timeout | Actual Unlock Time |
-|-------------------|-------------------|
-| 30 seconds | 30-40 seconds |
-| 60 seconds | 60-70 seconds |
-| 300 seconds | 300-310 seconds |
+Windows open at `base × 2^window_index` of **awake time** (capped at 86400 s). The monitoring thread polls every 10 s, so a window fires within 0–10 s after it opens.
 
-**Why?** The monitoring thread sleeps 10 seconds between checks for efficiency.
+| Base Interval | Window 1 | Window 2 | Window 3 | Window 4+ |
+|---------------|----------|----------|----------|-----------|
+| 60 s (min) | 60 s | 120 s | 240 s | doubles… |
+| 3600 s (default) | 60 min | 2 h | 4 h | doubles… |
+| 86400 s (max) | 24 h | 24 h (at ceiling) | 24 h | 24 h |
 
 ---
 
 ## File Locations
 
 ### Implementation
-- `src/app_state.rs` - State management (lines 28-31, 60-73, 129-169)
-- `src/main.rs` - Parsing and thread (lines 22-48, 188-211)
-- `src/ui/notifications.rs` - Notification (lines 74-111)
+- `src/config.rs` — `AutoUnlockConfig` enum (`Disabled` / `Backoff { base_interval_secs }`), env-var parsing (`parse_auto_unlock_config`), resolution precedence (`resolve_auto_unlock`)
+- `src/app_state.rs` — `AutoUnlockState` (`base_interval_secs`, `stretch_start`, `window_index`), `set_auto_unlock_config`, `should_auto_unlock`, `trigger_auto_unlock`, `complete_passphrase_unlock`
+- `src/lib.rs` — auto-unlock monitoring thread (10 s poll) and startup log line
+- `src/constants.rs` — `AUTO_UNLOCK_BASE_SECONDS`, `AUTO_UNLOCK_CEILING_SECONDS`, `AUTO_UNLOCK_CHECK_INTERVAL_SECS`
 
 ### Tests
-- `src/app_state.rs` - 9 unit tests (lines 178-361)
-- `src/main.rs` - 4 unit tests (lines 213-305)
+- `src/app_state.rs` — interval math, reset rules, window consumption, disable-clears-schedule
+- `src/config.rs` — env-var parsing, resolution precedence
 
 ### Documentation
-- `README.md` - User documentation
-- `specs/auto-unlock-safety-feature.md` - Detailed specification
-- `TESTING-AUTO-UNLOCK.md` - Manual testing guide
-- `docs/AUTO-UNLOCK-QUICK-REFERENCE.md` - This file
+- `README.md` — user documentation
+- `DEVELOPER.md` — "Auto-Unlock Safety Feature" section
+- `specs/auto-unlock-safety-feature.md` — detailed specification
+- `docs/TESTING-AUTO-UNLOCK.md` — manual testing guide
+- `docs/AUTO-UNLOCK-QUICK-REFERENCE.md` — this file
 
 ---
 
@@ -156,54 +162,56 @@ When auto-unlock triggers, you'll see:
 
 | Problem | Solution |
 |---------|----------|
-| **Feature not enabling** | Check env var: `echo $HANDS_OFF_AUTO_UNLOCK` |
+| **Feature disabled unexpectedly** | Check env var (`echo $HANDS_OFF_AUTO_UNLOCK`) and config `auto_unlock_mode` |
 | **No log messages** | Run with logging: `RUST_LOG=info ./handsoff` |
-| **Auto-unlock not triggering** | Verify device is locked (menu bar icon shows 🔒) |
-| **Notification not showing** | Check System Settings > Notifications > HandsOff |
-| **Timer seems wrong** | Normal - triggers within 10s of timeout |
+| **Auto-unlock not triggering** | Verify device is locked (menu bar icon shows 🔒); check awake-time vs wall-clock |
+| **No notification on unlock** | Expected — auto-unlock is silent (V10) |
+| **Timer seems wrong** | Expected — fires within 10 s of the window opening; awake-time pauses during sleep |
 
 ---
 
-## Security Checklist
+## Security Notes
 
-✅ **Safe to use:**
-- During development
-- For personal testing
-- On your own device
-- With timeouts ≥ 5 minutes
+✅ **Reasonable:**
+- As a lockout failsafe during development
+- On your own device, with the default 60-min base
+- Knowing the doubling schedule limits repeated unauthenticated unlocks
 
-❌ **DO NOT use:**
-- In production environments
-- On shared/public computers
-- With timeouts < 60 seconds (for real use)
-- When security is critical
+❌ **Understand the risk:**
+- An attacker who knows the feature exists could wait for a window
+- A window stays open while input keeps arriving (auto-lock's idle window) — an at-keyboard masher can hold a window open within the first base-interval stretch (§2.2 accepted consequence)
+- Not suitable for public/shared computers
 
 ---
 
 ## Code Snippets
 
-### Check if auto-unlock is configured
+### Configure auto-unlock (runtime)
 ```rust
-let state = AppState::new();
-state.set_auto_unlock_timeout(Some(30));
+use handsoff::config::AutoUnlockConfig;
 
+// Enabled with a base interval
+state.set_auto_unlock_config(AutoUnlockConfig::Backoff {
+    base_interval_secs: std::num::NonZeroU64::new(60).unwrap(),
+});
+
+// Disabled
+state.set_auto_unlock_config(AutoUnlockConfig::Disabled);
+```
+
+### Resolve from env + config (precedence: env > config > default)
+```rust
+let config = handsoff::config::resolve_auto_unlock(
+    Some(cfg.auto_unlock_backoff_enabled()),
+    cfg.auto_unlock_base_interval,
+);
+```
+
+### Window fire (monitoring thread)
+```rust
 if state.should_auto_unlock() {
-    // Timeout has expired
+    state.trigger_auto_unlock(); // consumes the window: counter advances, no schedule reset
 }
-```
-
-### Parse environment variable
-```rust
-let timeout = parse_auto_unlock_timeout();
-match timeout {
-    Some(seconds) => info!("Enabled: {} seconds", seconds),
-    None => info!("Disabled"),
-}
-```
-
-### Trigger auto-unlock manually
-```rust
-state.trigger_auto_unlock();
 ```
 
 ---
@@ -212,13 +220,12 @@ state.trigger_auto_unlock();
 
 ### Quick Smoke Test
 ```bash
-# 1. Enable with 15-second timeout
-HANDS_OFF_AUTO_UNLOCK=15 cargo run
+# 1. Start locked with the minimum base interval
+HANDS_OFF_AUTO_UNLOCK=60 cargo run -- --locked
 
-# 2. Lock device (Ctrl+Cmd+Shift+L)
-# 3. Wait 15-25 seconds
-# 4. Verify notification appears
-# 5. Verify input is unlocked
+# 2. Wait ~60-70 s of awake time (10 s poll)
+# 3. Verify NO notification, menu bar icon flips to unlocked, input works
+# 4. Check logs for the WARN window-fired lines
 ```
 
 ### Full Test Suite
@@ -227,7 +234,7 @@ HANDS_OFF_AUTO_UNLOCK=15 cargo run
 cargo test
 
 # Run manual tests
-# See TESTING-AUTO-UNLOCK.md for 17 test scenarios
+# See docs/TESTING-AUTO-UNLOCK.md for 17 test scenarios
 ```
 
 ---
@@ -253,7 +260,7 @@ To make the configuration permanent:
     <key>EnvironmentVariables</key>
     <dict>
         <key>HANDS_OFF_AUTO_UNLOCK</key>
-        <string>300</string>  <!-- 5 minutes -->
+        <string>3600</string>  <!-- 60-minute base interval -->
     </dict>
 
     <key>RunAtLoad</key>
@@ -274,35 +281,36 @@ launchctl load ~/Library/LaunchAgents/com.handsoff.plist
 
 ## FAQ
 
-**Q: Why isn't the timeout exactly as configured?**
-A: The monitoring thread sleeps 10 seconds between checks. Auto-unlock will trigger within 0-10 seconds after the configured timeout.
+**Q: Why isn't the timing exactly as configured?**
+A: The monitoring thread sleeps 10 seconds between checks. A window fires within 0–10 seconds after it opens.
 
-**Q: Can I change the timeout while the app is running?**
+**Q: Can I change the base interval while the app is running?**
 A: No, you must restart the app with the new environment variable value.
 
 **Q: Does auto-unlock work if my Mac goes to sleep?**
-A: Yes, the timer continues counting based on elapsed time, not CPU time.
+A: The schedule counts awake-time only — sleep pauses it. A locked-then-slept machine unlocks later than wall-clock predicts (§2.4).
 
 **Q: What happens if I lock/unlock/lock quickly?**
-A: Each lock starts the timer fresh. The timeout only applies to the current lock session.
+A: A passphrase unlock resets the schedule to the base interval. Auto-lock re-engagements do NOT reset it — the counter is keyed to the whole locked stretch, so repeated windows keep doubling (§2.3).
 
 **Q: Is this secure?**
-A: It's a **safety feature**, not a security feature. Use it for development/testing only.
+A: It's a **safety feature**, not a security feature — it deliberately trades some security for availability (spec §5).
 
-**Q: Can I disable it after it's been configured?**
-A: Yes, unset the environment variable or set it to 0, then restart the app.
+**Q: Can I disable it?**
+A: Yes: `HANDS_OFF_AUTO_UNLOCK=0` or `auto_unlock_mode = "disabled"` in config.toml, then restart the app.
 
 ---
 
 ## Related Documentation
 
 - **Full Specification:** `specs/auto-unlock-safety-feature.md`
+- **Design Review:** `specs/deep-design-review-v2-2026-09.md` (§2 — backoff model)
 - **User Guide:** `README.md` (Auto-Unlock Safety Feature section)
-- **Manual Testing:** `TESTING-AUTO-UNLOCK.md`
-- **Code Documentation:** See inline comments in source files
+- **Manual Testing:** `docs/TESTING-AUTO-UNLOCK.md`
+- **Developer Guide:** `DEVELOPER.md` ("Auto-Unlock Safety Feature")
 
 ---
 
-**Last Updated:** October 28, 2025
-**Version:** 1.0
-**Status:** Production Ready
+**Last Updated:** 2026-10
+**Version:** 2.0 (backoff model)
+**Status:** Matches current implementation

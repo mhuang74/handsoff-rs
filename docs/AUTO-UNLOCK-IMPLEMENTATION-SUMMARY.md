@@ -1,5 +1,7 @@
 # Auto-Unlock Safety Feature - Implementation Summary
 
+> **HISTORICAL:** describes the pre-keycode-v1 single-timeout auto-unlock design, replaced by the exponential-backoff schedule (see `DEVELOPER.md` "Auto-Unlock Safety Feature"). Kept for reference only.
+
 **Date:** October 28, 2025
 **Status:** ✅ COMPLETE
 **Version:** 1.0

@@ -10,66 +10,25 @@ HandsOff blocks ALL keyboard and mouse input when locked. **If you get locked ou
 
 ### Strategy 1: Emergency Unlock Mechanisms (RECOMMENDED)
 
-#### 1.1 Development Mode with Timeout Auto-Unlock
-**Add a development flag that auto-unlocks after a short period**
+#### 1.1 Short Auto-Unlock Window (RECOMMENDED FIRST LINE OF DEFENSE)
+**Run with a 60-second auto-unlock base interval — no code changes needed**
 
-```rust
-// In src/app_state.rs
-pub struct AppStateInner {
-    // ... existing fields
-    pub dev_mode: bool,
-    pub dev_unlock_timeout: u64, // seconds
-}
+The auto-unlock backoff schedule is enabled by default. Setting `HANDS_OFF_AUTO_UNLOCK=60` opens the first window after 60 s of awake time (60 is the minimum; `0` disables, values outside 60–86400 are rejected with a warning):
 
-impl AppState {
-    pub fn new() -> Self {
-        Self {
-            inner: Arc::new(Mutex::new(AppStateInner {
-                // ... existing fields
-                dev_mode: std::env::var("HANDSOFF_DEV_MODE").is_ok(),
-                dev_unlock_timeout: 10, // Auto-unlock after 10 seconds in dev mode
-            })),
-        }
-    }
-}
-
-// In main.rs auto-lock thread
-fn start_dev_unlock_thread(state: Arc<AppState>) {
-    thread::spawn(move || loop {
-        thread::sleep(Duration::from_secs(1));
-
-        if state.lock().dev_mode && state.is_locked() {
-            let locked_duration = state.lock().lock_start_time
-                .map(|t| t.elapsed().as_secs())
-                .unwrap_or(0);
-
-            if locked_duration >= state.lock().dev_unlock_timeout {
-                info!("DEV MODE: Auto-unlocking after {} seconds", locked_duration);
-                state.set_locked(false);
-                ui::menubar::update_menu_bar_icon(false);
-            }
-        }
-    });
-}
-```
-
-**Usage**:
 ```bash
-# Run in development mode with 10-second auto-unlock
-HANDSOFF_DEV_MODE=1 cargo run
-
-# Or set a custom timeout
-HANDSOFF_DEV_UNLOCK_SECS=5 cargo run
+# First window opens after 60 s of awake time; input is released silently
+HANDS_OFF_AUTO_UNLOCK=60 cargo run -- --locked
 ```
+
+Note the backoff rule: after a window fires, the next window doubles (120 s, 240 s, …). Re-locking does NOT reset the schedule — only a successful passphrase unlock does. For repeated quick testing, kill and restart the process between runs, or rely on SSH (1.2).
 
 **Pros**:
-- Simple to implement
+- No code changes, works in any build
 - Guaranteed escape mechanism
-- No external dependencies
 
 **Cons**:
-- Can't test long lock scenarios
-- Must remember to enable flag
+- Backoff doubles after each fired window (restart the process for repeated tests)
+- Must remember to set the env var
 
 ---
 
@@ -124,7 +83,8 @@ sudo launchctl load -w /System/Library/LaunchDaemons/com.apple.screensharing.pli
 **Add a secret emergency unlock key combo that always works**
 
 ```rust
-// In src/input_blocking/mod.rs
+// Hypothetical sketch (NOT implemented — there is no emergency unlock combo
+// in the current code); shown to convey the idea only.
 const EMERGENCY_UNLOCK_KEYCODE: i64 = 53; // Escape key
 
 fn handle_keyboard_event(
@@ -145,7 +105,9 @@ fn handle_keyboard_event(
         warn!("EMERGENCY UNLOCK TRIGGERED");
         state.set_locked(false);
         state.clear_buffer();
-        crate::ui::menubar::update_menu_bar_icon(false);
+        // (hypothetical — illustrative only; src/ui/menubar.rs no longer exists;
+        // the tray app updates its own icon in src/bin/handsoff-tray.rs)
+        // crate::ui::menubar::update_menu_bar_icon(false);
         return false; // Allow the event through to show it worked
     }
 
@@ -223,105 +185,43 @@ sudo dscl . -passwd /Users/handsofftest testpassword
 
 ### Strategy 3: Incremental Testing
 
-#### 3.1 Test with Event Logging Only (No Blocking)
+#### 3.1 Lock, Verify Blocking, Unlock (Full Production Path)
 
-**Disable actual blocking, just log what would be blocked**
+There is no dry-run or partial-blocking mode in the code — blocking is all-or-nothing once locked. The safe incremental path is timing, not code:
 
-```rust
-// Add to AppStateInner
-pub struct AppStateInner {
-    // ... existing fields
-    pub dry_run: bool, // Log only, don't actually block
-}
-
-// In event_tap_callback
-unsafe extern "C" fn event_tap_callback(
-    _proxy: CGEventTapRef,
-    event_type: u32,
-    event: CGEventRef,
-    user_info: *mut c_void,
-) -> CGEventRef {
-    let state = &*(user_info as *const Arc<AppState>);
-
-    if !state.is_locked() {
-        state.update_input_time();
-        return event;
-    }
-
-    // ... existing logic to determine should_block
-
-    if should_block {
-        if state.lock().dry_run {
-            info!("DRY RUN: Would block event type {}", event_type);
-            return event; // Allow through in dry run mode
-        }
-        std::ptr::null_mut() // Actually block in production
-    } else {
-        event
-    }
-}
-```
-
-**Usage**:
 ```bash
-HANDSOFF_DRY_RUN=1 cargo run
+# Shortest auto-unlock base interval (60 s awake-time)
+HANDS_OFF_AUTO_UNLOCK=60 cargo run -- --locked
 ```
+
+1. Lock via hotkey (Ctrl+Cmd+Shift+L)
+2. Verify keyboard AND mouse are blocked (they block together)
+3. Type your passphrase to unlock
+4. Repeat as needed
 
 **Pros**:
-- Zero risk of lockout
-- Can test all logic paths
-- Good for development
+- Exercises the exact production code path
+- Zero code changes
 
 **Cons**:
-- Doesn't test actual blocking
-- Different code path than production
+- Real blocking on the first run — have SSH ready (1.2)
 
 ---
 
-#### 3.2 Block Only Mouse, Not Keyboard
+#### 3.2 Bound the Blast Radius with Short Auto-Lock
 
-**Test blocking incrementally**
+If a window is accidentally left unlocked, auto-lock re-engages after idle time. Use the 20 s minimum instead of the 120 s default:
 
-```rust
-// Environment variable to control what gets blocked
-let block_keyboard = std::env::var("BLOCK_KEYBOARD").is_ok();
-let block_mouse = std::env::var("BLOCK_MOUSE").is_ok();
-
-// In event_tap_callback
-match event_type {
-    t if t == CGEventType::KeyDown as u32 || t == CGEventType::KeyUp as u32 => {
-        if !block_keyboard {
-            info!("Keyboard blocking disabled, passing through");
-            return event;
-        }
-        handle_keyboard_event(&cg_event, event_type_enum, state)
-    }
-    t if t == CGEventType::MouseMoved as u32 || ... => {
-        if !block_mouse {
-            info!("Mouse blocking disabled, passing through");
-            return event;
-        }
-        handle_mouse_event(event_type_enum, state)
-    }
-}
-```
-
-**Usage**:
 ```bash
-# Test mouse blocking only (keyboard still works!)
-BLOCK_MOUSE=1 cargo run
-
-# Test both (full production mode)
-BLOCK_KEYBOARD=1 BLOCK_MOUSE=1 cargo run
+HANDS_OFF_AUTO_LOCK=20 cargo run -- --locked
 ```
 
 **Pros**:
-- Can test mouse blocking safely
-- Gradual risk increase
-- Keyboard always available for unlock
+- Unattended machine re-locks quickly
+- Composable with the auto-unlock override
 
 **Cons**:
-- Still need recovery for full testing
+- Frequent re-locking can interrupt testing
 
 ---
 
@@ -332,7 +232,8 @@ BLOCK_KEYBOARD=1 BLOCK_MOUSE=1 cargo run
 **Create a separate process that kills HandsOff if it doesn't receive heartbeat**
 
 ```rust
-// watchdog.rs (separate binary)
+// Hypothetical sketch (NOT implemented — no watchdog binary exists); shown
+// to convey the idea only.
 use std::process::Command;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -363,7 +264,8 @@ fn main() {
 ```
 
 ```rust
-// In main.rs - send heartbeats
+// Illustrative sketch (no src/main.rs anymore — runtime lives in
+// src/lib.rs + src/bin/*.rs); shown to convey the watchdog heartbeat idea.
 fn start_watchdog_heartbeat() {
     thread::spawn(|| loop {
         thread::sleep(Duration::from_secs(5));
@@ -396,40 +298,32 @@ cargo run
 ## Recommended Development Workflow
 
 ### Phase 1: Safe Development (Week 1-2)
-1. **Enable Development Mode** with 10-second auto-unlock
-2. **Set up SSH** from another device (phone, laptop)
-3. **Test in dry-run mode** first
-4. **Add emergency unlock combo** (Ctrl+Cmd+Opt+Shift+Esc)
+1. **Set up SSH** from another device (phone, laptop) — your escape route
+2. **Run with a short auto-unlock window** (`HANDS_OFF_AUTO_UNLOCK=60`)
+3. **Run `cargo test`** (inline `#[cfg(test)]` modules; no input blocked)
 
 ```bash
-# Always run with safety flags during development
-HANDSOFF_DEV_MODE=1 HANDSOFF_DRY_RUN=1 cargo run
+# Always run with a safety window during development
+HANDS_OFF_AUTO_UNLOCK=60 cargo run -- --locked
 ```
 
 ### Phase 2: Incremental Risk (Week 3)
-1. **Test mouse blocking only** (keyboard passthrough)
-2. **Test keyboard blocking only** (mouse passthrough)
-3. **Test full blocking** with SSH session ready
+1. **Test the lock → block → unlock cycle** with SSH ready
+2. **Bound the blast radius** with the shortest auto-lock (`HANDS_OFF_AUTO_LOCK=20`)
+3. **Test auto-unlock window firing** (wait out the 60 s awake-time)
 
 ```bash
-# Test mouse first
-HANDSOFF_DEV_MODE=1 BLOCK_MOUSE=1 cargo run
-
-# Then keyboard
-HANDSOFF_DEV_MODE=1 BLOCK_KEYBOARD=1 cargo run
-
-# Then both with 10s auto-unlock
-HANDSOFF_DEV_MODE=1 BLOCK_KEYBOARD=1 BLOCK_MOUSE=1 cargo run
+HANDS_OFF_AUTO_UNLOCK=60 HANDS_OFF_AUTO_LOCK=20 cargo run -- --locked
 ```
 
 ### Phase 3: Production Testing (Week 4)
 1. **Test in VM** or secondary account
 2. **Test with watchdog** process
-3. **Test without dev mode** but with SSH ready
+3. **Test with defaults** (120 s auto-lock, 60 min auto-unlock base) but with SSH ready
 
 ### Phase 4: Release
-1. **Disable all development flags** in release builds
-2. **Keep emergency unlock** as documented feature
+1. **Test with default timing** (no env overrides) before tagging a release
+2. **Keep the auto-unlock failsafe enabled** in release builds (it is by default)
 3. **Add warning in README** about lockout risks
 
 ---
@@ -440,49 +334,30 @@ HANDSOFF_DEV_MODE=1 BLOCK_KEYBOARD=1 BLOCK_MOUSE=1 cargo run
 
 #### 1. Passphrase Hashing and Verification ✅
 ```rust
-// tests/auth_tests.rs
+// Inline #[cfg(test)] module in src/utils/mod.rs (actual tests exist there)
 #[cfg(test)]
 mod tests {
-    use handsoff::auth;
+    use super::*;
 
     #[test]
-    fn test_hash_passphrase() {
-        let passphrase = "test123";
-        let hash = auth::hash_passphrase(passphrase);
-        assert_eq!(hash.len(), 64); // SHA-256 hex is 64 chars
-        assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
+    fn test_hash_keycodes_deterministic() {
+        let keycodes: Vec<u32> = vec![0, 1, 2, 3];
+        let h1 = hash_keycodes(&keycodes);
+        let h2 = hash_keycodes(&keycodes);
+        assert_eq!(h1, h2);
+        assert_eq!(h1.len(), 64); // SHA-256 hex is 64 chars
+        assert!(h1.chars().all(|c| c.is_ascii_hexdigit()));
     }
 
     #[test]
-    fn test_verify_passphrase_correct() {
-        let passphrase = "correct_password";
-        let hash = auth::hash_passphrase(passphrase);
-        assert!(auth::verify_passphrase(passphrase, &hash));
-    }
-
-    #[test]
-    fn test_verify_passphrase_incorrect() {
-        let passphrase = "correct_password";
-        let hash = auth::hash_passphrase(passphrase);
-        assert!(!auth::verify_passphrase("wrong_password", &hash));
-    }
-
-    #[test]
-    fn test_hash_deterministic() {
-        let passphrase = "same_input";
-        let hash1 = auth::hash_passphrase(passphrase);
-        let hash2 = auth::hash_passphrase(passphrase);
-        assert_eq!(hash1, hash2);
-    }
-
-    #[test]
-    fn test_hash_different_inputs() {
-        let hash1 = auth::hash_passphrase("input1");
-        let hash2 = auth::hash_passphrase("input2");
-        assert_ne!(hash1, hash2);
+    fn test_hash_keycodes_order_sensitive() {
+        // Keycode sequences are ordered: [0,1] and [1,0] hash differently
+        assert_ne!(hash_keycodes(&[0, 1]), hash_keycodes(&[1, 0]));
     }
 }
 ```
+
+(See `src/utils/mod.rs` for the real test list — hashing is over the keycode sequence, `keycode-v1` format, not over plaintext characters.)
 
 #### 2. Keycode to Character Conversion ✅
 ```rust
@@ -638,50 +513,35 @@ mod tests {
 }
 ```
 
-#### 4. Keychain Integration ✅
+#### 4. Config File Persistence ✅
 ```rust
-// tests/keychain_tests.rs
+// Inline #[cfg(test)] module in src/config_file.rs (actual tests exist there)
 #[cfg(test)]
 mod tests {
-    use handsoff::auth::keychain;
+    use super::*;
 
     #[test]
-    fn test_store_and_retrieve_passphrase() {
-        let hash = "test_hash_12345";
-        keychain::store_passphrase_hash(hash).unwrap();
-        let retrieved = keychain::retrieve_passphrase_hash().unwrap();
-        assert_eq!(retrieved, Some(hash.to_string()));
+    fn test_save_and_load_roundtrip() {
+        let config = Config::new(&[0, 1, 2, 3], 120, true, 3600, None, None).unwrap();
+        let path = std::env::temp_dir().join("handsoff-test-config.toml");
+        config.save_to_path(&path).unwrap();
+
+        let loaded = Config::load_from_path(&path).unwrap();
+        assert_eq!(loaded.passphrase_hash, config.passphrase_hash);
+        assert_eq!(loaded.auto_lock_timeout, 120);
+
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
-    fn test_retrieve_nonexistent() {
-        // Delete any existing entry first
-        let _ = keychain::store_passphrase_hash("");
-        // Implementation should handle missing entry gracefully
-    }
-
-    #[test]
-    fn test_update_passphrase() {
-        let hash1 = "first_hash";
-        let hash2 = "second_hash";
-
-        keychain::store_passphrase_hash(hash1).unwrap();
-        let retrieved1 = keychain::retrieve_passphrase_hash().unwrap();
-        assert_eq!(retrieved1, Some(hash1.to_string()));
-
-        keychain::store_passphrase_hash(hash2).unwrap();
-        let retrieved2 = keychain::retrieve_passphrase_hash().unwrap();
-        assert_eq!(retrieved2, Some(hash2.to_string()));
-    }
-
-    #[test]
-    fn test_auto_lock_timeout_storage() {
-        keychain::store_auto_lock_timeout(300).unwrap();
-        let retrieved = keychain::retrieve_auto_lock_timeout().unwrap();
-        assert_eq!(retrieved, Some(300));
+    fn test_legacy_config_rejected() {
+        // A config with a non-keycode-v1 passphrase_format must fail to load
+        // and force re-setup (never silently trust an unverifiable passphrase)
     }
 }
 ```
+
+(The real module covers round-trip, permission bits, legacy-format rejection, and base-interval range checks — see `src/config_file.rs`.)
 
 #### 5. Hotkey Configuration Parsing ✅
 ```rust
@@ -723,11 +583,6 @@ mod tests {
 - Needs actual UI rendering
 - Must test manually
 
-#### ❌ Touch ID Authentication
-- Requires hardware (Touch ID sensor)
-- Needs user fingerprint enrollment
-- System framework with side effects
-
 #### ❌ Notification Display
 - Requires notification center
 - Visual verification needed
@@ -743,26 +598,24 @@ mod tests {
 ## Integration Testing Approach
 
 ```rust
-// tests/integration_test.rs
+// Integration tests that spawn the real app must run on macOS with
+// Accessibility permissions granted, and should always give the process an
+// auto-unlock escape route:
 #[test]
 #[ignore] // Run manually with: cargo test -- --ignored
 fn integration_test_with_safety() {
-    // Set up safe test environment
-    std::env::set_var("HANDSOFF_DEV_MODE", "1");
-    std::env::set_var("HANDSOFF_DRY_RUN", "1");
+    // Shortest auto-unlock base interval as the escape route
+    std::env::set_var("HANDS_OFF_AUTO_UNLOCK", "60");
 
-    // Start app in background thread
+    // Start app in background thread (starts locked via --locked semantics)
     let handle = std::thread::spawn(|| {
-        handsoff::main().unwrap();
+        // handsoff runtime start
     });
 
-    // Wait for startup
-    std::thread::sleep(Duration::from_secs(2));
-
-    // Run tests...
+    // Wait for startup, exercise lock/unlock...
 
     // Cleanup
-    // (watchdog will kill after timeout)
+    // (auto-unlock window opens after 60 s awake-time as the failsafe)
 }
 ```
 
@@ -772,9 +625,8 @@ fn integration_test_with_safety() {
 
 ### If You Get Locked Out
 
-#### Option 1: Wait for Auto-Unlock (Dev Mode)
-- Dev mode auto-unlocks after 10 seconds
-- Just wait it out
+#### Option 1: Wait for Auto-Unlock (if enabled)
+- Run with `HANDS_OFF_AUTO_UNLOCK=60`: input is released after 60 s of awake time (silently, no notification)
 
 #### Option 2: SSH Kill
 ```bash
@@ -786,20 +638,15 @@ pkill handsoff
 #### Option 3: Force Restart
 - Hold power button for 10 seconds
 - Mac will force restart
-- Last resort only
-
-#### Option 4: Emergency Unlock Combo
-- Press Ctrl+Cmd+Opt+Shift+Esc simultaneously
-- Only works if implemented
+- Last resort only (the app relaunches unlocked — accepted bypass, §2.5)
 
 ---
 
 ## Checklist Before Each Development Session
 
 - [ ] SSH enabled and tested from another device
-- [ ] Dev mode enabled (`HANDSOFF_DEV_MODE=1`)
+- [ ] Auto-unlock window set short (`HANDS_OFF_AUTO_UNLOCK=60`)
 - [ ] Know the passphrase (write it down!)
-- [ ] Emergency unlock combo memorized
 - [ ] Another terminal/computer ready to kill process
 - [ ] Changes committed to git (in case of force restart)
 - [ ] Testing plan written down (know what to test)
@@ -812,11 +659,9 @@ pkill handsoff
 For release builds, include these safety features:
 
 1. **First-run tutorial** explaining lockout risks
-2. **Confirm passphrase dialog** (type twice)
-3. **Passphrase hint storage** (optional, in keychain)
-4. **Emergency unlock option** (documented, disabled by default)
-5. **Auto-unlock after 24 hours** (configurable, disabled by default)
-6. **Warning before enabling** (checkbox: "I understand the risks")
+2. **Confirm passphrase dialog** (setup already requires typing the sequence twice)
+3. **Auto-unlock backoff schedule** (enabled by default: first window at the base interval, doubling up to 24 h; only a successful passphrase unlock resets it)
+4. **Warning before enabling** (checkbox: "I understand the risks")
 
 ---
 

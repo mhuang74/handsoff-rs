@@ -132,6 +132,8 @@
 
 ## [0.1.0] - 2025-10-22
 
+> Note: features listed below reflect the 0.1.0 architecture (Keychain storage, Touch ID, 3-minute auto-lock). Storage moved to config.toml with keycode-v1 passphrase hashes and auto-lock default 120 s in later releases; Touch ID was removed.
+
 ### Initial Release
 
 #### Features
