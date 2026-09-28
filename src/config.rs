@@ -291,7 +291,6 @@ mod tests {
     #[test]
     fn test_parse_auto_unlock_zero_disables() {
         let _env = env_lock();
-        let _env = env_lock();
         env::set_var("HANDS_OFF_AUTO_UNLOCK", "0");
         assert_eq!(
             parse_auto_unlock_config(),
