@@ -8,7 +8,7 @@
 //! - Rejects Escape, Backspace, and the configured lock/talk hotkey combos as
 //!   passphrase members. Minimum 4 keys.
 
-use crate::constants::BACKSPACE_KEYCODE;
+use crate::constants::{BACKSPACE_KEYCODE, DEFAULT_LOCK_KEYCODE, DEFAULT_TALK_KEYCODE};
 use crate::utils::MIN_PASSPHRASE_KEYS;
 use anyhow::{anyhow, Result};
 
@@ -151,8 +151,10 @@ pub fn capture_passphrase(
     let _ = std::io::stdout().flush();
 
     // ---- throwaway tap (mirrors event_tap.rs FFI; see R-4 for consolidation) ----
+    use core_foundation::base::TCFType;
     use core_foundation::runloop::{kCFRunLoopDefaultMode, CFRunLoop};
     use core_graphics::event::{CGEventFlags, EventField};
+    use foreign_types::ForeignType;
     use std::ffi::c_void;
 
     type TapRef = *mut c_void;
@@ -246,7 +248,11 @@ pub fn capture_passphrase(
 
         // Reserved keys (hotkey members) are rejected with feedback; other
         // unrenderable keys (function/arrow/etc) are silently ignored.
-        match reject_reason(keycode, LOCK_HOTKEY_KEYCODE.load(), TALK_HOTKEY_KEYCODE.load()) {
+        match reject_reason(
+            keycode,
+            LOCK_HOTKEY_KEYCODE.load(std::sync::atomic::Ordering::Relaxed),
+            TALK_HOTKEY_KEYCODE.load(std::sync::atomic::Ordering::Relaxed),
+        ) {
             Some(RejectedKey::Hotkey) => {
                 drop(st);
                 print!(" [reserved] ");
