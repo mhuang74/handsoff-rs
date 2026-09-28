@@ -166,7 +166,7 @@ src/
 │   └── hotkeys.rs          # Global hotkey handling
 ├── utils/                  # Utility modules
 │   ├── mod.rs              # SHA-256 hashing utilities
-│   └── keycode.rs          # Keycode to character mapping
+│   └── keycode.rs          # Hotkey Code→macOS keycode mapping
 ├── config.rs               # Environment variable parsing (optional overrides)
 ├── constants.rs            # Tunable constants (auto-lock/auto-unlock bounds, poll intervals, buffer timeout)
 ├── setup.rs                # Keycode-sequence capture for --setup (event tap)
@@ -191,7 +191,7 @@ The application stores a SHA-256 hash of the passphrase's **physical keycode seq
 
 - **Keycode-sequence capture**: setup uses a temporary event tap (interactive console sessions only — refused over SSH)
 - **Layout-independent**: no char decoding in the unlock path; raw keycodes are hashed and compared
-- **Reserved keys rejected**: Escape, Backspace, and the effective hotkey keys cannot be passphrase members; minimum 4 keys. Setup prompts for hotkeys before capture, and the reserved set follows the runtime's precedence (env var > chosen hotkeys > defaults, R3), so capture always matches what the runtime will register
+- **Reserved keys**: capture rejects Escape, Backspace, Enter/keypad-Enter, and the effective hotkey keys (env var > chosen hotkeys > defaults, R3) as passphrase members; minimum 4 keys. Setup prompts for hotkeys before capture. The unlock path blocks only Enter/keypad-Enter (its control keys) and intercepts Ctrl+Cmd+Shift combos — hotkey last-keys are deliberately NOT rejected on the unlock path, so reserved-set drift between setup and runtime (e.g. tray ignoring env) can never make a captured passphrase un-typeable
 - **No plaintext**: only the SHA-256 hex hash is stored; Reset is an explicit user recovery action that clears lock state and restarts the backoff schedule (logged as `Reset: state cleared…`, distinct from passphrase auth), so no plaintext is ever retained
 
 ### Implementation Details
@@ -203,7 +203,8 @@ The application stores a SHA-256 hash of the passphrase's **physical keycode seq
 
 **File:** `src/setup.rs`
 
-- `capture_passphrase()` installs a throwaway `CGEventTap` during `--setup`, runs a nested CFRunLoop, blocks captured keys from reaching apps, tears down the tap before returning
+- `capture_passphrase()` installs a throwaway `CGEventTap` during `--setup`, runs a nested CFRunLoop, blocks captured keys from reaching apps, tears down the tap before returning. Enter commits, Backspace deletes, Escape restarts, Ctrl+C aborts
+- Setup captures the passphrase twice and compares silently (double-capture confirm) — the passphrase is never displayed in cleartext
 
 **File:** `src/config_file.rs`
 

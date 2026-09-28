@@ -96,17 +96,18 @@ pub fn handle_keyboard_event(event: &CGEvent, event_type: CGEventType, state: &A
         return true;
     }
 
-    // Passphrase membership: any keycode not in the §3 rejection set
-    // (Escape/Backspace/Enter/Enter-keypad handled above or reserved; hotkey
-    // last-keys reserved). Keys the US-QWERTY map cannot render (F-keys,
-    // keypad, arrows) ARE recorded — the character map is display-only (§3)
-    // and MUST NOT gate membership.
-    if crate::setup::is_rejected_keycode(
-        keycode,
-        state_guard.lock_keycode,
-        state_guard.talk_keycode,
-    ) {
-        return true; // reserved keys never join the passphrase buffer
+    // Passphrase membership: only Enter/keypad-Enter are blocked outright —
+    // they are control keys of the unlock flow and can never be passphrase
+    // members (capture never records them). Escape/Backspace are control
+    // keys handled above. Hotkey last-keys are deliberately NOT rejected
+    // here: the capture reserved set and the runtime's registered hotkeys
+    // can drift (env set in one process but not the other; tray ignores env
+    // entirely), and a bare hotkey-key press is unambiguous — only its
+    // Ctrl+Cmd+Shift combo is intercepted above. Keys the US-QWERTY map
+    // cannot render (F-keys, keypad, arrows) ARE recorded — the character
+    // map is display-only (§3) and MUST NOT gate membership.
+    if crate::setup::is_unlock_blocked_keycode(keycode) {
+        return true; // control keys never join the passphrase buffer
     }
 
     state_guard.input_buffer.push(keycode as u32);

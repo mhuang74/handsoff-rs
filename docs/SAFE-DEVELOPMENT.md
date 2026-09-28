@@ -359,53 +359,8 @@ mod tests {
 
 (See `src/utils/mod.rs` for the real test list — hashing is over the keycode sequence, `keycode-v1` format, not over plaintext characters.)
 
-#### 2. Keycode to Character Conversion ✅
-```rust
-// tests/keycode_tests.rs
-#[cfg(test)]
-mod tests {
-    use handsoff::utils::keycode::keycode_to_char;
-
-    #[test]
-    fn test_letter_keys_no_shift() {
-        assert_eq!(keycode_to_char(0, false), Some('a'));
-        assert_eq!(keycode_to_char(1, false), Some('s'));
-        assert_eq!(keycode_to_char(2, false), Some('d'));
-    }
-
-    #[test]
-    fn test_letter_keys_with_shift() {
-        assert_eq!(keycode_to_char(0, true), Some('A'));
-        assert_eq!(keycode_to_char(1, true), Some('S'));
-        assert_eq!(keycode_to_char(2, true), Some('D'));
-    }
-
-    #[test]
-    fn test_number_keys_no_shift() {
-        assert_eq!(keycode_to_char(18, false), Some('1'));
-        assert_eq!(keycode_to_char(19, false), Some('2'));
-        assert_eq!(keycode_to_char(20, false), Some('3'));
-    }
-
-    #[test]
-    fn test_number_keys_with_shift() {
-        assert_eq!(keycode_to_char(18, true), Some('!'));
-        assert_eq!(keycode_to_char(19, true), Some('@'));
-        assert_eq!(keycode_to_char(20, true), Some('#'));
-    }
-
-    #[test]
-    fn test_special_keys() {
-        assert_eq!(keycode_to_char(49, false), Some(' ')); // Space
-        assert_eq!(keycode_to_char(51, false), None); // Delete (no char)
-    }
-
-    #[test]
-    fn test_invalid_keycode() {
-        assert_eq!(keycode_to_char(9999, false), None);
-    }
-}
-```
+#### 2. Keycode to Character Conversion
+**Removed** — the character-decode map (`keycode_to_char`) was deleted when setup switched to double-capture confirm (passphrases are never displayed). Passphrase membership is keycode-set based (`is_rejected_keycode` for capture, `is_unlock_blocked_keycode` for unlock); no char decoding exists anywhere.
 
 #### 3. AppState Logic ✅
 ```rust

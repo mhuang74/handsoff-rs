@@ -13,7 +13,6 @@ cargo test
 ```bash
 cargo test --test auth_tests
 cargo test --test app_state_tests
-cargo test --test keycode_tests
 ```
 
 ### Run specific test
@@ -50,13 +49,6 @@ cargo test -- --test-threads=4
 - Thread safety
 - Talk key state
 
-#### Keycode Conversion (`keycode_tests.rs`)
-- Letter key mapping (a-z, A-Z)
-- Number key mapping (0-9, !@#$%^&*())
-- Punctuation and special characters
-- Shift key modifiers
-- Invalid keycode handling
-
 ### ⚠️ Integration Tests (Require special setup)
 
 Integration tests that interact with system APIs are marked with `#[ignore]` and must be run explicitly:
@@ -86,8 +78,7 @@ The following must be tested manually (see `docs/SAFE-DEVELOPMENT.md`):
 tests/
 ├── README.md           # This file
 ├── auth_tests.rs       # Authentication and cryptography tests
-├── app_state_tests.rs  # Application state management tests
-└── keycode_tests.rs    # Keycode to character conversion tests
+└── app_state_tests.rs  # Application state management tests
 ```
 
 ## Adding New Tests
