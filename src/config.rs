@@ -268,6 +268,19 @@ pub fn chosen_hotkey_keycodes(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{LazyLock, Mutex, MutexGuard};
+
+    /// Serialize tests that mutate process environment variables: libtest
+    /// runs tests on parallel threads, and env vars are process-global, so
+    /// concurrent set_var/remove_var races can flake (e.g. an invalid-value
+    /// test observing the value another test just set).
+    static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+    fn env_lock() -> MutexGuard<'static, ()> {
+        // A poisoned lock only means a previous env test panicked; the env
+        // mutations themselves are harmless, so proceed past poisoning.
+        ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner())
+    }
 
     fn backoff(secs: u64) -> AutoUnlockConfig {
         AutoUnlockConfig::Backoff {
@@ -277,6 +290,8 @@ mod tests {
 
     #[test]
     fn test_parse_auto_unlock_zero_disables() {
+        let _env = env_lock();
+        let _env = env_lock();
         env::set_var("HANDS_OFF_AUTO_UNLOCK", "0");
         assert_eq!(
             parse_auto_unlock_config(),
@@ -288,6 +303,7 @@ mod tests {
 
     #[test]
     fn test_parse_auto_unlock_valid_base_intervals() {
+        let _env = env_lock();
         env::set_var("HANDS_OFF_AUTO_UNLOCK", "60");
         assert_eq!(parse_auto_unlock_config(), Some(backoff(60)));
 
@@ -302,6 +318,7 @@ mod tests {
 
     #[test]
     fn test_parse_auto_unlock_invalid_values() {
+        let _env = env_lock();
         env::remove_var("HANDS_OFF_AUTO_UNLOCK");
 
         // Below minimum base
@@ -323,6 +340,7 @@ mod tests {
 
     #[test]
     fn test_parse_auto_unlock_not_set() {
+        let _env = env_lock();
         env::remove_var("HANDS_OFF_AUTO_UNLOCK");
         assert_eq!(
             parse_auto_unlock_config(),
@@ -333,6 +351,7 @@ mod tests {
 
     #[test]
     fn test_parse_auto_lock_valid_values() {
+        let _env = env_lock();
         env::set_var("HANDS_OFF_AUTO_LOCK", "20");
         assert_eq!(parse_auto_lock_timeout(), Some(20));
 
@@ -344,6 +363,7 @@ mod tests {
 
     #[test]
     fn test_parse_auto_lock_invalid_values() {
+        let _env = env_lock();
         env::remove_var("HANDS_OFF_AUTO_LOCK");
 
         env::set_var("HANDS_OFF_AUTO_LOCK", "10");
@@ -360,6 +380,7 @@ mod tests {
 
     #[test]
     fn test_resolve_env_var_overrides_config() {
+        let _env = env_lock();
         // Env base interval overrides a disabled config
         assert_eq!(
             resolve_auto_unlock_internal(Some(backoff(300)), Some(false), Some(7200)),
@@ -374,6 +395,7 @@ mod tests {
 
     #[test]
     fn test_resolve_env_zero_disables_even_when_config_enabled() {
+        let _env = env_lock();
         assert_eq!(
             resolve_auto_unlock_internal(Some(AutoUnlockConfig::Disabled), Some(true), Some(7200)),
             AutoUnlockConfig::Disabled
@@ -412,6 +434,7 @@ mod tests {
 
     #[test]
     fn test_resolve_env_overrides_all_config_values() {
+        let _env = env_lock();
         for config_enabled in [Some(true), Some(false), None] {
             assert_eq!(
                 resolve_auto_unlock_internal(Some(backoff(7200)), config_enabled, Some(300)),
