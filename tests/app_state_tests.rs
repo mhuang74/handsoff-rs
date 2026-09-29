@@ -201,6 +201,60 @@ fn test_backoff_full_stretch_progression() {
 }
 
 #[test]
+fn test_window_fire_reanchors_next_interval_from_fire_time() {
+    // §2.1 cumulative timeline: window N>0 opens interval(N) after window
+    // N-1 OPENED (trigger_auto_unlock re-anchors at fire time), and a
+    // re-lock after the fire must NOT move that anchor. Fails on pre-fix
+    // code, where set_locked re-anchored on every unlocked→locked
+    // transition (measuring from the re-lock instead).
+    let state = AppState::new();
+    enable_backoff(&state, 3600);
+    state.set_locked(true);
+
+    // Window 0 (base interval) — backdate past 3600s; unattended.
+    {
+        let mut inner = state.lock();
+        inner.auto_unlock.as_mut().unwrap().stretch_start =
+            std::time::Instant::now() - Duration::from_secs(3601);
+        inner.last_input_time = std::time::Instant::now() - Duration::from_secs(3601);
+    }
+    assert!(state.should_auto_unlock(), "Window 0 should be open");
+
+    // Fire window 0, then simulate auto-lock re-engagement.
+    state.trigger_auto_unlock();
+
+    // Anchor set at fire time (window 0's opening).
+    let anchor = state.lock().auto_unlock.as_ref().unwrap().stretch_start;
+
+    state.set_locked(true);
+
+    // The fire-time anchor must survive the re-lock: the next window opens
+    // interval(1) after window 0 OPENED, not after the re-lock.
+    assert_eq!(
+        state.lock().auto_unlock.as_ref().unwrap().stretch_start,
+        anchor,
+        "re-lock after a fired window must not re-anchor the schedule"
+    );
+
+    // Window 1 (7200s from window 0's opening): just under — not open.
+    {
+        let mut inner = state.lock();
+        inner.auto_unlock.as_mut().unwrap().stretch_start =
+            anchor - Duration::from_secs(7199);
+    }
+    assert!(!state.should_auto_unlock());
+
+    // Fully backdated past interval(1) from the fire-time anchor — open.
+    {
+        let mut inner = state.lock();
+        inner.auto_unlock.as_mut().unwrap().stretch_start =
+            anchor - Duration::from_secs(7201);
+        inner.last_input_time = std::time::Instant::now() - Duration::from_secs(7201);
+    }
+    assert!(state.should_auto_unlock());
+}
+
+#[test]
 fn test_relock_does_not_reanchor_stretch() {
     // R1: locked → locked re-engagements (e.g. auto-lock re-firing during a
     // window) must NOT re-anchor the schedule — the counter is keyed to the

@@ -145,7 +145,7 @@ All intervals count **awake time** (`Instant` pauses during sleep).
 5. Observe the interval
 
 **Expected Results:**
-- After the first window fires and auto-lock re-engages, the next window opens after **120 s** of awake time in the (continuous) locked stretch — doubled, not reset
+- After the first window fires and auto-lock re-engages, the next window opens **120 s** after the first window OPENED — doubled, not reset (a re-lock never moves the schedule; the gap between consecutive windows doubles)
 - Each subsequent window doubles again (240 s, 480 s, …)
 - Log shows: `Auto-unlock backoff advanced: next window opens after 120s` after each fire
 

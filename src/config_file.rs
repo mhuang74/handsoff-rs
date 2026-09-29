@@ -8,7 +8,10 @@
 //! - Passphrases are stored as SHA-256 hashes over raw keycodes (`keycode-v1`).
 //! - Auto-unlock is a backoff mode (`backoff` | `disabled`), not a scalar.
 
-use crate::constants::{CONFIG_FILE_PERMISSIONS, CONFIG_PERMISSION_MASK_GROUP_OTHER};
+use crate::constants::{
+    AUTO_LOCK_MAX_SECONDS, AUTO_LOCK_MIN_SECONDS, CONFIG_FILE_PERMISSIONS,
+    CONFIG_PERMISSION_MASK_GROUP_OTHER,
+};
 use crate::utils::{hash_keycodes, KEYCODE_SEQUENCE_FORMAT};
 use anyhow::{anyhow, Context, Result};
 use global_hotkey::hotkey::Code;
@@ -102,6 +105,18 @@ impl Config {
         }
         if let Some(key) = &talk_key {
             Self::validate_hotkey(key)?;
+        }
+
+        // Auto-lock timeout must be in range — a value of 0 re-locks within
+        // one poll interval of every unlock (near-permanent self-lockout),
+        // and an over-max value silently disables auto-lock.
+        if !(AUTO_LOCK_MIN_SECONDS..=AUTO_LOCK_MAX_SECONDS).contains(&auto_lock) {
+            anyhow::bail!(
+                "Invalid auto_lock_timeout '{}' (must be {}-{})",
+                auto_lock,
+                AUTO_LOCK_MIN_SECONDS,
+                AUTO_LOCK_MAX_SECONDS
+            );
         }
 
         // Base interval must be in range when backoff is enabled — the
@@ -320,6 +335,19 @@ impl Config {
                     lock
                 );
             }
+        }
+
+        // 6. Auto-lock timeout must be in range (Finding: a hand-edited typo
+        // of 0 re-locks within one poll interval of every unlock; an
+        // over-max value silently disables auto-lock).
+        if !(AUTO_LOCK_MIN_SECONDS..=AUTO_LOCK_MAX_SECONDS).contains(&config.auto_lock_timeout) {
+            anyhow::bail!(
+                "Invalid auto_lock_timeout '{}' (must be {}-{}). \
+                 Run 'handsoff --setup' to reconfigure.",
+                config.auto_lock_timeout,
+                AUTO_LOCK_MIN_SECONDS,
+                AUTO_LOCK_MAX_SECONDS
+            );
         }
 
         Ok(config)
@@ -860,5 +888,44 @@ talk_hotkey = "l"
         assert!(Config::load_from_path(&path).is_err());
 
         let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_auto_lock_timeout_range_in_new() {
+        // Out of range (0 = near-permanent self-lockout; below min; above max)
+        for bad in [0u64, 19, 601] {
+            let result = Config::new(&[0, 12, 15, 37], bad, true, 3600, None, None);
+            assert!(result.is_err(), "auto_lock_timeout={} must be rejected", bad);
+        }
+        // In range (inclusive bounds)
+        for good in [20u64, 600] {
+            let result = Config::new(&[0, 12, 15, 37], good, true, 3600, None, None);
+            assert!(result.is_ok(), "auto_lock_timeout={} must be accepted", good);
+        }
+    }
+
+    #[test]
+    fn test_invalid_auto_lock_in_loaded_config() {
+        for bad in [0u64, 19, 601, 100_000] {
+            let path = temp_config_path();
+            let bad_toml = format!(
+                r#"
+passphrase_hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+auto_lock_timeout = {}
+auto_unlock_mode = "backoff"
+"#,
+                bad
+            );
+            fs::write(&path, &bad_toml).expect("Failed to write config");
+
+            let result = Config::load_from_path(&path);
+            assert!(
+                result.is_err(),
+                "auto_lock_timeout={} must fail loudly at load",
+                bad
+            );
+
+            let _ = fs::remove_file(&path);
+        }
     }
 }

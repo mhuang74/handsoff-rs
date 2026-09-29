@@ -392,7 +392,14 @@ pub struct SetupOutcome {
 }
 
 /// Prompt for a number with a default value (empty input → default).
-fn prompt_number(print: &mut dyn FnMut(&str), prompt: &str, default: u64) -> Result<u64> {
+/// I/O errors propagate; unparseable input returns `Ok(None)` so callers can
+/// decide whether a typo aborts the flow or re-prompts (parse failures must
+/// never destroy a completed passphrase capture).
+fn prompt_number(
+    print: &mut dyn FnMut(&str),
+    prompt: &str,
+    default: u64,
+) -> std::io::Result<Option<u64>> {
     print(prompt);
     use std::io::Write as _;
     let _ = std::io::stdout().flush();
@@ -402,11 +409,42 @@ fn prompt_number(print: &mut dyn FnMut(&str), prompt: &str, default: u64) -> Res
     let input = input.trim();
 
     if input.is_empty() {
-        Ok(default)
+        Ok(Some(default))
     } else {
-        input
-            .parse::<u64>()
-            .map_err(|_| anyhow!("Invalid number: {}", input))
+        Ok(input.parse::<u64>().ok())
+    }
+}
+
+/// Prompt for a number within `min..=max` (empty input → default).
+/// `allow_zero` admits 0 as a valid answer (auto-unlock's "disabled").
+/// Parse and range failures re-prompt, counting toward a 3-strike bail
+/// — a single typo must never discard a completed passphrase capture.
+fn prompt_bounded_number(
+    print: &mut dyn FnMut(&str),
+    prompt: &str,
+    default: u64,
+    min: u64,
+    max: u64,
+    allow_zero: bool,
+) -> Result<u64> {
+    let range_msg = if allow_zero {
+        format!("Error: value must be {}-{} seconds (or 0 to disable)", min, max)
+    } else {
+        format!("Error: Auto-lock timeout must be {}-{} seconds", min, max)
+    };
+
+    let mut invalid_attempts = 0u32;
+    loop {
+        match prompt_number(print, prompt, default)? {
+            None => print("Error: not a number — enter a number or press Enter for the default."),
+            Some(0) if allow_zero => return Ok(0),
+            Some(v) if (min..=max).contains(&v) => return Ok(v),
+            _ => print(&range_msg),
+        }
+        invalid_attempts += 1;
+        if invalid_attempts >= 3 {
+            anyhow::bail!("Too many invalid entries. Re-run setup to try again.");
+        }
     }
 }
 
@@ -437,8 +475,9 @@ fn prompt_hotkey(print: &mut dyn FnMut(&str), prompt: &str) -> Result<Option<Str
 /// reserved set (env override > chosen hotkeys > defaults, R3) → auto-lock →
 /// auto-unlock
 /// (0 = disabled, else bounded to
-/// `AUTO_UNLOCK_MIN_BASE_SECONDS..=AUTO_UNLOCK_CEILING_SECONDS`; invalid
-/// entries re-prompt, bailing after 3 consecutive invalid attempts).
+/// `AUTO_UNLOCK_MIN_BASE_SECONDS..=AUTO_UNLOCK_CEILING_SECONDS`; both timeout
+/// prompts re-prompt on parse and range errors, bailing after 3 consecutive
+/// invalid attempts so a single typo never discards a completed capture).
 pub fn run_interactive_setup(print: &mut dyn FnMut(&str)) -> Result<SetupOutcome> {
     print("HandsOff Setup");
     print("==============");
@@ -500,7 +539,14 @@ pub fn run_interactive_setup(print: &mut dyn FnMut(&str)) -> Result<SetupOutcome
     print("Timeout Configuration");
     print("---------------------");
     print("");
-    let auto_lock = prompt_number(print, "Auto-lock timeout in seconds (default: 120): ", 120)?;
+    let auto_lock = prompt_bounded_number(
+        print,
+        "Auto-lock timeout in seconds (default: 120): ",
+        120,
+        crate::constants::AUTO_LOCK_MIN_SECONDS,
+        crate::constants::AUTO_LOCK_MAX_SECONDS,
+        false,
+    )?;
 
     print("Auto-unlock backoff is enabled by default:");
     print(&format!(
@@ -510,40 +556,24 @@ pub fn run_interactive_setup(print: &mut dyn FnMut(&str)) -> Result<SetupOutcome
     print("  then doubling (2 h, 4 h, 8 h…) capped at 24 h.");
     print("  Only a successful passphrase unlock resets the schedule.");
 
-    let mut invalid_attempts = 0u32;
-    let auto_unlock = loop {
-        let input = prompt_number(
-            print,
-            &format!(
-                "Auto-unlock base interval in seconds (0=disabled, default: {}): ",
-                crate::app_state::AUTO_UNLOCK_BASE_SECONDS
-            ),
-            crate::app_state::AUTO_UNLOCK_BASE_SECONDS,
-        )?;
-
-        if input == 0 {
-            print("Auto-unlock disabled.");
-            break crate::config::AutoUnlockConfig::Disabled;
-        }
-
-        if (crate::config::AUTO_UNLOCK_MIN_BASE_SECONDS
-            ..=crate::app_state::AUTO_UNLOCK_CEILING_SECONDS)
-            .contains(&input)
-        {
-            break crate::config::AutoUnlockConfig::Backoff {
-                base_interval_secs: std::num::NonZeroU64::new(input)
-                    .expect("interval validated above minimum"),
-            };
-        }
-
-        print(&format!(
-            "Error: Auto-unlock base interval must be {}-{} seconds (or 0 to disable)",
-            crate::config::AUTO_UNLOCK_MIN_BASE_SECONDS,
-            crate::app_state::AUTO_UNLOCK_CEILING_SECONDS
-        ));
-        invalid_attempts += 1;
-        if invalid_attempts >= 3 {
-            anyhow::bail!("Too many invalid entries. Re-run setup to try again.");
+    let base_interval = prompt_bounded_number(
+        print,
+        &format!(
+            "Auto-unlock base interval in seconds (0=disabled, default: {}): ",
+            crate::app_state::AUTO_UNLOCK_BASE_SECONDS
+        ),
+        crate::app_state::AUTO_UNLOCK_BASE_SECONDS,
+        crate::config::AUTO_UNLOCK_MIN_BASE_SECONDS,
+        crate::app_state::AUTO_UNLOCK_CEILING_SECONDS,
+        true,
+    )?;
+    let auto_unlock = if base_interval == 0 {
+        print("Auto-unlock disabled.");
+        crate::config::AutoUnlockConfig::Disabled
+    } else {
+        crate::config::AutoUnlockConfig::Backoff {
+            base_interval_secs: std::num::NonZeroU64::new(base_interval)
+                .expect("interval validated above minimum"),
         }
     };
 
