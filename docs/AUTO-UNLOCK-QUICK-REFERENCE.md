@@ -127,9 +127,11 @@ cargo test -- --nocapture  # With output
 
 ## Timing
 
-Windows open at `base × 2^window_index` of **awake time** (capped at 86400 s). The monitoring thread polls every 10 s, so a window fires within 0–10 s after it opens.
+Windows open at **cumulative awake times**: window 0 opens `base` after lock; window N opens `interval(N)` after window N−1 **opened** — independent of when auto-lock re-engages between windows (a re-lock never moves the schedule). The monitoring thread polls every 10 s, so a window fires within 0–10 s after it opens.
 
-| Base Interval | Window 1 | Window 2 | Window 3 | Window 4+ |
+The table lists the **gaps between consecutive windows**, not elapsed times. With base 3600 s the cumulative open times are t = 60 min, 180 min (3 h), 420 min (7 h), 900 min (15 h)…
+
+| Base Interval | Gap to Window 1 | Gap to Window 2 | Gap to Window 3 | Gap to Window 4+ |
 |---------------|----------|----------|----------|-----------|
 | 60 s (min) | 60 s | 120 s | 240 s | doubles… |
 | 3600 s (default) | 60 min | 2 h | 4 h | doubles… |

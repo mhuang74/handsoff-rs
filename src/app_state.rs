@@ -131,16 +131,17 @@ impl AppState {
             // Record when lock was engaged
             state.lock_start_time = Some(Instant::now());
 
-            // Anchor the window clock only on the unlocked → locked transition.
-            // Re-locking inside a stretch keeps the anchor untouched: auto-lock
-            // re-engagements do not reset the counter (§2.3 — only a
-            // successful passphrase unlock resets it), so the doubling
-            // continues across re-locks within a stretch. This also prevents
-            // an already-open window from instantly re-unlocking a freshly
-            // locked machine, and keeps each interval a gap between
-            // consecutive unlock opportunities (§2.1 cumulative timeline).
+            // Anchor the window clock only on a genuinely fresh locked
+            // stretch (window_index == 0: first lock, or a passphrase
+            // unlock / Reset that reset the counter). Re-locking inside a
+            // stretch keeps the anchor untouched (§2.3 — only a successful
+            // passphrase unlock resets the counter). After a fired window
+            // (window_index > 0) the anchor set by trigger_auto_unlock
+            // stands, so re-locks never move the schedule (§2.3) and each
+            // next window lands on the §2.1 cumulative timeline regardless
+            // of re-lock timing.
             if let Some(unlock) = &mut state.auto_unlock {
-                if !was_locked {
+                if !was_locked && unlock.window_index == 0 {
                     unlock.stretch_start = Instant::now();
                     log::debug!(
                         "Locked stretch started; auto-unlock window {} opens after {}s",
@@ -148,7 +149,8 @@ impl AppState {
                         Self::auto_unlock_interval_secs(unlock.base_interval_secs, unlock.window_index),
                     );
                 }
-                // locked → locked: leave stretch_start untouched (§2.3)
+                // locked → locked, or window already fired: leave
+                // stretch_start untouched
             }
             log::debug!("Lock engaged at {:?}", state.lock_start_time);
         } else {
@@ -183,9 +185,12 @@ impl AppState {
     }
 
     /// Interval in seconds of the auto-unlock window at `index`:
-    /// `base * 2^index` capped at the ceiling (§2.1). Each window is a gap
-    /// measured from the previous window/lock, so cumulative open times
-    /// reproduce the spec timeline t=60m, 180m, 420m, 900m… for base=60m.
+    /// `base * 2^index` capped at the ceiling (§2.1). Window 0 is measured
+    /// from the locked-stretch anchor (lock time); window N>0 is measured
+    /// from window N−1's OPENING (set by `trigger_auto_unlock` at fire
+    /// time), so cumulative open times reproduce the §2.1 timeline
+    /// t=60m, 180m, 420m, 900m… for base=60m regardless of when auto-lock
+    /// re-engages between windows.
     pub fn auto_unlock_interval_secs(base_secs: u64, window_index: u32) -> u64 {
         let doubled = base_secs
             .saturating_mul(1u64 << window_index.min(u32::from(u64::BITS - 1) as u32));
@@ -281,6 +286,11 @@ impl AppState {
             // Consume the window: double the interval for the next stretch.
             if let Some(unlock) = &mut state.auto_unlock {
                 unlock.window_index = unlock.window_index.saturating_add(1);
+                // Anchor the next interval at THIS window's opening (§2.1
+                // cumulative timeline): window N>0 opens interval(N) after
+                // window N-1 opened, independent of when auto-lock re-engages
+                // or how long the window stays open.
+                unlock.stretch_start = Instant::now();
                 log::info!(
                     "Auto-unlock backoff advanced: next window opens after {}s",
                     Self::auto_unlock_interval_secs(unlock.base_interval_secs, unlock.window_index)
