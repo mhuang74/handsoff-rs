@@ -223,8 +223,15 @@ fn test_window_fire_reanchors_next_interval_from_fire_time() {
     // Fire window 0, then simulate auto-lock re-engagement.
     state.trigger_auto_unlock();
 
-    // Anchor set at fire time (window 0's opening).
+    // Anchor set at fire time (window 0's opening): fresh, not the backdated
+    // pre-fire value (pins the trigger_auto_unlock re-anchor; without it the
+    // stale backdated anchor would carry through and this test would still
+    // pass).
     let anchor = state.lock().auto_unlock.as_ref().unwrap().stretch_start;
+    assert!(
+        anchor.elapsed() < Duration::from_secs(1),
+        "trigger_auto_unlock must re-anchor stretch_start at fire time"
+    );
 
     state.set_locked(true);
 
