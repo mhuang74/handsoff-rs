@@ -360,22 +360,26 @@ impl AppState {
         }
     }
 
-    pub fn should_auto_lock(&self) -> bool {
-        let state = self.inner.lock();
-        // Idle = the most recent of ANY input activity. Mouse moves no longer flow
-        // through our tap, so the system-wide CGEventSource idle clock is
-        // authoritative for them; the tap-maintained last_input_time covers
-        // everything else (keyboard, clicks, drags, scroll) — and, critically,
-        // is reset by trigger_auto_unlock so the post-unlock window stays open
-        // for the full auto-lock timeout. Take the minimum of both clocks: a
-        // fresh value from either source defers the lock.
-        let cg_idle_secs = crate::input_blocking::event_tap::seconds_since_last_input();
-        let idle_secs = match cg_idle_secs {
-            Some(cg) => cg.min(state.last_input_time.elapsed().as_secs() as f64),
+    /// Idle seconds = the most recent of ANY input activity. Mouse moves no
+    /// longer flow through our tap, so the system-wide CGEventSource idle clock
+    /// is authoritative for them; the tap-maintained `last_input_time` covers
+    /// everything else (keyboard, clicks, drags, scroll) — and, critically, is
+    /// reset by `trigger_auto_unlock` so the post-unlock window stays open for
+    /// the full auto-lock timeout. Take the minimum of both clocks: a fresh
+    /// value from either source defers the lock. Callers pass the elapsed
+    /// `last_input_time` (they already hold the state lock).
+    fn current_idle_secs(last_input_elapsed_secs: f64) -> f64 {
+        match crate::input_blocking::event_tap::seconds_since_last_input() {
+            Some(cg) => cg.min(last_input_elapsed_secs),
             // API unavailable (CI/test environments, query failure): fall back
             // to the tap-maintained clock alone.
-            None => state.last_input_time.elapsed().as_secs() as f64,
-        };
+            None => last_input_elapsed_secs,
+        }
+    }
+
+    pub fn should_auto_lock(&self) -> bool {
+        let state = self.inner.lock();
+        let idle_secs = Self::current_idle_secs(state.last_input_time.elapsed().as_secs() as f64);
         // Only auto-lock if: not locked, timeout exceeded, AND permissions are available
         // This prevents auto-lock from triggering when permissions are lost
         !state.is_locked
@@ -388,8 +392,12 @@ impl AppState {
         if state.is_locked {
             return None;
         }
-        let elapsed = state.last_input_time.elapsed().as_secs();
-        Some(state.auto_lock_timeout.saturating_sub(elapsed))
+        let idle_secs = Self::current_idle_secs(state.last_input_time.elapsed().as_secs() as f64);
+        Some(
+            state
+                .auto_lock_timeout
+                .saturating_sub(idle_secs.ceil() as u64),
+        )
     }
 
     pub fn set_talk_key_pressed(&self, pressed: bool) {

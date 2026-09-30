@@ -16,7 +16,7 @@ A macOS utility that prevents accidental or unsolicited input from keyboard, tra
 
 - **Complete Input Blocking**: Blocks all keyboard, trackpad, and mouse inputs while keeping the screen visible
 - **Secure Unlocking**: Unlock via a physical-key passphrase (works on any keyboard layout)
-- **Auto-Lock**: Automatically locks after 120 seconds of inactivity (configurable)
+- **Auto-Lock**: Automatically locks after 180 seconds of inactivity (configurable)
 - **Smart Buffer Reset**: 3-second input buffer reset to handle accidental input (or press Escape to clear immediately)
 - **Configurable Hotkeys**: Customize the last key while keeping `Cmd+Ctrl+Shift` modifiers
   - `Ctrl+Cmd+Shift+L` (default): Enable lock
@@ -216,7 +216,7 @@ When locked, all keyboard/mouse/trackpad input is blocked (except for Talk/Unmut
 
 ### Auto-Lock
 
-The app automatically locks after 120 seconds of no input activity. You can configure this timeout. See [Configuration](#configuration).
+The app automatically locks after 180 seconds of no input activity. You can configure this timeout. See [Configuration](#configuration).
 
 ### Talk Hotkey
 

@@ -94,20 +94,24 @@ extern "C" {
     fn CGEventTapIsEnabled(tap: CGEventTapRef) -> bool;
 }
 
-/// Query the system-wide idle time since the last input event of any kind
-/// (keyboard, mouse move, click, drag, scroll), regardless of whether this
-/// process receives that event via its tap.
-///
-/// Arguments:
-/// - `state_id = 0`: `kCGEventSourceStateCombinedSessionState` (all event sources).
-/// - `event_type = u64::MAX`: `kCGAnyInputEventType` (any input event type).
+// Query the system-wide idle time since the last input event of any kind
+// (keyboard, mouse move, click, drag, scroll), regardless of whether this
+// process receives that event via its tap.
+//
+// Arguments:
+// - `state_id = 0`: `kCGEventSourceStateCombinedSessionState` (all event sources).
+// - `event_type = u64::MAX`: `kCGAnyInputEventType` (any input event type).
 #[link(name = "CoreGraphics", kind = "framework")]
 extern "C" {
     fn CGEventSourceSecondsSinceLastEventType(state_id: u32, event_type: u64) -> f64;
 }
 
-/// Seconds since the last input event of any kind in the session, or `None`
-/// if the API reports a negative value (unsupported / failed query).
+/// Seconds since the last input event of any kind in the session (keyboard,
+/// mouse move, click, drag, scroll), or `None` if the API reports a negative
+/// value (unsupported / failed query).
+///
+/// Uses `state_id = 0` (`kCGEventSourceStateCombinedSessionState`, all event
+/// sources) and `event_type = u64::MAX` (`kCGAnyInputEventType`).
 pub fn seconds_since_last_input() -> Option<f64> {
     const K_CG_EVENT_SOURCE_STATE_COMBINED_SESSION_STATE: u32 = 0;
     const K_CG_ANY_INPUT_EVENT_TYPE: u64 = u64::MAX;
