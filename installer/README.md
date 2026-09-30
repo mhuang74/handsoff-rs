@@ -92,7 +92,7 @@ make pkg
    - Secret passphrase (typing hidden)
    - Lock hotkey (default: L for Cmd+Ctrl+Shift+L)
    - Talk hotkey (default: T for Cmd+Ctrl+Shift+T)
-   - Auto-lock timeout (default: 120s)
+   - Auto-lock timeout (default: 180s)
    - Auto-unlock timeout (default: 0s/disabled)
 6. **HandsOff starts** automatically and appears in menu bar
 7. **At next login**, HandsOff starts automatically

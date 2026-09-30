@@ -7,8 +7,8 @@ use core_graphics::sys::{CGEventRef, CGEventTapRef};
 use foreign_types::ForeignType;
 use log::{error, info, warn};
 use std::ffi::c_void;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::Arc;
 
 /// Counts total CGEventTap handles created since process start.
 /// Compared with TAPS_DESTROYED to detect accumulation across sleep/wake cycles.
@@ -54,7 +54,10 @@ pub fn log_mach_port_count(context: &str) {
             );
         }
         Err(e) => {
-            warn!("[telemetry] {} — could not run lsof for Mach port count: {}", context, e);
+            warn!(
+                "[telemetry] {} — could not run lsof for Mach port count: {}",
+                context, e
+            );
         }
     }
 }
@@ -91,6 +94,37 @@ extern "C" {
     fn CGEventTapIsEnabled(tap: CGEventTapRef) -> bool;
 }
 
+/// Query the system-wide idle time since the last input event of any kind
+/// (keyboard, mouse move, click, drag, scroll), regardless of whether this
+/// process receives that event via its tap.
+///
+/// Arguments:
+/// - `state_id = 0`: `kCGEventSourceStateCombinedSessionState` (all event sources).
+/// - `event_type = u64::MAX`: `kCGAnyInputEventType` (any input event type).
+#[link(name = "CoreGraphics", kind = "framework")]
+extern "C" {
+    fn CGEventSourceSecondsSinceLastEventType(state_id: u32, event_type: u64) -> f64;
+}
+
+/// Seconds since the last input event of any kind in the session, or `None`
+/// if the API reports a negative value (unsupported / failed query).
+pub fn seconds_since_last_input() -> Option<f64> {
+    const K_CG_EVENT_SOURCE_STATE_COMBINED_SESSION_STATE: u32 = 0;
+    const K_CG_ANY_INPUT_EVENT_TYPE: u64 = u64::MAX;
+
+    let secs = unsafe {
+        CGEventSourceSecondsSinceLastEventType(
+            K_CG_EVENT_SOURCE_STATE_COMBINED_SESSION_STATE,
+            K_CG_ANY_INPUT_EVENT_TYPE,
+        )
+    };
+    if secs >= 0.0 {
+        Some(secs)
+    } else {
+        None
+    }
+}
+
 // CFMachPort functions from CoreFoundation
 #[link(name = "CoreFoundation", kind = "framework")]
 extern "C" {
@@ -115,7 +149,6 @@ pub fn create_event_tap(state: Arc<AppState>) -> Option<(CGEventTapRef, *mut c_v
     // Event types to monitor - create event mask
     let event_mask: u64 = (1 << CGEventType::KeyDown as u64)
         | (1 << CGEventType::KeyUp as u64)
-        | (1 << CGEventType::MouseMoved as u64)
         | (1 << CGEventType::LeftMouseDown as u64)
         | (1 << CGEventType::LeftMouseUp as u64)
         | (1 << CGEventType::LeftMouseDragged as u64)
@@ -146,7 +179,10 @@ pub fn create_event_tap(state: Arc<AppState>) -> Option<(CGEventTapRef, *mut c_v
         }
 
         let count = TAPS_CREATED.fetch_add(1, Ordering::Relaxed) + 1;
-        info!("Event tap created successfully (tap: {:?}, lifetime tap #{} created)", tap, count);
+        info!(
+            "Event tap created successfully (tap: {:?}, lifetime tap #{} created)",
+            tap, count
+        );
         log_mach_port_count("after create_event_tap");
         Some((tap, state_ptr))
     }
@@ -242,12 +278,6 @@ unsafe extern "C" fn event_tap_callback(
         t if t == CGEventType::KeyUp as u32 => {
             // Always handle keyboard events (for hotkeys even when unlocked)
             handle_keyboard_event(&cg_event, CGEventType::KeyUp, state)
-        }
-        t if t == CGEventType::MouseMoved as u32 => {
-            // Always allow mouse movement (needed for tooltips and cursor position)
-            // This is a passive event and doesn't trigger any actions
-            state.update_input_time();
-            false // Always pass through
         }
         t if t == CGEventType::LeftMouseDown as u32 => {
             if state.is_locked() {
@@ -430,7 +460,9 @@ pub unsafe fn remove_event_tap_from_runloop(tap: CGEventTapRef, source: CFRunLoo
     // that were already queued before the disable. Without this, WindowServer may hold
     // a send right to the Mach port while we release our receive right, leaving a zombie
     // port until WindowServer drains its queue and releases its send rights.
-    std::thread::sleep(std::time::Duration::from_millis(crate::constants::EVENT_TAP_DRAIN_DELAY_MS));
+    std::thread::sleep(std::time::Duration::from_millis(
+        crate::constants::EVENT_TAP_DRAIN_DELAY_MS,
+    ));
 
     // Convert the source ref back to CFRunLoopSource and remove it from the run loop
     let source = core_foundation::runloop::CFRunLoopSource::wrap_under_get_rule(
@@ -443,6 +475,9 @@ pub unsafe fn remove_event_tap_from_runloop(tap: CGEventTapRef, source: CFRunLoo
     CFRelease(tap as *const c_void);
 
     let count = TAPS_DESTROYED.fetch_add(1, Ordering::Relaxed) + 1;
-    info!("Event tap released and removed from run loop (lifetime tap #{} destroyed)", count);
+    info!(
+        "Event tap released and removed from run loop (lifetime tap #{} destroyed)",
+        count
+    );
     log_mach_port_count("after remove_event_tap_from_runloop");
 }

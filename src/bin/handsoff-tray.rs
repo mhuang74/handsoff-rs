@@ -4,8 +4,8 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use handsoff::constants::{
-    NOTIFICATION_ERROR_TIMEOUT_MS,
-    NOTIFICATION_TIMEOUT_MS, POLL_INTERVAL_DISABLED_SECS, POLL_INTERVAL_ENABLED_MS,
+    NOTIFICATION_ERROR_TIMEOUT_MS, NOTIFICATION_TIMEOUT_MS, POLL_INTERVAL_DISABLED_SECS,
+    POLL_INTERVAL_ENABLED_MS, TOOLTIP_UPDATE_INTERVAL_MS,
 };
 use handsoff::{config, config_file::Config, setup, HandsOffCore};
 use log::{error, info, warn};
@@ -204,6 +204,7 @@ fn main() -> Result<()> {
     let mut was_locked = false;
     let mut was_disabled = false;
     let mut last_tooltip = String::new();
+    let mut last_tooltip_update = std::time::Instant::now();
     let mut has_permissions = true; // Assume true at start (already verified at startup)
 
     // Run event loop with periodic updates
@@ -328,7 +329,8 @@ fn main() -> Result<()> {
         }
 
         // Update icon when lock state or disabled state changes
-        if is_locked != was_locked || is_disabled != was_disabled {
+        let state_transition = is_locked != was_locked || is_disabled != was_disabled;
+        if state_transition {
             was_locked = is_locked;
             was_disabled = is_disabled;
 
@@ -357,13 +359,18 @@ fn main() -> Result<()> {
             }
         }
 
-        // Always update tooltip (to show live countdown and permission status)
+        // Update tooltip on state transitions or every TOOLTIP_UPDATE_INTERVAL_MS
+        // (the countdown itself does not need per-second repaint; transitions repaint now)
         let tooltip = build_tooltip(&core_borrow, is_locked, is_disabled, current_permissions);
-        if tooltip != last_tooltip {
+        let cadence_elapsed = last_tooltip_update
+            .elapsed()
+            >= std::time::Duration::from_millis(TOOLTIP_UPDATE_INTERVAL_MS);
+        if tooltip != last_tooltip && (state_transition || cadence_elapsed) {
             if let Err(e) = tray.set_tooltip(Some(&tooltip)) {
                 error!("Failed to update tray tooltip: {}", e);
             }
             last_tooltip = tooltip;
+            last_tooltip_update = std::time::Instant::now();
         }
     });
 }

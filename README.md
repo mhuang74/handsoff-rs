@@ -52,7 +52,7 @@ HandsOff is available in two forms: **Tray App** (recommended for most users) an
    ```
    This will prompt you for:
    - Secret passphrase (captured as physical key presses — layout-independent)
-   - Auto-lock timeout (default: 120 seconds)
+   - Auto-lock timeout (default: 180 seconds)
    - Auto-unlock (default: enabled — 60-minute base, doubling up to 24 h)
 5. Start the app:
    ```bash
@@ -88,7 +88,7 @@ HandsOff is available in two forms: **Tray App** (recommended for most users) an
    ```
    This will prompt you for:
    - Secret passphrase (captured as physical key presses — layout-independent)
-   - Auto-lock timeout (default: 120 seconds)
+   - Auto-lock timeout (default: 180 seconds)
    - Auto-unlock (default: enabled — 60-minute base, doubling up to 24 h)
 5. Run the CLI:
    ```bash
@@ -125,7 +125,7 @@ Both CLI and Tray App use the same encrypted configuration file:
 
 The setup wizard will prompt you for:
 - Secret passphrase (stored as a SHA-256 hash of your physical key sequence)
-- Auto-lock timeout (default: 120 seconds)
+- Auto-lock timeout (default: 180 seconds)
 - Auto-unlock (default: enabled — 60-minute base, doubling up to 24 h)
 
 **Changing configuration:**

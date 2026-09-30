@@ -33,7 +33,7 @@ SETUP:
   Setup captures your passphrase as a PHYSICAL KEY SEQUENCE (layout-independent)
   using a temporary event tap. It must run in an interactive console session
   (not over SSH). It will also prompt for:
-    - Auto-lock timeout (default: 120 seconds)
+    - Auto-lock timeout (default: 180 seconds)
     - Auto-unlock backoff (enabled by default: first window at 60 min awake-time,
       doubling up to 24 h; only a successful passphrase unlock resets the schedule)
 
@@ -188,7 +188,9 @@ fn main() -> Result<()> {
         error!("This can happen if:");
         error!("  1. Both environment variables are set to the same key");
         error!("  2. The config file was manually edited with duplicate keys");
-        error!("\nPlease run 'handsoff --setup' to reconfigure or check your environment variables.");
+        error!(
+            "\nPlease run 'handsoff --setup' to reconfigure or check your environment variables."
+        );
         std::process::exit(1);
     }
 

@@ -21,7 +21,7 @@ pub const AUTO_LOCK_MAX_SECONDS: u64 = 600;
 /// Default auto-lock timeout when no config exists.
 /// Unit: seconds
 /// Recommended range: 60-300 (1-5 minutes)
-pub const AUTO_LOCK_DEFAULT_SECONDS: u64 = 120;
+pub const AUTO_LOCK_DEFAULT_SECONDS: u64 = 180;
 
 // ============================================================================
 // AUTO-UNLOCK CONFIGURATION (backoff schedule)
@@ -87,6 +87,10 @@ pub const POLL_INTERVAL_DISABLED_SECS: u64 = 5;
 /// Unit: milliseconds
 /// Recommended range: 100-1000 (same as CFRUNLOOP_POLL_INTERVAL_MS)
 pub const POLL_INTERVAL_ENABLED_MS: u64 = 500;
+
+/// Tooltip rebuild cadence while a countdown is visible.
+/// Unit: milliseconds
+pub const TOOLTIP_UPDATE_INTERVAL_MS: u64 = 15_000;
 
 /// Threshold for logging slow event tap callbacks.
 /// Callbacks exceeding this duration are counted and logged in telemetry summaries.
