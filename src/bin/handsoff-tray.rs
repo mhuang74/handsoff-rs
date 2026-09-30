@@ -319,7 +319,8 @@ fn main() -> Result<()> {
         disable_item.set_enabled(should_enable_disable);
 
         // Track permission state changes for logging
-        if has_permissions != current_permissions {
+        let permission_changed = has_permissions != current_permissions;
+        if permission_changed {
             if current_permissions {
                 info!("Tray: Accessibility permissions detected, Lock menu enabled");
             } else {
@@ -359,17 +360,19 @@ fn main() -> Result<()> {
             }
         }
 
-        // Update tooltip on state transitions or every TOOLTIP_UPDATE_INTERVAL_MS
+        // Rebuild tooltip on state transitions or every TOOLTIP_UPDATE_INTERVAL_MS
         // (the countdown itself does not need per-second repaint; transitions repaint now)
-        let tooltip = build_tooltip(&core_borrow, is_locked, is_disabled, current_permissions);
         let cadence_elapsed = last_tooltip_update
             .elapsed()
             >= std::time::Duration::from_millis(TOOLTIP_UPDATE_INTERVAL_MS);
-        if tooltip != last_tooltip && (state_transition || cadence_elapsed) {
-            if let Err(e) = tray.set_tooltip(Some(&tooltip)) {
-                error!("Failed to update tray tooltip: {}", e);
+        if state_transition || permission_changed || cadence_elapsed {
+            let tooltip = build_tooltip(&core_borrow, is_locked, is_disabled, current_permissions);
+            if tooltip != last_tooltip {
+                if let Err(e) = tray.set_tooltip(Some(&tooltip)) {
+                    error!("Failed to update tray tooltip: {}", e);
+                }
+                last_tooltip = tooltip;
             }
-            last_tooltip = tooltip;
             last_tooltip_update = std::time::Instant::now();
         }
     });

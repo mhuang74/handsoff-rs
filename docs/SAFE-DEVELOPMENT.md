@@ -210,7 +210,7 @@ HANDS_OFF_AUTO_UNLOCK=60 cargo run -- --locked
 
 #### 3.2 Bound the Blast Radius with Short Auto-Lock
 
-If a window is accidentally left unlocked, auto-lock re-engages after idle time. Use the 20 s minimum instead of the 120 s default:
+If a window is accidentally left unlocked, auto-lock re-engages after idle time. Use the 20 s minimum instead of the 180 s default:
 
 ```bash
 HANDS_OFF_AUTO_LOCK=20 cargo run -- --locked
@@ -319,7 +319,7 @@ HANDS_OFF_AUTO_UNLOCK=60 HANDS_OFF_AUTO_LOCK=20 cargo run -- --locked
 ### Phase 3: Production Testing (Week 4)
 1. **Test in VM** or secondary account
 2. **Test with watchdog** process
-3. **Test with defaults** (120 s auto-lock, 60 min auto-unlock base) but with SSH ready
+3. **Test with defaults** (180 s auto-lock, 60 min auto-unlock base) but with SSH ready
 
 ### Phase 4: Release
 1. **Test with default timing** (no env overrides) before tagging a release

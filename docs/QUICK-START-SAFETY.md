@@ -149,7 +149,7 @@ After running unit tests, manually test:
 5. Lock a third time, unlock again via passphrase
 
 ### Phase 3: Auto-Lock
-1. Set auto-lock to its minimum via `HANDS_OFF_AUTO_LOCK=20` (or `cargo run -- --auto-lock 20`); the default is 120 s
+1. Set auto-lock to its minimum via `HANDS_OFF_AUTO_LOCK=20` (or `cargo run -- --auto-lock 20`); the default is 180 s
 2. Wait 20 seconds idle
 3. Verify auto-lock triggers
 4. Move mouse - verify timer resets
@@ -211,7 +211,7 @@ pkill -9 handsoff
 4. **Use a VM** for risky testing
 5. **Never test in production mode** without SSH ready
 6. **Commit your code** before testing (in case of force restart)
-7. **Set short timeouts** during testing (`HANDS_OFF_AUTO_LOCK=20`, not the 120 s default)
+7. **Set short timeouts** during testing (`HANDS_OFF_AUTO_LOCK=20`, not the 180 s default)
 
 ---
 
