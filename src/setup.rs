@@ -105,7 +105,10 @@ pub fn capture_passphrase(
     if !crate::input_blocking::check_accessibility_permissions() {
         return Err(anyhow!(
             "Accessibility permissions are required to capture keycodes.\n\
-             Grant them in System Settings > Privacy & Security > Accessibility, then re-run setup."
+             Note: if you launched setup from a terminal app (Terminal, iTerm, VS Code), \
+             macOS checks THAT app's permission, not HandsOff's - even with HandsOff granted. \
+             Add the terminal app itself in System Settings > Privacy & Security > Accessibility, \
+             then re-run setup."
         ));
     }
 
