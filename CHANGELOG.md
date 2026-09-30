@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.7.0] - 2026-09-30
+
+## 📦 Uncategorized
+
+- docs: add deep design review notes (2026-09)
+   - PR: #21
+- feat: keycode-sequence passphrases + exponential-backoff auto-unlock (v0.7.0) + 4 rounds review remediation
+   - PR: #23
+
+
+
 ## [Unreleased]
 
 - feat: keycode-sequence passphrases (`keycode-v1`) — setup captures physical key-codes via a temporary event tap (interactive only); hash stored in config; legacy encrypted configs force re-setup (V1, V6)
