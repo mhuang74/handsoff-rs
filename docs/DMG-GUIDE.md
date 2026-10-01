@@ -79,7 +79,7 @@ Quit the app from the tray menu, then:
 
 ```bash
 rm -rf /Applications/HandsOff.app
-rm -rf "~/Library/Application Support/handsoff"
+rm -rf "$HOME/Library/Application Support/handsoff"
 ```
 
 (If you enabled the login item, it is removed automatically when the

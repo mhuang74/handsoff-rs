@@ -114,9 +114,9 @@ jobs:
     - name: Create DMG
       run: |
         VERSION="${{ steps.version.outputs.version }}"
-        BUNDLE_PATH="target/arm64/release/bundle/osx/${{ env.APP_NAME }}.app"
+        BUNDLE_PATH="target/aarch64-apple-darwin/release/bundle/osx/${{ env.APP_NAME }}.app"
         DIST_DIR="dist"
-        DMG_STAGING="target/arm64/release/dmg-staging"
+        DMG_STAGING="target/aarch64-apple-darwin/release/dmg-staging"
         DMG_FINAL="${DIST_DIR}/${{ env.APP_NAME }}-v${VERSION}-arm64.dmg"
 
         echo "Building DMG..."
@@ -248,9 +248,9 @@ jobs:
     - name: Create DMG
       run: |
         VERSION="${{ steps.version.outputs.version }}"
-        BUNDLE_PATH="target/x86_64/release/bundle/osx/${{ env.APP_NAME }}.app"
+        BUNDLE_PATH="target/x86_64-apple-darwin/release/bundle/osx/${{ env.APP_NAME }}.app"
         DIST_DIR="dist"
-        DMG_STAGING="target/x86_64/release/dmg-staging"
+        DMG_STAGING="target/x86_64-apple-darwin/release/dmg-staging"
         DMG_FINAL="${DIST_DIR}/${{ env.APP_NAME }}-v${VERSION}-x86_64.dmg"
 
         echo "Building DMG..."
