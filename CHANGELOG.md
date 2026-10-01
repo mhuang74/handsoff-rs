@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.8.0] - 2026-10-01
+
+## 📦 Uncategorized
+
+- perf: reduce steady-state CPU usage (MouseMoved tap, tooltip, defaults)
+   - PR: #30
+- feat: in-app Setup Wizard core (#26) + tray lifecycle split (#27)
+   - PR: #31
+- Distribution: DMG cutover, delete .pkg pipeline, doc rewrites (#28)
+   - PR: #32
+- Updates: Check-for-Updates tray action + TCC re-grant reuse (#29)
+   - PR: #33
+
+
+
 ## [Unreleased]
 
 - feat: tray **Check for Updates…** menu item (#29) — opens https://github.com/mhuang74/handsoff-rs/releases/latest in the default browser via `open` (no Sparkle / self_update per ADR 0001); fire-and-forget, never blocks the tray
