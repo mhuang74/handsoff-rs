@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-01
+
 - feat: tray lifecycle split (#27) — old Reset renamed **Reenable** (unguarded, always in menu: ends a stuck Lock and restarts input capture without changing config); new **Reset…** is double-confirmed (caution dialog) and wipes the config then relaunches the in-app Setup Wizard; **Preferences…** window edits hotkeys, auto-lock timeout, and auto-unlock backoff without passphrase re-entry (empty field = unchanged); **Change Passphrase…** captures a new passphrase via the same silent double-entry path and preserves all other settings
 - feat: `preferences` library module — `apply_preferences` (merge + constructor revalidation; invalid edits never touch the file), `change_passphrase` (new hash, all other fields preserved), `wipe_config` (idempotent removal), `menu_state` (pure menu-gating rules, unit-tested); path-taking variants (`*_to_path`) back the config round-trip tests in `tests/lifecycle_tests.rs`
 - feat: in-app Setup Wizard — the tray launches a native single-window wizard when the config is absent or fails strict validation (ADR 0002): permission explanation + Grant → Accessibility poll → silent physical-key passphrase capture (double entry, no cleartext) → hotkeys/timeouts form → SMAppService login-item checkbox; no terminal involved; tooltip "Run …--setup" tip removed
