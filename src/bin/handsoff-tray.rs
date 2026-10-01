@@ -261,7 +261,7 @@ fn main() -> Result<()> {
         );
 
         match action {
-            SessionAction::Preferences => handle_preferences(&mut event_loop),
+            SessionAction::Preferences => handle_preferences(&mut event_loop, core.clone()),
             SessionAction::ChangePassphrase => handle_change_passphrase(&mut event_loop, core.clone()),
             SessionAction::Reset => handle_reset(&mut event_loop),
         }
@@ -663,17 +663,22 @@ fn handle_reenable(core: Rc<RefCell<HandsOffCore>>) {
 
 /// Handle Preferences from menu (#27): open the in-process Preferences window
 /// on the shared event loop, apply the edit via the config seam, then sync
-/// the running core with the new settings.
-fn handle_preferences(event_loop: &mut tao::event_loop::EventLoop<wizard::WizardEvent>) {
+/// the running core with the new settings immediately — the tray has no Quit
+/// item, so "takes effect on restart" would mean "never".
+fn handle_preferences(
+    event_loop: &mut tao::event_loop::EventLoop<wizard::WizardEvent>,
+    core: Rc<RefCell<HandsOffCore>>,
+) {
     match wizard::run_preferences(event_loop) {
         Ok(outcome) => match handsoff::preferences::apply_preferences(&outcome.edit) {
-            Ok(_cfg) => {
+            Ok(cfg) => {
+                apply_config_to_core(&core, &cfg);
                 info!("Preferences applied");
                 #[cfg(target_os = "macos")]
                 {
                     let _ = notify_rust::Notification::new()
                         .summary("HandsOff")
-                        .body("Preferences saved.\nHotkey and timeout changes take effect on restart.")
+                        .body("Preferences saved and applied.")
                         .timeout(notify_rust::Timeout::Milliseconds(NOTIFICATION_TIMEOUT_MS))
                         .show();
                 }
@@ -687,6 +692,53 @@ fn handle_preferences(event_loop: &mut tao::event_loop::EventLoop<wizard::Wizard
             }
         },
         Err(e) => info!("Preferences window closed without saving: {}", e),
+    }
+}
+
+/// Push a freshly saved config onto the running core: auto-lock timeout,
+/// auto-unlock backoff, and (when changed) re-registered hotkeys.
+///
+/// The passphrase hash is NOT synced here — Change Passphrase owns that
+/// (via `state.set_passphrase_hash`); Preferences never touches it.
+fn apply_config_to_core(core: &Rc<RefCell<HandsOffCore>>, cfg: &Config) {
+    let mut core = core.borrow_mut();
+
+    // Auto-lock timeout: env var wins over config (same precedence as startup).
+    let auto_lock_timeout = config::parse_auto_lock_timeout().or(Some(cfg.auto_lock_timeout));
+    core.set_auto_lock_timeout(auto_lock_timeout);
+
+    // Auto-unlock backoff: env var > config mode + base (same as startup).
+    core.set_auto_unlock_config(config::resolve_auto_unlock(
+        Some(cfg.auto_unlock_backoff_enabled()),
+        cfg.auto_unlock_base_interval,
+    ));
+
+    // Hotkeys: re-register only when the configured keys changed — global
+    // hotkeys are unregister/register against the OS, so skip when unchanged.
+    match (cfg.get_lock_key_code(), cfg.get_talk_key_code()) {
+        (Ok(lock_key), Ok(talk_key)) => {
+            let changed = lock_key != core.lock_key_code() || talk_key != core.talk_key_code();
+            if changed {
+                if let Err(e) = core.reregister_hotkeys(lock_key, talk_key) {
+                    error!("Failed to re-register hotkeys after Preferences: {}", e);
+                    show_alert(
+                        "HandsOff - Preferences Partial Success",
+                        &format!(
+                            "Settings were saved, but the new hotkeys could not be \
+                             registered:\n{}\n\nThe previous hotkeys remain active.",
+                            e
+                        ),
+                    );
+                    return; // timeout/backoff above were still applied
+                }
+                info!("Hotkeys re-registered after Preferences");
+            }
+        }
+        (Err(e), _) | (_, Err(e)) => {
+            error!("Config hotkey invalid after Preferences save: {}", e);
+            // Config was already saved; the strict-validation gate will send
+            // the next launch to the wizard. Timeouts/backoff stay applied.
+        }
     }
 }
 

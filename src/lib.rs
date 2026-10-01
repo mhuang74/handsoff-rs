@@ -158,6 +158,51 @@ impl HandsOffCore {
         self.state.set_locked(locked);
     }
 
+    /// Currently configured lock hotkey (as set by `set_hotkey_config`).
+    pub fn lock_key_code(&self) -> global_hotkey::hotkey::Code {
+        self.lock_key
+    }
+
+    /// Currently configured talk hotkey (as set by `set_hotkey_config`).
+    pub fn talk_key_code(&self) -> global_hotkey::hotkey::Code {
+        self.talk_key
+    }
+
+    /// Swap hotkeys at runtime (Preferences edit): unregister the old
+    /// registrations, update the config, register the new keys.
+    ///
+    /// Unregister-first is required — the global-hotkey manager rejects a
+    /// re-registration of an already-registered combo. If registration of
+    /// the NEW keys fails after the old ones were unregistered, we restore
+    /// the old keys (the previous config remains authoritative on disk
+    /// unless the caller already saved the new one; the tray alerts on
+    /// partial failure either way).
+    pub fn reregister_hotkeys(
+        &mut self,
+        lock_key: global_hotkey::hotkey::Code,
+        talk_key: global_hotkey::hotkey::Code,
+    ) -> Result<()> {
+        if let Some(manager) = &mut self.hotkey_manager {
+            manager
+                .unregister_all()
+                .context("Failed to unregister current hotkeys")?;
+        }
+
+        self.set_hotkey_config(lock_key, talk_key);
+
+        if let Err(e) = self.start_hotkeys() {
+            error!("Hotkey re-registration failed; restoring previous hotkeys: {}", e);
+            // Best-effort restore of whatever was registered before.
+            if let Some(manager) = &mut self.hotkey_manager {
+                let _ = manager.unregister_all();
+            }
+            self.set_hotkey_config(self.lock_key, self.talk_key);
+            let _ = self.start_hotkeys();
+            return Err(e);
+        }
+        Ok(())
+    }
+
     /// Check if currently locked
     pub fn is_locked(&self) -> bool {
         self.state.is_locked()

@@ -932,6 +932,19 @@ mod macos {
         let app = NSApplication::sharedApplication(mtm);
         app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
 
+        // Permission gate BEFORE any window exists: the capture tap needs
+        // Accessibility granted to HandsOff itself. This path is reachable
+        // exactly when TCC revoked the grant (post-update CDHash change);
+        // erroring before window creation avoids orphaning a window the
+        // caller's error path never closes (setReleasedWhenClosed(false)).
+        if !crate::input_blocking::check_accessibility_permissions() {
+            return Err(anyhow!(
+                "Accessibility permission is required to capture the new passphrase. \
+                 Grant it to HandsOff in System Settings > Privacy & Security > Accessibility, \
+                 then try again."
+            ));
+        }
+
         let style = NSWindowStyleMask::Titled | NSWindowStyleMask::Closable;
         let frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(WINDOW_W, 180.0));
         let window = unsafe {
@@ -983,17 +996,6 @@ mod macos {
         window.center();
         window.makeKeyAndOrderFront(None);
         unsafe { app.activateIgnoringOtherApps(true) };
-
-        // Permission gate BEFORE capture: the tap needs Accessibility granted
-        // to HandsOff itself. The Preferences path can hit this when TCC
-        // invalidated the grant (post-update CDHash change).
-        if !crate::input_blocking::check_accessibility_permissions() {
-            return Err(anyhow!(
-                "Accessibility permission is required to capture the new passphrase. \
-                 Grant it to HandsOff in System Settings > Privacy & Security > Accessibility, \
-                 then try again."
-            ));
-        }
 
         use tao::event::Event;
         use tao::platform::run_return::EventLoopExtRunReturn;

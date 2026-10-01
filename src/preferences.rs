@@ -197,11 +197,10 @@ fn apply_preferences_to(
 /// Config load failure, or a too-short sequence (nothing is saved).
 pub fn change_passphrase(keys: &[u32]) -> Result<Config> {
     let current = Config::load().context("Failed to load current configuration")?;
-    let path = Config::config_path();
     let updated = change_passphrase_to(&current, keys)
         .context("Failed to apply new passphrase")?;
-    updated.save().context("Failed to save configuration")?;
-    let _ = path; // standard location saved via Config::save above
+    persist_to(&updated, &Config::config_path())
+        .context("Failed to save configuration")?;
     Ok(updated)
 }
 
@@ -267,12 +266,36 @@ pub fn wipe_config_at(path: &std::path::Path) -> Result<bool> {
     Ok(true)
 }
 
-/// Persist a config to `path` with the same hardening as the standard-location
-/// `Config::save` (0600 permissions on unix). Tests use the plain
-/// `save_to_path` semantics internally.
+/// Persist a config to the STANDARD-LOCATION path with the same hardening as
+/// `Config::save`: creates the parent directory and enforces 0600 on unix
+/// (`save_to_path` alone does neither — its doc comment in config_file.rs).
+/// The path-taking test variants must NOT use this: tests write to temp dirs
+/// with plain `save_to_path` semantics.
+#[cfg(unix)]
 fn persist_to(cfg: &Config, path: &std::path::Path) -> Result<()> {
-    cfg.save_to_path(path)
-        .context("Failed to write config file")
+    use std::os::unix::fs::PermissionsExt;
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).context("Failed to create config directory")?;
+    }
+    cfg.save_to_path(path)?;
+    let mut permissions = std::fs::metadata(path)
+        .context("Failed to read config file metadata")?
+        .permissions();
+    permissions.set_mode(crate::constants::CONFIG_FILE_PERMISSIONS);
+    std::fs::set_permissions(path, permissions)
+        .context("Failed to set config file permissions")?;
+    Ok(())
+}
+
+/// Non-unix variant: directory creation only (nothing to harden without
+/// POSIX modes; mirrors `Config::save`'s cfg(unix) scoping).
+#[cfg(not(unix))]
+fn persist_to(cfg: &Config, path: &std::path::Path) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).context("Failed to create config directory")?;
+    }
+    cfg.save_to_path(path).context("Failed to write config file")
 }
 
 /// Build a full `SetupOutcome`-shaped value from an existing config plus a
