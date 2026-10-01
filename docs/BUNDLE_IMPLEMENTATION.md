@@ -79,7 +79,7 @@ The final bundle includes these critical settings:
 
 ```xml
 CFBundleExecutable: handsoff
-CFBundleIdentifier: com.handsoff.inputlock
+CFBundleIdentifier: handsoff-tray.handsoff
 CFBundleName: HandsOff
 CFBundleDisplayName: HandsOff
 CFBundleVersion: 0.1.0

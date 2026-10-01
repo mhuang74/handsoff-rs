@@ -248,7 +248,7 @@ pub fn check_accessibility_permissions() -> bool {
             error!("Accessibility permission check failed:");
             error!("  - AXIsProcessTrusted: {}", ax_trusted);
             error!("  - Event tap created: {}", tap_created);
-            error!("  - Bundle ID should be: com.handsoff.inputlock");
+            error!("  - Bundle ID should be: handsoff-tray.handsoff");
             error!("  - Please check System Settings > Privacy & Security > Accessibility");
         }
 
