@@ -724,10 +724,11 @@ mod macos {
 
         window.center();
         window.makeKeyAndOrderFront(None);
-        // `-[NSApplication activateIgnoringOtherApps:]` is deprecated
-        // ( objc2-app-kit 0.2 marks it ); `activate` is the replacement and
-        // exists since macOS 10.9 — fine for the 13.0 minimum.
-        unsafe { app.activate() };
+        // Same activation path as the wizard (see run_wizard_macos):
+        // `-[NSApplication activate]` is macOS 14+ and the min version is
+        // 13.0 (Info.plist.template), where the unrecognized selector would
+        // crash this path. activateIgnoringOtherApps exists since 10.0.
+        unsafe { app.activateIgnoringOtherApps(true) };
 
         use tao::event::Event;
         use tao::platform::run_return::EventLoopExtRunReturn;
