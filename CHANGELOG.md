@@ -16,15 +16,8 @@
 - feat: silent unlock — no notification when input is restored (V10)
 - feat: tooltip shows auto-unlock countdown only when < 5 min away (V11)
 - refactor: single-guard keystroke handler; removed `crypto.rs` (AES-256-GCM) and its dependencies
-
-## [0.6.10] - 2026-09-27
-
-## 📦 Uncategorized
-
-- CI: x86_64 macOS release builds, release job restructure, AI code-review updates
-   - PR: #20
-
-
+- perf: steady-state CPU reduction — `MouseMoved` removed from the event tap (idle time now read via `CGEventSourceSecondsSinceLastEventType`, `min`-combined with the tap clock for decision and countdown display); tray tooltip rebuilt on state change or every 15 s instead of every 500 ms tick
+- change: auto-lock default 120 s → 180 s
 
 ## [0.6.10] - 2026-09-27
 
@@ -138,7 +131,7 @@
 
 ## [0.1.0] - 2025-10-22
 
-> Note: features listed below reflect the 0.1.0 architecture (Keychain storage, Touch ID, 3-minute auto-lock). Storage moved to config.toml with keycode-v1 passphrase hashes and auto-lock default 120 s in later releases; Touch ID was removed.
+> Note: features listed below reflect the 0.1.0 architecture (Keychain storage, Touch ID, 3-minute auto-lock). Storage moved to config.toml with keycode-v1 passphrase hashes and auto-lock default 180 s in later releases; Touch ID was removed.
 
 ### Initial Release
 

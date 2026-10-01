@@ -39,7 +39,7 @@ pub struct Config {
     /// (including legacy AES-encrypted configs) forces a re-setup.
     #[serde(default = "default_passphrase_format")]
     pub passphrase_format: String,
-    /// Auto-lock timeout in seconds (default: 120)
+    /// Auto-lock timeout in seconds (default: 180)
     pub auto_lock_timeout: u64,
     /// Auto-unlock mode: "backoff" (enabled-by-default exponential schedule)
     /// or "disabled" (§2.7)
@@ -928,12 +928,20 @@ talk_hotkey = "l"
         // Out of range (0 = near-permanent self-lockout; below min; above max)
         for bad in [0u64, 19, 601] {
             let result = Config::new(&[0, 12, 15, 37], bad, true, 3600, None, None);
-            assert!(result.is_err(), "auto_lock_timeout={} must be rejected", bad);
+            assert!(
+                result.is_err(),
+                "auto_lock_timeout={} must be rejected",
+                bad
+            );
         }
         // In range (inclusive bounds)
         for good in [20u64, 600] {
             let result = Config::new(&[0, 12, 15, 37], good, true, 3600, None, None);
-            assert!(result.is_ok(), "auto_lock_timeout={} must be accepted", good);
+            assert!(
+                result.is_ok(),
+                "auto_lock_timeout={} must be accepted",
+                good
+            );
         }
     }
 

@@ -4,8 +4,8 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use handsoff::constants::{
-    NOTIFICATION_ERROR_TIMEOUT_MS,
-    NOTIFICATION_TIMEOUT_MS, POLL_INTERVAL_DISABLED_SECS, POLL_INTERVAL_ENABLED_MS,
+    NOTIFICATION_ERROR_TIMEOUT_MS, NOTIFICATION_TIMEOUT_MS, POLL_INTERVAL_DISABLED_SECS,
+    POLL_INTERVAL_ENABLED_MS, TOOLTIP_UPDATE_INTERVAL_MS,
 };
 use handsoff::{config, config_file::Config, preferences::menu_state, setup, wizard, HandsOffCore};
 use log::{error, info, warn};
@@ -221,10 +221,12 @@ fn main() -> Result<()> {
     let change_passphrase_id = change_passphrase_item.id().clone();
     let reset_id = reset_item.id().clone();
 
-    // Track state for tooltip updates and permission state
+    // Track state for tooltip updates and permission state. Mutable because
+    // the values are threaded through `TrackedState` across tray sessions.
     let was_locked = false;
     let was_disabled = false;
     let last_tooltip = String::new();
+    let last_tooltip_update = std::time::Instant::now();
     let has_permissions = true; // Assume true at start (already verified at startup)
 
     let pending_action: Rc<RefCell<Option<SessionAction>>> = Rc::new(RefCell::new(None));
@@ -234,7 +236,8 @@ fn main() -> Result<()> {
     // when a window-flow action was requested; main services it, then
     // re-enters the session (the action handlers themselves end their window
     // flows via app.stop and fall back through to here).
-    let tracked: &mut TrackedState = &mut (was_locked, was_disabled, last_tooltip, has_permissions);
+    let tracked: &mut TrackedState =
+        &mut (was_locked, was_disabled, last_tooltip, last_tooltip_update, has_permissions);
     loop {
         let action = run_session(
             &mut event_loop,
@@ -268,10 +271,16 @@ fn main() -> Result<()> {
     }
 }
 
-/// Tracker state that must survive across tray sessions (icon/tooltip caches
-/// and permission logging dedup).
+/// Tracker state that must survive across tray sessions (icon/tooltip caches,
+/// tooltip rebuild cadence timestamp, and permission logging dedup).
 #[allow(clippy::type_complexity)]
-type TrackedState = (bool, bool, String, bool);
+type TrackedState = (
+    bool,
+    bool,
+    String,
+    std::time::Instant,
+    bool,
+);
 
 /// Which menu item requested the session end, if any.
 #[allow(clippy::enum_variant_names)]
@@ -329,7 +338,7 @@ fn run_session(
         change_passphrase_item,
         reset_item,
     ) = items;
-    let (was_locked, was_disabled, last_tooltip, has_permissions) = tracked;
+    let (was_locked, was_disabled, last_tooltip, last_tooltip_update, has_permissions) = tracked;
 
     // Grabbing the NSApplication handle for session end (see doc comment).
     #[cfg(target_os = "macos")]
@@ -492,7 +501,8 @@ fn run_session(
         reset_item.set_enabled(menu_flags.reset_enabled);
 
         // Track permission state changes for logging
-        if *has_permissions != current_permissions {
+        let permission_changed = *has_permissions != current_permissions;
+        if permission_changed {
             if current_permissions {
                 info!("Tray: Accessibility permissions detected, Lock menu enabled");
             } else {
@@ -502,7 +512,8 @@ fn run_session(
         }
 
         // Update icon when lock state or disabled state changes
-        if is_locked != *was_locked || is_disabled != *was_disabled {
+        let state_transition = is_locked != *was_locked || is_disabled != *was_disabled;
+        if state_transition {
             *was_locked = is_locked;
             *was_disabled = is_disabled;
 
@@ -531,13 +542,20 @@ fn run_session(
             }
         }
 
-        // Always update tooltip (to show live countdown and permission status)
-        let tooltip = build_tooltip(&core_borrow, is_locked, is_disabled, current_permissions);
-        if tooltip != *last_tooltip {
-            if let Err(e) = tray.set_tooltip(Some(&tooltip)) {
-                error!("Failed to update tray tooltip: {}", e);
+        // Rebuild tooltip on state transitions or every TOOLTIP_UPDATE_INTERVAL_MS
+        // (the countdown itself does not need per-second repaint; transitions repaint now)
+        let cadence_elapsed = last_tooltip_update
+            .elapsed()
+            >= std::time::Duration::from_millis(TOOLTIP_UPDATE_INTERVAL_MS);
+        if state_transition || permission_changed || cadence_elapsed {
+            let tooltip = build_tooltip(&core_borrow, is_locked, is_disabled, current_permissions);
+            if tooltip != *last_tooltip {
+                if let Err(e) = tray.set_tooltip(Some(&tooltip)) {
+                    error!("Failed to update tray tooltip: {}", e);
+                }
+                *last_tooltip = tooltip;
             }
-            *last_tooltip = tooltip;
+            *last_tooltip_update = std::time::Instant::now();
         }
     });
 

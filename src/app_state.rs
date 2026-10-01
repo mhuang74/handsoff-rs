@@ -3,12 +3,12 @@ use std::sync::Arc;
 use std::time::Instant;
 
 // Re-export constants for backward compatibility
+use crate::constants::REENABLE_DEBOUNCE_SECS;
 pub use crate::constants::{
     AUTO_LOCK_DEFAULT_SECONDS, AUTO_LOCK_MAX_SECONDS, AUTO_LOCK_MIN_SECONDS,
     AUTO_UNLOCK_BASE_SECONDS, AUTO_UNLOCK_CEILING_SECONDS, BUFFER_RESET_DEFAULT_SECONDS,
     DEFAULT_LOCK_KEYCODE, DEFAULT_TALK_KEYCODE,
 };
-use crate::constants::REENABLE_DEBOUNCE_SECS;
 
 /// Application state shared across modules
 #[derive(Clone)]
@@ -146,7 +146,10 @@ impl AppState {
                     log::debug!(
                         "Locked stretch started; auto-unlock window {} opens after {}s",
                         unlock.window_index,
-                        Self::auto_unlock_interval_secs(unlock.base_interval_secs, unlock.window_index),
+                        Self::auto_unlock_interval_secs(
+                            unlock.base_interval_secs,
+                            unlock.window_index
+                        ),
                     );
                 }
                 // locked → locked, or window already fired: leave
@@ -192,8 +195,8 @@ impl AppState {
     /// t=60m, 180m, 420m, 900m… for base=60m regardless of when auto-lock
     /// re-engages between windows.
     pub fn auto_unlock_interval_secs(base_secs: u64, window_index: u32) -> u64 {
-        let doubled = base_secs
-            .saturating_mul(1u64 << window_index.min(u32::from(u64::BITS - 1) as u32));
+        let doubled =
+            base_secs.saturating_mul(1u64 << window_index.min(u32::from(u64::BITS - 1) as u32));
         doubled.min(AUTO_UNLOCK_CEILING_SECONDS)
     }
 
@@ -218,7 +221,8 @@ impl AppState {
             return false;
         };
 
-        let interval = Self::auto_unlock_interval_secs(unlock.base_interval_secs, unlock.window_index);
+        let interval =
+            Self::auto_unlock_interval_secs(unlock.base_interval_secs, unlock.window_index);
         unlock.stretch_start.elapsed().as_secs() >= interval
     }
 
@@ -308,7 +312,6 @@ impl AppState {
         }
     }
 
-
     pub fn update_input_time(&self) {
         let mut state = self.inner.lock();
         state.last_input_time = Instant::now();
@@ -357,12 +360,30 @@ impl AppState {
         }
     }
 
+    /// Idle seconds = the most recent of ANY input activity. Mouse moves no
+    /// longer flow through our tap, so the system-wide CGEventSource idle clock
+    /// is authoritative for them; the tap-maintained `last_input_time` covers
+    /// everything else (keyboard, clicks, drags, scroll) — and, critically, is
+    /// reset by `trigger_auto_unlock` so the post-unlock window stays open for
+    /// the full auto-lock timeout. Take the minimum of both clocks: a fresh
+    /// value from either source defers the lock. Callers pass the elapsed
+    /// `last_input_time` (they already hold the state lock).
+    fn current_idle_secs(last_input_elapsed_secs: f64) -> f64 {
+        match crate::input_blocking::event_tap::seconds_since_last_input() {
+            Some(cg) => cg.min(last_input_elapsed_secs),
+            // API unavailable (CI/test environments, query failure): fall back
+            // to the tap-maintained clock alone.
+            None => last_input_elapsed_secs,
+        }
+    }
+
     pub fn should_auto_lock(&self) -> bool {
         let state = self.inner.lock();
+        let idle_secs = Self::current_idle_secs(state.last_input_time.elapsed().as_secs() as f64);
         // Only auto-lock if: not locked, timeout exceeded, AND permissions are available
         // This prevents auto-lock from triggering when permissions are lost
         !state.is_locked
-            && state.last_input_time.elapsed().as_secs() >= state.auto_lock_timeout
+            && idle_secs >= state.auto_lock_timeout as f64
             && state.has_accessibility_permissions
     }
 
@@ -371,8 +392,10 @@ impl AppState {
         if state.is_locked {
             return None;
         }
-        let elapsed = state.last_input_time.elapsed().as_secs();
-        Some(state.auto_lock_timeout.saturating_sub(elapsed))
+        let idle_secs = Self::current_idle_secs(state.last_input_time.elapsed().as_secs() as f64);
+        // Truncate (floor) to match should_auto_lock's boundary: it fires when
+        // raw idle_secs >= timeout, so remaining must reach 0 at the same point.
+        Some(state.auto_lock_timeout.saturating_sub(idle_secs as u64))
     }
 
     pub fn set_talk_key_pressed(&self, pressed: bool) {
@@ -399,7 +422,8 @@ impl AppState {
         if !state.is_locked {
             return None;
         }
-        let interval = Self::auto_unlock_interval_secs(unlock.base_interval_secs, unlock.window_index);
+        let interval =
+            Self::auto_unlock_interval_secs(unlock.base_interval_secs, unlock.window_index);
         let elapsed = unlock.stretch_start.elapsed().as_secs();
         Some(interval.saturating_sub(elapsed))
     }
@@ -680,13 +704,19 @@ mod tests {
         state.reset_all();
 
         assert!(!state.is_locked());
-        assert_eq!(state.get_auto_unlock_interval_secs(), Some(AUTO_UNLOCK_BASE_SECONDS));
+        assert_eq!(
+            state.get_auto_unlock_interval_secs(),
+            Some(AUTO_UNLOCK_BASE_SECONDS)
+        );
         assert_eq!(state.buffer_len(), 0, "Buffer should be cleared");
         assert_eq!(state.get_auto_unlock_remaining_secs(), None); // unlocked
 
         // Re-lock: first window again at base.
         state.set_locked(true);
-        assert_eq!(state.get_auto_unlock_interval_secs(), Some(AUTO_UNLOCK_BASE_SECONDS));
+        assert_eq!(
+            state.get_auto_unlock_interval_secs(),
+            Some(AUTO_UNLOCK_BASE_SECONDS)
+        );
         assert!(!state.should_auto_unlock());
     }
 

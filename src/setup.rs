@@ -604,7 +604,10 @@ fn prompt_bounded_number(
     allow_zero: bool,
 ) -> Result<u64> {
     let range_msg = if allow_zero {
-        format!("Error: value must be {}-{} seconds (or 0 to disable)", min, max)
+        format!(
+            "Error: value must be {}-{} seconds (or 0 to disable)",
+            min, max
+        )
     } else {
         format!("Error: Auto-lock timeout must be {}-{} seconds", min, max)
     };
@@ -717,8 +720,11 @@ pub fn run_interactive_setup(print: &mut dyn FnMut(&str)) -> Result<SetupOutcome
     print("");
     let auto_lock = prompt_bounded_number(
         print,
-        "Auto-lock timeout in seconds (default: 120): ",
-        120,
+        &format!(
+            "Auto-lock timeout in seconds (default: {}): ",
+            crate::constants::AUTO_LOCK_DEFAULT_SECONDS
+        ),
+        crate::constants::AUTO_LOCK_DEFAULT_SECONDS,
         crate::constants::AUTO_LOCK_MIN_SECONDS,
         crate::constants::AUTO_LOCK_MAX_SECONDS,
         false,
