@@ -18,6 +18,39 @@ use tray_icon::TrayIconBuilder;
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const GIT_HASH: &str = env!("GIT_COMMIT_HASH");
 
+/// Latest-release page opened by the "Check for Updates…" menu item
+/// (issue #29). GitHub redirects this URL to the newest published release;
+/// the tray does no networking or version comparison itself (ADR 0001:
+/// no Sparkle / self_update — the browser is the update surface).
+const RELEASES_URL: &str = "https://github.com/mhuang74/handsoff-rs/releases/latest";
+
+/// Menu label for the update check (exposed for unit tests).
+const CHECK_UPDATES_LABEL: &str = "Check for Updates…";
+
+/// Open the latest GitHub release page in the default browser. Fire-and-
+/// forget shell-out to `open` (same osascript-style delegation the dialogs
+/// use): never blocks the tray, never inspects the result — a failure to
+/// open a browser is only logged.
+fn handle_check_updates() {
+    match std::process::Command::new("open")
+        .arg(RELEASES_URL)
+        .spawn()
+    {
+        Ok(_) => info!("Opened release page in browser: {}", RELEASES_URL),
+        Err(e) => {
+            error!("Failed to open release page {}: {}", RELEASES_URL, e);
+            #[cfg(target_os = "macos")]
+            show_alert(
+                "HandsOff - Check for Updates",
+                &format!(
+                    "Could not open your browser.\n\nVisit the releases page manually:\n{}",
+                    RELEASES_URL
+                ),
+            );
+        }
+    }
+}
+
 /// HandsOff Tray App arguments
 #[derive(Parser, Debug)]
 #[command(
@@ -104,26 +137,59 @@ fn main() -> Result<()> {
     // of pointing users at the terminal. The wizard runs `run_return` on the
     // loop above and returns when the flow completes; the tray's `run` below
     // is the second (supported) re-entry on the same loop.
-    let cfg = match Config::load().and_then(|_| setup::validate_config_strict()) {
-        Ok(()) => Config::load().expect("config validated above"),
-        Err(e) => {
-            info!("Launching Setup Wizard: {}", e);
-            match wizard::run_wizard(&mut event_loop) {
-                Ok(outcome) => {
-                    wizard::wizard_outcome_to_config(&outcome)
-                        .context("Failed to save wizard configuration")?;
-                    Config::load().context("Wizard saved config failed to load")?
+    //
+    // Issue #29 adds the third case: config VALID but the Accessibility
+    // grant stale/missing (typical after an unsigned update changed the
+    // CDHash) routes to the permission-only re-grant screen — never full
+    // passphrase re-setup, and the config is not touched.
+    let config_valid = Config::load().and_then(|_| setup::validate_config_strict()).is_ok();
+    let mut permissions = initial_permissions;
+    let cfg = match wizard::startup_flow(config_valid, permissions) {
+        wizard::StartupFlow::Run => Config::load().expect("config validated above"),
+
+        wizard::StartupFlow::ReGrant => {
+            info!("Config valid but Accessibility grant stale — opening permission re-grant");
+            match wizard::run_permission_regrant(&mut event_loop) {
+                Ok(()) => {
+                    // Re-check authoritatively: the poll thread inside the
+                    // re-grant window already confirmed the full check, but
+                    // the tap-start decision below wants the current value.
+                    permissions = handsoff::input_blocking::check_accessibility_permissions();
+                    Config::load().expect("config valid; only the grant was stale")
                 }
                 Err(e) => {
-                    error!("Setup wizard failed: {}", e);
-                    show_alert(
-                        "HandsOff - Setup Required",
-                        &format!(
-                            "HandsOff needs a passphrase before it can protect input.\n\n{}",
-                            e
-                        ),
-                    );
-                    std::process::exit(1);
+                    // User closed the re-grant window: degrade exactly like
+                    // a launch without permissions (tray shows status, no
+                    // blocking until granted or "Fix …" is used).
+                    info!("Permission re-grant closed without completing: {}", e);
+                    Config::load().expect("config valid; only the grant was stale")
+                }
+            }
+        }
+
+        wizard::StartupFlow::Wizard => {
+            match Config::load().and_then(|_| setup::validate_config_strict()) {
+                Ok(()) => Config::load().expect("config validated above"),
+                Err(e) => {
+                    info!("Launching Setup Wizard: {}", e);
+                    match wizard::run_wizard(&mut event_loop) {
+                        Ok(outcome) => {
+                            wizard::wizard_outcome_to_config(&outcome)
+                                .context("Failed to save wizard configuration")?;
+                            Config::load().context("Wizard saved config failed to load")?
+                        }
+                        Err(e) => {
+                            error!("Setup wizard failed: {}", e);
+                            show_alert(
+                                "HandsOff - Setup Required",
+                                &format!(
+                                    "HandsOff needs a passphrase before it can protect input.\n\n{}",
+                                    e
+                                ),
+                            );
+                            std::process::exit(1);
+                        }
+                    }
                 }
             }
         }
@@ -153,7 +219,8 @@ fn main() -> Result<()> {
     core.set_hotkey_config(lock_key, talk_key);
 
     // Start core components only if we have accessibility permissions
-    if initial_permissions {
+    // (re-checked after a possibly completed re-grant flow — issue #29).
+    if permissions {
         core.start_event_tap()
             .context("Failed to start input blocking")?;
         core.start_hotkeys().context("Failed to start hotkeys")?;
@@ -186,6 +253,8 @@ fn main() -> Result<()> {
     let preferences_item = MenuItem::new("Preferences…", true, None);
     let change_passphrase_item = MenuItem::new("Change Passphrase…", true, None);
     let reset_item = MenuItem::new("Reset…", true, None);
+    let regrant_item = MenuItem::new("Fix Accessibility Permission…", true, None);
+    let check_updates_item = MenuItem::new(CHECK_UPDATES_LABEL, true, None);
 
     let menu = Menu::new();
     menu.append(&lock_item)
@@ -201,6 +270,11 @@ fn main() -> Result<()> {
         .context("Failed to add change passphrase menu item")?;
     menu.append(&reset_item)
         .context("Failed to add reset menu item")?;
+    menu.append(&separator).context("Failed to add second separator")?;
+    menu.append(&regrant_item)
+        .context("Failed to add re-grant menu item")?;
+    menu.append(&check_updates_item)
+        .context("Failed to add check updates menu item")?;
 
     // Create tray icon
     let icon = create_icon_unlocked();
@@ -220,6 +294,8 @@ fn main() -> Result<()> {
     let preferences_id = preferences_item.id().clone();
     let change_passphrase_id = change_passphrase_item.id().clone();
     let reset_id = reset_item.id().clone();
+    let regrant_id = regrant_item.id().clone();
+    let check_updates_id = check_updates_item.id().clone();
 
     // Track state for tooltip updates and permission state. Mutable because
     // the values are threaded through `TrackedState` across tray sessions.
@@ -227,7 +303,7 @@ fn main() -> Result<()> {
     let was_disabled = false;
     let last_tooltip = String::new();
     let last_tooltip_update = std::time::Instant::now();
-    let has_permissions = true; // Assume true at start (already verified at startup)
+    let has_permissions = permissions; // Re-verified after any re-grant flow (issue #29)
 
     let pending_action: Rc<RefCell<Option<SessionAction>>> = Rc::new(RefCell::new(None));
     let pending_in_loop = pending_action.clone();
@@ -249,6 +325,8 @@ fn main() -> Result<()> {
                 preferences_id.clone(),
                 change_passphrase_id.clone(),
                 reset_id.clone(),
+                regrant_id.clone(),
+                check_updates_id.clone(),
             ),
             (
                 lock_item.clone(),
@@ -257,6 +335,8 @@ fn main() -> Result<()> {
                 preferences_item.clone(),
                 change_passphrase_item.clone(),
                 reset_item.clone(),
+                regrant_item.clone(),
+                check_updates_item.clone(),
             ),
             &tray,
             tracked,
@@ -267,6 +347,7 @@ fn main() -> Result<()> {
             SessionAction::Preferences => handle_preferences(&mut event_loop, core.clone()),
             SessionAction::ChangePassphrase => handle_change_passphrase(&mut event_loop, core.clone()),
             SessionAction::Reset => handle_reset(&mut event_loop),
+            SessionAction::ReGrantPermission => handle_regrant_permission(&mut event_loop),
         }
     }
 }
@@ -288,6 +369,9 @@ enum SessionAction {
     Preferences,
     ChangePassphrase,
     Reset,
+    /// Issue #29 re-grant: config valid, Accessibility grant stale —
+    /// permission-only wizard screen, no passphrase re-setup.
+    ReGrantPermission,
 }
 
 /// One tray session: a `run_return` pass on the process-wide event loop that
@@ -316,8 +400,12 @@ fn run_session(
         tray_icon::menu::MenuId,
         tray_icon::menu::MenuId,
         tray_icon::menu::MenuId,
+        tray_icon::menu::MenuId,
+        tray_icon::menu::MenuId,
     ),
     items: (
+        tray_icon::menu::MenuItem,
+        tray_icon::menu::MenuItem,
         tray_icon::menu::MenuItem,
         tray_icon::menu::MenuItem,
         tray_icon::menu::MenuItem,
@@ -329,7 +417,16 @@ fn run_session(
     tracked: &mut TrackedState,
     pending_action: Rc<RefCell<Option<SessionAction>>>,
 ) -> SessionAction {
-    let (lock_id, disable_id, reenable_id, preferences_id, change_passphrase_id, reset_id) = ids;
+    let (
+        lock_id,
+        disable_id,
+        reenable_id,
+        preferences_id,
+        change_passphrase_id,
+        reset_id,
+        regrant_id,
+        check_updates_id,
+    ) = ids;
     let (
         lock_item,
         disable_item,
@@ -337,6 +434,8 @@ fn run_session(
         preferences_item,
         change_passphrase_item,
         reset_item,
+        _regrant_item,
+        _check_updates_item,
     ) = items;
     let (was_locked, was_disabled, last_tooltip, last_tooltip_update, has_permissions) = tracked;
 
@@ -418,6 +517,23 @@ fn run_session(
                 {
                     return;
                 }
+            } else if event_id == regrant_id {
+                info!("Permission re-grant requested from tray");
+                *pending_in_callback.borrow_mut() = Some(SessionAction::ReGrantPermission);
+                #[cfg(target_os = "macos")]
+                {
+                    NSApplication::sharedApplication(mtm).stop(None);
+                    return;
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    return;
+                }
+            } else if event_id == check_updates_id {
+                info!("Check for Updates menu item clicked");
+                // Fire-and-forget: opens the browser without ending the
+                // session or blocking the tray (no window flow involved).
+                handle_check_updates();
             }
         }
 
@@ -566,6 +682,35 @@ fn run_session(
         std::process::exit(0);
     });
     result
+}
+
+/// Handle the permission re-grant flow from the tray (issue #29): open the
+/// wizard's permission-only screen on the shared event loop. Used both when
+/// startup detected a stale Accessibility grant (config valid, permission
+/// missing) and manually via the "Fix Accessibility Permission…" item.
+///
+/// The config is never read, shown, or written here — the user already has
+/// one; only the TCC grant is (re)established. On success the running core
+/// resumes normally: the permission monitor's existing `request_start_event_tap`
+/// path (or the next poll tick) restarts the event tap once the grant lands,
+/// so no relaunch and no config touch is needed.
+fn handle_regrant_permission(
+    event_loop: &mut tao::event_loop::EventLoop<wizard::WizardEvent>,
+) {
+    match wizard::run_permission_regrant(event_loop) {
+        Ok(()) => {
+            info!("Accessibility permission re-granted; resuming normal operation");
+            #[cfg(target_os = "macos")]
+            {
+                let _ = notify_rust::Notification::new()
+                    .summary("HandsOff")
+                    .body("Accessibility permission restored.\nHandsOff will resume input blocking.")
+                    .timeout(notify_rust::Timeout::Milliseconds(NOTIFICATION_TIMEOUT_MS))
+                    .show();
+            }
+        }
+        Err(e) => info!("Permission re-grant not completed: {}", e),
+    }
 }
 
 /// Handle lock from menu
@@ -1042,4 +1187,52 @@ fn load_png_icon(png_data: &[u8]) -> tray_icon::Icon {
 
     tray_icon::Icon::from_rgba(rgba_data, width, height)
         .expect("Failed to create icon from RGBA data")
+}
+
+// ---------------------------------------------------------------------------
+// Unit tests (issue #29): pure decision logic only. Window/menu plumbing is
+// manual-smoke on macOS (no AppKit/event-loop on this platform).
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_startup_flow_routes_all_three_cases() {
+        // Config invalid → full wizard, regardless of permissions.
+        assert_eq!(
+            wizard::startup_flow(false, true),
+            wizard::StartupFlow::Wizard
+        );
+        assert_eq!(
+            wizard::startup_flow(false, false),
+            wizard::StartupFlow::Wizard
+        );
+
+        // Config valid, permissions granted → run normally.
+        assert_eq!(
+            wizard::startup_flow(true, true),
+            wizard::StartupFlow::Run
+        );
+
+        // Config valid but Accessibility grant stale (post-update CDHash
+        // change) → permission-only re-grant, NOT passphrase re-setup.
+        assert_eq!(
+            wizard::startup_flow(true, false),
+            wizard::StartupFlow::ReGrant
+        );
+    }
+
+    #[test]
+    fn test_releases_url_points_at_latest() {
+        assert_eq!(
+            RELEASES_URL,
+            "https://github.com/mhuang74/handsoff-rs/releases/latest"
+        );
+    }
+
+    #[test]
+    fn test_check_updates_menu_label() {
+        assert_eq!(CHECK_UPDATES_LABEL, "Check for Updates…");
+    }
 }
