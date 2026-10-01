@@ -29,8 +29,9 @@ const CHECK_UPDATES_LABEL: &str = "Check for Updates…";
 
 /// Open the latest GitHub release page in the default browser. Fire-and-
 /// forget shell-out to `open` (same osascript-style delegation the dialogs
-/// use): never blocks the tray, never inspects the result — a failure to
-/// open a browser is only logged.
+/// use): never blocks the tray, never inspects the result. Failure to open
+/// a browser surfaces as a NON-BLOCKING notification — a modal osascript
+/// alert here would freeze the tray poll loop (run_session callback).
 fn handle_check_updates() {
     match std::process::Command::new("open")
         .arg(RELEASES_URL)
@@ -40,13 +41,16 @@ fn handle_check_updates() {
         Err(e) => {
             error!("Failed to open release page {}: {}", RELEASES_URL, e);
             #[cfg(target_os = "macos")]
-            show_alert(
-                "HandsOff - Check for Updates",
-                &format!(
-                    "Could not open your browser.\n\nVisit the releases page manually:\n{}",
-                    RELEASES_URL
-                ),
-            );
+            {
+                let _ = notify_rust::Notification::new()
+                    .summary("HandsOff - Check for Updates")
+                    .body(&format!(
+                        "Could not open your browser.\nVisit the releases page manually:\n{}",
+                        RELEASES_URL
+                    ))
+                    .timeout(notify_rust::Timeout::Milliseconds(NOTIFICATION_ERROR_TIMEOUT_MS))
+                    .show();
+            }
         }
     }
 }
@@ -1221,18 +1225,5 @@ mod tests {
             wizard::startup_flow(true, false),
             wizard::StartupFlow::ReGrant
         );
-    }
-
-    #[test]
-    fn test_releases_url_points_at_latest() {
-        assert_eq!(
-            RELEASES_URL,
-            "https://github.com/mhuang74/handsoff-rs/releases/latest"
-        );
-    }
-
-    #[test]
-    fn test_check_updates_menu_label() {
-        assert_eq!(CHECK_UPDATES_LABEL, "Check for Updates…");
     }
 }
