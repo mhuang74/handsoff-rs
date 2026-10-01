@@ -7,8 +7,10 @@ pub mod config;
 pub mod config_file;
 pub mod constants;
 pub mod input_blocking;
+pub mod preferences;
 pub mod setup;
 pub mod utils;
+pub mod wizard;
 
 use anyhow::{Context, Result};
 use app_state::AppState;

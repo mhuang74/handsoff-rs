@@ -385,8 +385,9 @@ impl Config {
         Ok(())
     }
 
-    /// Save config to a specific path (used by tests)
-    #[cfg(test)]
+    /// Save config to a specific path (no directory creation, no permission
+    /// enforcement — the standard-location `save()` is the hardened variant).
+    /// Used by tests and any caller with its own path policy.
     pub fn save_to_path(&self, path: &Path) -> Result<()> {
         let contents = toml::to_string_pretty(self).context("Failed to serialize config")?;
         fs::write(path, contents)
@@ -396,6 +397,38 @@ impl Config {
     /// Whether the backoff auto-unlock schedule is enabled
     pub fn auto_unlock_backoff_enabled(&self) -> bool {
         self.auto_unlock_mode == AUTO_UNLOCK_MODE_BACKOFF
+    }
+
+    /// Re-attach a stored passphrase hash/format from `previous` onto `self`.
+    ///
+    /// Preferences edits never touch the passphrase, but the `Config` constructor
+    /// demands a ≥4-key sequence and re-hashes it. Callers pass a placeholder
+    /// sequence to the constructor, then swap in the real stored hash here so
+    /// the saved file keeps the working passphrase. Requires both configs to be
+    /// keycode-v1 (the constructor guarantees it for `self`; `load` for
+    /// `previous`).
+    pub fn preserve_hash(mut self, previous: &Config) -> Result<Self> {
+        if previous.passphrase_format != KEYCODE_SEQUENCE_FORMAT {
+            anyhow::bail!("Cannot preserve passphrase from unsupported format '{}'", previous.passphrase_format);
+        }
+        let hash_ok = previous
+            .passphrase_hash
+            .as_ref()
+            .is_some_and(|h| h.len() == 64 && h.chars().all(|c| c.is_ascii_hexdigit()));
+        if !hash_ok {
+            anyhow::bail!("Cannot preserve passphrase: stored hash is missing or malformed");
+        }
+        self.passphrase_hash = previous.passphrase_hash.clone();
+        self.passphrase_format = previous.passphrase_format.clone();
+        Ok(self)
+    }
+
+    /// Normalize a user-typed hotkey: trim, uppercase, validate A-Z.
+    pub fn normalize_hotkey(key: &str) -> String {
+        let trimmed = key.trim().to_uppercase();
+        // Length/format validation is the constructor's job; trim+uppercase
+        // only normalizes what the user typed so the constructor sees "Q".
+        trimmed
     }
 
     /// Get the lock hotkey Code, defaulting to KeyL if not configured

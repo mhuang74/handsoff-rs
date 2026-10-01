@@ -7,11 +7,11 @@ use handsoff::constants::{
     NOTIFICATION_ERROR_TIMEOUT_MS,
     NOTIFICATION_TIMEOUT_MS, POLL_INTERVAL_DISABLED_SECS, POLL_INTERVAL_ENABLED_MS,
 };
-use handsoff::{config, config_file::Config, setup, HandsOffCore};
+use handsoff::{config, config_file::Config, preferences::menu_state, setup, wizard, HandsOffCore};
 use log::{error, info, warn};
 use std::cell::RefCell;
 use std::rc::Rc;
-use tao::event_loop::{ControlFlow, EventLoopBuilder};
+use tao::event_loop::ControlFlow;
 use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::TrayIconBuilder;
 
@@ -90,20 +90,42 @@ fn main() -> Result<()> {
         info!("Accessibility permissions verified");
     }
 
-    // Load configuration — first run WITHOUT a config must NOT silently
-    // create a default passphrase (L-5/S-3). Direct the user to setup and exit.
-    let cfg = match Config::load() {
-        Ok(cfg) => cfg,
+    // Create the ONE event loop for the whole process. tao's macOS CFRunLoop
+    // observers (registered in EventLoop::new, never removed) hold a
+    // Weak<PanicInfo> that panics once the owning EventLoop drops, so the
+    // loop must live for the entire process: the wizard runs on this same
+    // loop via run_return, then the tray continues on it.
+    let mut event_loop =
+        tao::event_loop::EventLoopBuilder::<wizard::WizardEvent>::with_user_event().build();
+
+    // Load configuration — first run WITHOUT a config, or a config that
+    // fails strict validation (keycode-v1 hash, ≥4 keys, distinct hotkeys,
+    // timeout bounds — ADR 0002), launches the in-app Setup Wizard instead
+    // of pointing users at the terminal. The wizard runs `run_return` on the
+    // loop above and returns when the flow completes; the tray's `run` below
+    // is the second (supported) re-entry on the same loop.
+    let cfg = match Config::load().and_then(|_| setup::validate_config_strict()) {
+        Ok(()) => Config::load().expect("config validated above"),
         Err(e) => {
-            error!("Configuration not available: {}", e);
-            show_alert(
-                "HandsOff - Setup Required",
-                "HandsOff needs a passphrase before it can protect input.\n\n\
-                 Run the one-time setup from Terminal:\n\
-                 ~/Applications/HandsOff.app/Contents/MacOS/handsoff-tray --setup\n\n\
-                 (Setup captures your passphrase as physical key presses.)",
-            );
-            std::process::exit(1);
+            info!("Launching Setup Wizard: {}", e);
+            match wizard::run_wizard(&mut event_loop) {
+                Ok(outcome) => {
+                    wizard::wizard_outcome_to_config(&outcome)
+                        .context("Failed to save wizard configuration")?;
+                    Config::load().context("Wizard saved config failed to load")?
+                }
+                Err(e) => {
+                    error!("Setup wizard failed: {}", e);
+                    show_alert(
+                        "HandsOff - Setup Required",
+                        &format!(
+                            "HandsOff needs a passphrase before it can protect input.\n\n{}",
+                            e
+                        ),
+                    );
+                    std::process::exit(1);
+                }
+            }
         }
     };
 
@@ -122,24 +144,11 @@ fn main() -> Result<()> {
 
     // Configure hotkeys from config file only (tray app does not support env var overrides)
     let lock_key = cfg.get_lock_key_code().with_context(|| {
-        "Failed to parse lock hotkey from config file. Run setup: ~/Applications/HandsOff.app/Contents/MacOS/handsoff-tray --setup"
+        "Failed to parse lock hotkey from config file. Restart the app to re-run the Setup Wizard."
     })?;
     let talk_key = cfg.get_talk_key_code().with_context(|| {
-        "Failed to parse talk hotkey from config file. Run setup: ~/Applications/HandsOff.app/Contents/MacOS/handsoff-tray --setup"
+        "Failed to parse talk hotkey from config file. Restart the app to re-run the Setup Wizard."
     })?;
-
-    // Validate that configured hotkeys are different
-    if lock_key == talk_key {
-        error!("Lock and Talk hotkeys cannot be the same: {:?}", lock_key);
-        show_alert(
-            "HandsOff - Configuration Error",
-            &format!(
-                "Lock and Talk hotkeys cannot be the same.\n\nBoth are set to: {:?}\n\nThis is likely because the config file was manually edited.\n\nPlease run setup to reconfigure:\n~/Applications/HandsOff.app/Contents/MacOS/handsoff-tray --setup",
-                lock_key
-            ),
-        );
-        std::process::exit(1);
-    }
 
     core.set_hotkey_config(lock_key, talk_key);
 
@@ -164,23 +173,32 @@ fn main() -> Result<()> {
     // Wrap core in Rc<RefCell> for event loop (single-threaded)
     let core = Rc::new(RefCell::new(core));
 
-    // Create event loop for tray app
-    let event_loop = EventLoopBuilder::new().build();
+    // (Event loop already created above — the single process-wide loop the
+    // wizard also ran on.)
 
     // Build tray menu
     // Note: When locked, mouse clicks are blocked, so menu is inaccessible
     // Lock menu item only works when unlocked; unlock requires typing passphrase
     let lock_item = MenuItem::new("Lock Input", true, None);
     let disable_item = MenuItem::new("Disable", true, None);
+    let reenable_item = MenuItem::new("Reenable", true, None);
     let separator = PredefinedMenuItem::separator();
-    let reset_item = MenuItem::new("Reset", true, None);
+    let preferences_item = MenuItem::new("Preferences…", true, None);
+    let change_passphrase_item = MenuItem::new("Change Passphrase…", true, None);
+    let reset_item = MenuItem::new("Reset…", true, None);
 
     let menu = Menu::new();
     menu.append(&lock_item)
         .context("Failed to add lock menu item")?;
     menu.append(&disable_item)
         .context("Failed to add disable menu item")?;
+    menu.append(&reenable_item)
+        .context("Failed to add reenable menu item")?;
     menu.append(&separator).context("Failed to add separator")?;
+    menu.append(&preferences_item)
+        .context("Failed to add preferences menu item")?;
+    menu.append(&change_passphrase_item)
+        .context("Failed to add change passphrase menu item")?;
     menu.append(&reset_item)
         .context("Failed to add reset menu item")?;
 
@@ -198,16 +216,132 @@ fn main() -> Result<()> {
     // Clone IDs for event handling
     let lock_id = lock_item.id().clone();
     let disable_id = disable_item.id().clone();
+    let reenable_id = reenable_item.id().clone();
+    let preferences_id = preferences_item.id().clone();
+    let change_passphrase_id = change_passphrase_item.id().clone();
     let reset_id = reset_item.id().clone();
 
     // Track state for tooltip updates and permission state
-    let mut was_locked = false;
-    let mut was_disabled = false;
-    let mut last_tooltip = String::new();
-    let mut has_permissions = true; // Assume true at start (already verified at startup)
+    let was_locked = false;
+    let was_disabled = false;
+    let last_tooltip = String::new();
+    let has_permissions = true; // Assume true at start (already verified at startup)
 
-    // Run event loop with periodic updates
-    event_loop.run(move |_event, _, control_flow| {
+    let pending_action: Rc<RefCell<Option<SessionAction>>> = Rc::new(RefCell::new(None));
+    let pending_in_loop = pending_action.clone();
+
+    // Tray sessions run for the life of the process: each session returns
+    // when a window-flow action was requested; main services it, then
+    // re-enters the session (the action handlers themselves end their window
+    // flows via app.stop and fall back through to here).
+    let tracked: &mut TrackedState = &mut (was_locked, was_disabled, last_tooltip, has_permissions);
+    loop {
+        let action = run_session(
+            &mut event_loop,
+            core.clone(),
+            (
+                lock_id.clone(),
+                disable_id.clone(),
+                reenable_id.clone(),
+                preferences_id.clone(),
+                change_passphrase_id.clone(),
+                reset_id.clone(),
+            ),
+            (
+                lock_item.clone(),
+                disable_item.clone(),
+                reenable_item.clone(),
+                preferences_item.clone(),
+                change_passphrase_item.clone(),
+                reset_item.clone(),
+            ),
+            &tray,
+            tracked,
+            pending_in_loop.clone(),
+        );
+
+        match action {
+            SessionAction::Preferences => handle_preferences(&mut event_loop),
+            SessionAction::ChangePassphrase => handle_change_passphrase(&mut event_loop, core.clone()),
+            SessionAction::Reset => handle_reset(&mut event_loop),
+        }
+    }
+}
+
+/// Tracker state that must survive across tray sessions (icon/tooltip caches
+/// and permission logging dedup).
+#[allow(clippy::type_complexity)]
+type TrackedState = (bool, bool, String, bool);
+
+/// Which menu item requested the session end, if any.
+#[allow(clippy::enum_variant_names)]
+enum SessionAction {
+    Preferences,
+    ChangePassphrase,
+    Reset,
+}
+
+/// One tray session: a `run_return` pass on the process-wide event loop that
+/// polls menu events and updates icon/tooltip, ending when a window-flow menu
+/// action is clicked (returns that action) or the process is killed.
+///
+/// Why sessions at all: the wizard/Preferences windows each run their own
+/// `run_return` on this same loop (a second tao EventLoop would panic — its
+/// CFRunLoop observers hold a Weak<PanicInfo> that dangles on loop drop).
+/// Calling `run_return` re-entrantly from INSIDE the tray's callback would
+/// nest `[NSApp run]`, which AppKit forbids. So a window-flow menu click
+/// records a pending action and ends the session via
+/// `NSApplication::stop` — the mechanism tao's own `stop_app_on_panic` uses.
+/// ControlFlow::ExitWithCode is NOT usable here: it latches process-wide
+/// (tao docs: "once set, cannot be unset"; the macOS impl never resets
+/// HANDLER.control_flow between run_return calls), which would make every
+/// later session — including the post-Reset wizard — return immediately.
+#[allow(clippy::type_complexity)]
+fn run_session(
+    event_loop: &mut tao::event_loop::EventLoop<wizard::WizardEvent>,
+    core: Rc<RefCell<HandsOffCore>>,
+    ids: (
+        tray_icon::menu::MenuId,
+        tray_icon::menu::MenuId,
+        tray_icon::menu::MenuId,
+        tray_icon::menu::MenuId,
+        tray_icon::menu::MenuId,
+        tray_icon::menu::MenuId,
+    ),
+    items: (
+        tray_icon::menu::MenuItem,
+        tray_icon::menu::MenuItem,
+        tray_icon::menu::MenuItem,
+        tray_icon::menu::MenuItem,
+        tray_icon::menu::MenuItem,
+        tray_icon::menu::MenuItem,
+    ),
+    tray: &tray_icon::TrayIcon,
+    tracked: &mut TrackedState,
+    pending_action: Rc<RefCell<Option<SessionAction>>>,
+) -> SessionAction {
+    let (lock_id, disable_id, reenable_id, preferences_id, change_passphrase_id, reset_id) = ids;
+    let (
+        lock_item,
+        disable_item,
+        reenable_item,
+        preferences_item,
+        change_passphrase_item,
+        reset_item,
+    ) = items;
+    let (was_locked, was_disabled, last_tooltip, has_permissions) = tracked;
+
+    // Grabbing the NSApplication handle for session end (see doc comment).
+    #[cfg(target_os = "macos")]
+    use objc2_app_kit::NSApplication;
+    #[cfg(target_os = "macos")]
+    let mtm = objc2_foundation::MainThreadMarker::new()
+        .expect("tray session must run on main thread");
+
+    use tao::platform::run_return::EventLoopExtRunReturn;
+
+    let pending_in_callback = pending_action.clone();
+    event_loop.run_return(move |_event, _, control_flow| {
         // Adjust polling interval based on disabled state
         // When disabled: minimal WindowServer interaction
         // When enabled: responsive UI updates
@@ -233,9 +367,48 @@ fn main() -> Result<()> {
             } else if event_id == disable_id {
                 info!("Disable menu item clicked");
                 handle_disable(core.clone());
+            } else if event_id == reenable_id {
+                info!("Reenable menu item clicked, resetting app state");
+                handle_reenable(core.clone());
+            } else if event_id == preferences_id {
+                info!("Preferences menu item clicked");
+                *pending_in_callback.borrow_mut() = Some(SessionAction::Preferences);
+                #[cfg(target_os = "macos")]
+                {
+                    // Note: app.stop returns from [NSApp run] on the NEXT
+                    // wake; the closure keeps running until then, but the
+                    // pending action is already recorded.
+                    NSApplication::sharedApplication(mtm).stop(None);
+                    return; // control_flow untouched (ExitWithCode latches)
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    return;
+                }
+            } else if event_id == change_passphrase_id {
+                info!("Change Passphrase menu item clicked");
+                *pending_in_callback.borrow_mut() = Some(SessionAction::ChangePassphrase);
+                #[cfg(target_os = "macos")]
+                {
+                    NSApplication::sharedApplication(mtm).stop(None);
+                    return;
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    return;
+                }
             } else if event_id == reset_id {
-                info!("Reset menu item clicked, resetting app state");
-                handle_reset(core.clone());
+                info!("Reset menu item clicked");
+                *pending_in_callback.borrow_mut() = Some(SessionAction::Reset);
+                #[cfg(target_os = "macos")]
+                {
+                    NSApplication::sharedApplication(mtm).stop(None);
+                    return;
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    return;
+                }
             }
         }
 
@@ -290,7 +463,7 @@ fn main() -> Result<()> {
                             let _ = notify_rust::Notification::new()
                                 .summary("HandsOff - Restart Failed")
                                 .body(&format!(
-                                    "Failed to restart input blocking: {}\n\nUse Reset menu to try again.",
+                                    "Failed to restart input blocking: {}\n\nUse Reenable menu to try again.",
                                     e
                                 ))
                                 .timeout(notify_rust::Timeout::Milliseconds(NOTIFICATION_ERROR_TIMEOUT_MS))
@@ -307,30 +480,31 @@ fn main() -> Result<()> {
         let is_disabled = core_borrow.state.is_disabled();
         let current_permissions = core_borrow.has_accessibility_permissions();
 
-        // Update Lock menu item enabled state based on permissions and disabled state
-        // Only enable Lock when we have permissions AND are not already locked AND not disabled
-        let should_enable_lock = current_permissions && !is_locked && !is_disabled;
-        lock_item.set_enabled(should_enable_lock);
-
-        // Update Disable menu item enabled state
-        // Only enable Disable when we have permissions AND are not locked AND not already disabled
-        let should_enable_disable = current_permissions && !is_locked && !is_disabled;
-        disable_item.set_enabled(should_enable_disable);
+        // Update menu enabled state via the pure helper (unit-tested)
+        let menu_flags = menu_state(is_locked, is_disabled, current_permissions);
+        lock_item.set_enabled(menu_flags.lock_enabled);
+        disable_item.set_enabled(menu_flags.disable_enabled);
+        // Reenable and the config-level actions are always enabled by design;
+        // set_enabled anyway so a future rule change flows through one place.
+        reenable_item.set_enabled(menu_flags.reenable_enabled);
+        preferences_item.set_enabled(menu_flags.preferences_enabled);
+        change_passphrase_item.set_enabled(menu_flags.change_passphrase_enabled);
+        reset_item.set_enabled(menu_flags.reset_enabled);
 
         // Track permission state changes for logging
-        if has_permissions != current_permissions {
+        if *has_permissions != current_permissions {
             if current_permissions {
                 info!("Tray: Accessibility permissions detected, Lock menu enabled");
             } else {
                 warn!("Tray: Accessibility permissions lost, Lock menu disabled");
             }
-            has_permissions = current_permissions;
+            *has_permissions = current_permissions;
         }
 
         // Update icon when lock state or disabled state changes
-        if is_locked != was_locked || is_disabled != was_disabled {
-            was_locked = is_locked;
-            was_disabled = is_disabled;
+        if is_locked != *was_locked || is_disabled != *was_disabled {
+            *was_locked = is_locked;
+            *was_disabled = is_disabled;
 
             let icon = if is_disabled {
                 create_icon_disabled()
@@ -359,13 +533,21 @@ fn main() -> Result<()> {
 
         // Always update tooltip (to show live countdown and permission status)
         let tooltip = build_tooltip(&core_borrow, is_locked, is_disabled, current_permissions);
-        if tooltip != last_tooltip {
+        if tooltip != *last_tooltip {
             if let Err(e) = tray.set_tooltip(Some(&tooltip)) {
                 error!("Failed to update tray tooltip: {}", e);
             }
-            last_tooltip = tooltip;
+            *last_tooltip = tooltip;
         }
     });
+
+    let result = pending_action.borrow_mut().take().unwrap_or_else(|| {
+        // run_return ended without a requested action: treat as exit request
+        // (never happens on macOS — the tray has no close affordance — but
+        // the session must not spin).
+        std::process::exit(0);
+    });
+    result
 }
 
 /// Handle lock from menu
@@ -410,10 +592,13 @@ fn handle_disable(core: Rc<RefCell<HandsOffCore>>) {
     }
 }
 
-/// Handle reset from menu
-/// Resets the app state to default: unlocked with all timers reset
-/// If disabled, re-enables the app. Otherwise, restarts the event tap if permissions are available
-fn handle_reset(core: Rc<RefCell<HandsOffCore>>) {
+/// Handle Reenable from menu (the old "Reset" — renamed in #27 so Reset can
+/// mean the destructive config wipe).
+///
+/// Unguarded by design (CONTEXT.md): ends a stuck Lock and restarts input
+/// capture without changing any configuration. If disabled, re-enables the
+/// app. Otherwise, restarts the event tap if permissions are available.
+fn handle_reenable(core: Rc<RefCell<HandsOffCore>>) {
     let mut core = core.borrow_mut();
 
     // Check if disabled - if so, enable instead of just restarting
@@ -431,20 +616,20 @@ fn handle_reset(core: Rc<RefCell<HandsOffCore>>) {
     if is_disabled {
         match core.enable() {
             Ok(()) => {
-                info!("HandsOff re-enabled successfully during reset");
+                info!("HandsOff re-enabled successfully during reenable");
                 #[cfg(target_os = "macos")]
                 {
                     let _ = notify_rust::Notification::new()
                         .summary("HandsOff")
-                        .body("App reset complete - Re-enabled and ready to use")
+                        .body("Reenabled - Ready to use")
                         .timeout(notify_rust::Timeout::Milliseconds(NOTIFICATION_TIMEOUT_MS))
                         .show();
                 }
             }
             Err(e) => {
-                warn!("Could not re-enable during reset: {}", e);
+                warn!("Could not re-enable during reenable: {}", e);
                 show_alert(
-                    "HandsOff - Reset Partial Success",
+                    "HandsOff - Reenable Partial Success",
                     &format!("Timers cleared but could not re-enable:\n{}\n\nPlease check accessibility permissions.", e)
                 );
             }
@@ -453,27 +638,183 @@ fn handle_reset(core: Rc<RefCell<HandsOffCore>>) {
         // Attempt to restart event tap (will check permissions internally)
         match core.restart_event_tap() {
             Ok(()) => {
-                info!("Input blocking restarted successfully during reset");
+                info!("Input blocking restarted successfully during reenable");
                 #[cfg(target_os = "macos")]
                 {
                     let _ = notify_rust::Notification::new()
                         .summary("HandsOff")
-                        .body("Reset complete - Input blocking restarted\nReady to use")
+                        .body("Reenabled - Input blocking restarted\nReady to use")
                         .timeout(notify_rust::Timeout::Milliseconds(NOTIFICATION_TIMEOUT_MS))
                         .show();
                 }
             }
             Err(e) => {
-                warn!("Could not restart input blocking during reset: {}", e);
+                warn!("Could not restart input blocking during reenable: {}", e);
                 show_alert(
-                    "HandsOff - Reset Partial Success",
+                    "HandsOff - Reenable Partial Success",
                     &format!("Timers cleared but input blocking could not be restarted:\n{}\n\nPlease check accessibility permissions.", e)
                 );
             }
         }
     }
 
-    info!("Finished handling reset");
+    info!("Finished handling reenable");
+}
+
+/// Handle Preferences from menu (#27): open the in-process Preferences window
+/// on the shared event loop, apply the edit via the config seam, then sync
+/// the running core with the new settings.
+fn handle_preferences(event_loop: &mut tao::event_loop::EventLoop<wizard::WizardEvent>) {
+    match wizard::run_preferences(event_loop) {
+        Ok(outcome) => match handsoff::preferences::apply_preferences(&outcome.edit) {
+            Ok(_cfg) => {
+                info!("Preferences applied");
+                #[cfg(target_os = "macos")]
+                {
+                    let _ = notify_rust::Notification::new()
+                        .summary("HandsOff")
+                        .body("Preferences saved.\nHotkey and timeout changes take effect on restart.")
+                        .timeout(notify_rust::Timeout::Milliseconds(NOTIFICATION_TIMEOUT_MS))
+                        .show();
+                }
+            }
+            Err(e) => {
+                error!("Failed to apply preferences: {}", e);
+                show_alert(
+                    "HandsOff - Preferences Error",
+                    &format!("Could not save preferences:\n{}\n\nNothing was changed.", e),
+                );
+            }
+        },
+        Err(e) => info!("Preferences window closed without saving: {}", e),
+    }
+}
+
+/// Handle Change Passphrase from menu (#27): silent double capture, then save
+/// with only the hash changed. Restart is NOT required (the hash is read per
+/// unlock attempt from AppState) — but the running core still holds the old
+/// hash in memory, so sync it after a successful save.
+fn handle_change_passphrase(
+    event_loop: &mut tao::event_loop::EventLoop<wizard::WizardEvent>,
+    core: Rc<RefCell<HandsOffCore>>,
+) {
+    match wizard::run_change_passphrase(event_loop) {
+        Ok(cfg) => {
+            info!("Passphrase changed successfully");
+            if let Some(hash) = &cfg.passphrase_hash {
+                core.borrow()
+                    .state
+                    .set_passphrase_hash(hash.clone());
+            }
+            #[cfg(target_os = "macos")]
+            {
+                let _ = notify_rust::Notification::new()
+                    .summary("HandsOff")
+                    .body("Passphrase changed.\nUse the new passphrase to unlock.")
+                    .timeout(notify_rust::Timeout::Milliseconds(NOTIFICATION_TIMEOUT_MS))
+                    .show();
+            }
+        }
+        Err(e) => {
+            info!("Change Passphrase not completed: {}", e);
+            show_alert(
+                "HandsOff - Change Passphrase",
+                &format!("Passphrase not changed:\n{}\n\nYour existing passphrase still works.", e),
+            );
+        }
+    }
+}
+
+/// Handle Reset from menu (#27): the destructive recovery path.
+///
+/// Double-confirmed dialog → wipe config → relaunch into the Setup Wizard.
+/// Nothing here re-enters normal operation: after the wizard completes (or is
+/// cancelled), the process relaunches itself so the startup path (strict
+/// validation → core construction) runs exactly as at first boot.
+fn handle_reset(event_loop: &mut tao::event_loop::EventLoop<wizard::WizardEvent>) {
+    // Double-confirm (spec #24 story 16): a mis-click must not wipe config.
+    if !confirm_reset() {
+        info!("Reset cancelled at confirmation");
+        return;
+    }
+
+    match handsoff::preferences::wipe_config() {
+        Ok(wiped) => {
+            info!(
+                "Reset: config {}",
+                if wiped { "wiped" } else { "already absent" }
+            );
+        }
+        Err(e) => {
+            error!("Reset failed to wipe config: {}", e);
+            show_alert(
+                "HandsOff - Reset Failed",
+                &format!("Could not remove the configuration:\n{}\n\nNothing was changed.", e),
+            );
+            return;
+        }
+    }
+
+    // Relaunch into the wizard. The wizard itself refuses nothing here — the
+    // user asked for a fresh setup. On successful completion the process
+    // relaunches itself to rebuild the core from the new config; on cancel we
+    // exit nonzero so the user can relaunch the app (which reopens the wizard
+    // via the strict-validation gate).
+    match wizard::run_wizard(event_loop) {
+        Ok(outcome) => {
+            if let Err(e) = wizard::wizard_outcome_to_config(&outcome) {
+                error!("Reset: wizard config save failed: {}", e);
+                show_alert(
+                    "HandsOff - Reset Failed",
+                    &format!("The new setup could not be saved:\n{}\n\nRelaunch HandsOff to try again.", e),
+                );
+                std::process::exit(1);
+            }
+            info!("Reset complete: new configuration saved, relaunching");
+            if let Err(e) = relaunch_self() {
+                error!("Reset: relaunch failed: {}", e);
+            }
+        }
+        Err(e) => {
+            info!("Reset: wizard cancelled or failed: {}", e);
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Double-confirmed Reset dialog. Returns true only on explicit confirm.
+fn confirm_reset() -> bool {
+    use std::process::Command;
+
+    let script = r#"display dialog "This wipes your HandsOff configuration — passphrase, hotkeys, and timeouts — and restarts setup from the beginning.\n\nYour current passphrase will STOP working." with title "HandsOff - Reset"\nbuttons {"Cancel", "Reset"} default button "Cancel" with icon caution"#;
+    let script = script.replace("\\n", "\n");
+    let out = Command::new("osascript").arg("-e").arg(&script).output();
+    match out {
+        Ok(o) => String::from_utf8_lossy(&o.stdout).contains("button returned:Reset"),
+        Err(_) => {
+            warn!("Reset confirmation dialog failed to show; treating as cancel");
+            false
+        }
+    }
+}
+
+/// Relaunch the running binary (post-Reset, post-wizard) so startup runs the
+/// normal first-boot path against the fresh config.
+fn relaunch_self() -> Result<()> {
+    let exe = std::env::current_exe().context("Failed to locate running binary")?;
+    let err = std::process::Command::new(exe)
+        .args(std::env::args().skip(1).filter(|a| a != "--setup"))
+        .spawn();
+    match err {
+        Ok(_) => {
+            info!("Relaunched HandsOff after Reset");
+            std::process::exit(0);
+        }
+        Err(e) => {
+            error!("Failed to relaunch after Reset: {}", e);
+            std::process::exit(1);
+        }
+    }
 }
 
 /// Show native macOS alert dialog
@@ -571,9 +912,6 @@ fn build_tooltip(
         "• Ctrl+Cmd+Shift+{} (hold): Hotkey to Unmute (Spacebar)\n\n",
         talk_key
     ));
-
-    // Setup
-    tooltip.push_str("Tip: Run ~/Applications/HandsOff.app/Contents/MacOS/handsoff-tray --setup to set passphrase and timeouts\n\n");
 
     // Repository info
     tooltip.push_str("Michael S. Huang\n");

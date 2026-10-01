@@ -13,7 +13,7 @@ use crate::constants::{
     ENTER_KEYCODE_KEYPAD,
 };
 use crate::utils::MIN_PASSPHRASE_KEYS;
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 
 const ESCAPE_KEYCODE: i64 = 53;
 
@@ -61,6 +61,62 @@ pub fn validate_sequence(keys: &[u32]) -> Result<()> {
     Ok(())
 }
 
+/// Strict config validation for the tray's "run or launch wizard" decision.
+///
+/// Returns `Ok(())` when the config at the standard location is complete and
+/// valid: `Config::load()` succeeds (keycode-v1 hash present, modes/hotkeys/
+/// timeouts in range) and lock/talk hotkeys are distinct. Any failure means
+/// the tray must not run — it launches the Setup Wizard instead (ADR 0002).
+///
+/// Distinctness is re-checked here (beyond `Config::load_from_path`) because
+/// the wizard's own outcome must satisfy the same invariant; `load` covers it,
+/// but this keeps the wizard-entry contract self-contained and testable.
+pub fn validate_config_strict() -> Result<()> {
+    let cfg = crate::config_file::Config::load()?;
+    let lock = cfg.get_lock_key_code()?;
+    let talk = cfg.get_talk_key_code()?;
+    if lock == talk {
+        anyhow::bail!(
+            "Lock and Talk hotkeys must be different (both '{}')",
+            cfg.lock_hotkey.as_deref().unwrap_or("?")
+        );
+    }
+    Ok(())
+}
+
+/// Assemble a `Config` from collected setup inputs (seam 1, pure).
+///
+/// Shared by the TUI flow (`run_interactive_setup` → `SetupOutcome`) and the
+/// GUI wizard: both reduce to a keycode sequence + timeouts + hotkeys. The
+/// config constructor validates everything (≥4 keys, hotkey A-Z, distinct,
+/// timeout bounds). No I/O — call `Config::save()` (or `save_to_path` in
+/// tests) to persist.
+pub fn assemble_config(outcome: &SetupOutcome) -> Result<crate::config_file::Config> {
+    let (auto_unlock_backoff, auto_unlock_base) = match outcome.auto_unlock {
+        crate::config::AutoUnlockConfig::Disabled => (false, 0),
+        crate::config::AutoUnlockConfig::Backoff { base_interval_secs } => {
+            (true, base_interval_secs.get())
+        }
+    };
+    crate::config_file::Config::new(
+        &outcome.keycodes,
+        outcome.auto_lock,
+        auto_unlock_backoff,
+        auto_unlock_base,
+        outcome.lock_key.clone(),
+        outcome.talk_key.clone(),
+    )
+    .context("Failed to create configuration")
+}
+
+/// Assemble a `Config` from collected setup inputs and persist it to the
+/// standard location (sets 0600 permissions).
+pub fn assemble_and_save_config(outcome: &SetupOutcome) -> Result<crate::config_file::Config> {
+    let cfg = assemble_config(outcome)?;
+    cfg.save().context("Failed to save configuration")?;
+    Ok(cfg)
+}
+
 /// Detect whether we can capture physical key events at all.
 ///
 /// Returns Err when running non-interactively (SSH/headless): a session tap in
@@ -81,10 +137,10 @@ pub fn check_interactive_session() -> Result<()> {
 
 /// Capture a passphrase keycode sequence using a temporary event tap.
 ///
-/// Runs a nested CFRunLoop on the calling (main) thread while the tap is
-/// installed. Each captured key prints a masked progress dot. Enter commits
-/// (when the minimum length is met), Backspace deletes, Escape restarts from
-/// empty. All captured keys are blocked from reaching the focused app.
+/// TUI wrapper around `capture_passphrase_headless`: same semantics (nested
+/// CFRunLoop on the calling main thread, Enter commits at the minimum length,
+/// Backspace deletes, Escape restarts, all captured keys blocked), plus the
+/// terminal UX (masked progress dots, instructions, Ctrl+C abort).
 ///
 /// `prompt` describes this pass (e.g. first capture vs confirm re-entry).
 ///
@@ -112,21 +168,6 @@ pub fn capture_passphrase(
         ));
     }
 
-    use parking_lot::Mutex;
-    use std::sync::Arc;
-
-    struct CaptureState {
-        keys: Vec<u32>,
-        done: bool,
-        aborted: bool,
-    }
-
-    let state = Arc::new(Mutex::new(CaptureState {
-        keys: Vec::new(),
-        done: false,
-        aborted: false,
-    }));
-
     println!("\nPassphrase capture");
     println!("------------------");
     println!("{}", prompt);
@@ -148,6 +189,96 @@ pub fn capture_passphrase(
     print!("Passphrase: ");
     use std::io::Write as _;
     let _ = std::io::stdout().flush();
+
+    // Progress dots and control-key annotations, printed from the tap
+    // callback exactly as the TUI always did.
+    let result = capture_passphrase_headless(
+        lock_hotkey_keycode,
+        talk_hotkey_keycode,
+        Some(Box::new(|event: CaptureEvent| {
+            match event {
+                CaptureEvent::Key => print!("•"),
+                CaptureEvent::Reserved => print!(" [reserved] "),
+                CaptureEvent::Restart => print!(" [restart] "),
+                CaptureEvent::Backspace => print!("\x08 \x08"),
+                CaptureEvent::TooShort(len) => println!(
+                    "\nNeed at least {} keys — keep typing. ({} so far)",
+                    MIN_PASSPHRASE_KEYS, len
+                ),
+            }
+            use std::io::Write as _;
+            let _ = std::io::stdout().flush();
+        })),
+    );
+    if result.is_ok() {
+        println!();
+    }
+    result
+}
+
+/// Events emitted by the capture callback for UI feedback.
+#[cfg(target_os = "macos")]
+pub enum CaptureEvent {
+    /// A key was recorded.
+    Key,
+    /// A reserved key was swallowed.
+    Reserved,
+    /// Escape cleared the sequence.
+    Restart,
+    /// Backspace deleted the last key.
+    Backspace,
+    /// Enter pressed before the minimum length was reached (`usize` = current length).
+    TooShort(usize),
+}
+
+/// Install a session event tap that captures physical keycodes until Enter
+/// commits (≥ `MIN_PASSPHRASE_KEYS` keys) and return the raw sequence.
+///
+/// GUI-usable core of `capture_passphrase` (no terminal I/O, no SSH gate —
+/// a Finder-launched app has no TTY but a perfectly valid WindowServer
+/// session, spec #24 "no stdin/TCC context" note). Runs a nested CFRunLoop
+/// pump on the calling (main) thread; on macOS the wizard calls this from
+/// its tao event loop pump so both run loops interleave. All captured keys
+/// are blocked from reaching the focused app. Reserved set: Escape,
+/// Backspace, Enter (both), and the given hotkey keycodes.
+///
+/// `on_event`, when given, is invoked from the tap callback for UI feedback
+/// (progress dots etc.). It must not touch the capture state.
+///
+/// # Errors
+/// - Accessibility permission missing
+/// - Tap creation failed
+/// - Capture timed out (300 s)
+#[cfg(target_os = "macos")]
+pub fn capture_passphrase_headless(
+    lock_hotkey_keycode: i64,
+    talk_hotkey_keycode: i64,
+    on_event: Option<Box<dyn Fn(CaptureEvent) + 'static>>,
+) -> Result<Vec<u32>> {
+    if !crate::input_blocking::check_accessibility_permissions() {
+        return Err(anyhow!(
+            "Accessibility permissions are required to capture keycodes. \
+             Grant them to HandsOff (not a terminal app) in System Settings > \
+             Privacy & Security > Accessibility."
+        ));
+    }
+
+    use parking_lot::Mutex;
+    use std::sync::Arc;
+
+    struct CaptureState {
+        keys: Vec<u32>,
+        done: bool,
+        aborted: bool,
+        on_event: Option<Box<dyn Fn(CaptureEvent) + 'static>>,
+    }
+
+    let state = Arc::new(Mutex::new(CaptureState {
+        keys: Vec::new(),
+        done: false,
+        aborted: false,
+        on_event: on_event.map(|f| f as Box<dyn Fn(CaptureEvent) + 'static>),
+    }));
 
     // ---- throwaway tap (mirrors event_tap.rs FFI; see R-4 for consolidation) ----
     use core_foundation::base::TCFType;
@@ -193,6 +324,15 @@ pub fn capture_passphrase(
 
     type Shared = Arc<Mutex<CaptureState>>;
 
+    static LOCK_HOTKEY_KEYCODE: std::sync::atomic::AtomicI64 =
+        std::sync::atomic::AtomicI64::new(DEFAULT_LOCK_KEYCODE);
+    static TALK_HOTKEY_KEYCODE: std::sync::atomic::AtomicI64 =
+        std::sync::atomic::AtomicI64::new(DEFAULT_TALK_KEYCODE);
+    LOCK_HOTKEY_KEYCODE.store(lock_hotkey_keycode, std::sync::atomic::Ordering::Relaxed);
+    TALK_HOTKEY_KEYCODE.store(talk_hotkey_keycode, std::sync::atomic::Ordering::Relaxed);
+
+    // Callback reads everything (keys + UI reporter) through `user_info`,
+    // so it stays a plain nested fn with no captures.
     unsafe extern "C" fn capture_callback(
         _proxy: *mut c_void,
         event_type: u32,
@@ -219,13 +359,21 @@ pub fn capture_passphrase(
 
         let mut st = shared.lock();
 
+        // Report helper: state holds the optional UI reporter.
+        fn report(st: &CaptureState, ev: CaptureEvent) {
+            if let Some(f) = &st.on_event {
+                f(ev);
+            }
+        }
+
         if st.done {
             return std::ptr::null_mut(); // swallow everything after commit
         }
 
         // Abort chord: Ctrl+C (Control only, no Cmd/Shift/Option). The tap
         // swallows all keys, so terminal SIGINT never fires — the abort must
-        // be recognized here.
+        // be recognized here. TUI only: the GUI wizard has no terminal and
+        // closes its window to cancel.
         if keycode == 8
             && flags.contains(CGEventFlags::CGEventFlagControl)
             && !flags.contains(CGEventFlags::CGEventFlagCommand)
@@ -239,29 +387,22 @@ pub fn capture_passphrase(
         if keycode == ENTER_KEYCODE || keycode == ENTER_KEYCODE_KEYPAD {
             if st.keys.len() >= MIN_PASSPHRASE_KEYS {
                 st.done = true;
-                println!();
             } else {
-                println!(
-                    "\nNeed at least {} keys — keep typing. ({} so far)",
-                    MIN_PASSPHRASE_KEYS,
-                    st.keys.len()
-                );
-                let _ = std::io::Write::flush(&mut std::io::stdout());
+                let len = st.keys.len();
+                report(&st, CaptureEvent::TooShort(len));
             }
             return std::ptr::null_mut();
         }
 
         if keycode == ESCAPE_KEYCODE {
             st.keys.clear();
-            print!(" [restart] ");
-            let _ = std::io::Write::flush(&mut std::io::stdout());
+            report(&st, CaptureEvent::Restart);
             return std::ptr::null_mut();
         }
 
         if keycode == BACKSPACE_KEYCODE {
             st.keys.pop();
-            print!("\x08 \x08");
-            let _ = std::io::Write::flush(&mut std::io::stdout());
+            report(&st, CaptureEvent::Backspace);
             return std::ptr::null_mut();
         }
 
@@ -273,9 +414,7 @@ pub fn capture_passphrase(
             LOCK_HOTKEY_KEYCODE.load(std::sync::atomic::Ordering::Relaxed),
             TALK_HOTKEY_KEYCODE.load(std::sync::atomic::Ordering::Relaxed),
         ) {
-            drop(st);
-            print!(" [reserved] ");
-            let _ = std::io::Write::flush(&mut std::io::stdout());
+            report(&st, CaptureEvent::Reserved);
             return std::ptr::null_mut();
         }
 
@@ -283,20 +422,10 @@ pub fn capture_passphrase(
         // US-QWERTY map cannot render (F-keys, keypad, arrows). The map is
         // display-only (§3) and MUST NOT gate passphrase membership.
         st.keys.push(keycode as u32);
-        print!("•");
-        let _ = std::io::Write::flush(&mut std::io::stdout());
+        report(&st, CaptureEvent::Key);
 
         std::ptr::null_mut() // block captured keystrokes from reaching apps
     }
-
-    // Hotkey keycodes for the callback (plain statics: capture is single-shot,
-    // single-threaded, and the tap lives only for this function's scope).
-    static LOCK_HOTKEY_KEYCODE: std::sync::atomic::AtomicI64 =
-        std::sync::atomic::AtomicI64::new(DEFAULT_LOCK_KEYCODE);
-    static TALK_HOTKEY_KEYCODE: std::sync::atomic::AtomicI64 =
-        std::sync::atomic::AtomicI64::new(DEFAULT_TALK_KEYCODE);
-    LOCK_HOTKEY_KEYCODE.store(lock_hotkey_keycode, std::sync::atomic::Ordering::Relaxed);
-    TALK_HOTKEY_KEYCODE.store(talk_hotkey_keycode, std::sync::atomic::Ordering::Relaxed);
 
     // Install the tap on the calling (main) run loop.
     let shared_box = Box::into_raw(Box::new(state.clone())) as *mut c_void;
@@ -378,6 +507,50 @@ pub fn capture_passphrase(
 ) -> Result<Vec<u32>> {
     check_interactive_session()?;
     Err(anyhow!("Keycode capture is only supported on macOS"))
+}
+
+/// Poll for Accessibility permission after the user clicks Grant.
+///
+/// Shared by the TUI and the GUI wizard: the caller's Grant button opens
+/// System Settings once, then this checks every `poll_interval` until
+/// granted or `timeout` elapses. TCC applies the change live, so no app
+/// restart is needed.
+///
+/// Blocking variant: the TUI calls this directly on its main thread. The GUI
+/// wizard must NOT call this on the main thread (it would freeze the window
+/// and the run loop); it polls on a background thread and hops back via a
+/// event-loop proxy instead.
+///
+/// Returns `Ok(())` when `check_accessibility_permissions()` turns true
+/// within the deadline; `Err` with guidance otherwise.
+#[cfg(target_os = "macos")]
+pub fn poll_accessibility_granted(
+    timeout: std::time::Duration,
+    poll_interval: std::time::Duration,
+) -> Result<()> {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if crate::input_blocking::check_accessibility_permissions() {
+            return Ok(());
+        }
+        if std::time::Instant::now() >= deadline {
+            anyhow::bail!(
+                "Accessibility permission was not granted within {} seconds. \
+                 Check System Settings > Privacy & Security > Accessibility: \
+                 the entry must be HandsOff itself (not a terminal app).",
+                timeout.as_secs()
+            );
+        }
+        std::thread::sleep(poll_interval);
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn poll_accessibility_granted(
+    _timeout: std::time::Duration,
+    _poll_interval: std::time::Duration,
+) -> Result<()> {
+    anyhow::bail!("Accessibility permission checks are only supported on macOS")
 }
 
 /// Everything the interactive setup flow collected.
@@ -649,5 +822,32 @@ mod tests {
                 keycode
             );
         }
+    }
+
+    #[test]
+    fn test_validate_sequence_minimum_boundary() {
+        // Exactly MIN keys is valid (wizard double-entry commits at this size).
+        let min = vec![0u32; crate::utils::MIN_PASSPHRASE_KEYS];
+        assert!(validate_sequence(&min).is_ok());
+
+        // One below the minimum fails with the count in the message.
+        let short = vec![0u32; crate::utils::MIN_PASSPHRASE_KEYS - 1];
+        let err = validate_sequence(&short).unwrap_err().to_string();
+        assert!(
+            err.contains(&format!("{}", crate::utils::MIN_PASSPHRASE_KEYS)),
+            "error must state the minimum: {}",
+            err
+        );
+
+        // Empty fails.
+        assert!(validate_sequence(&[]).is_err());
+    }
+
+    #[test]
+    fn test_validate_sequence_allows_unrenderable_members() {
+        // Validation is count-only: unrenderable keycodes (F5, keypad,
+        // arrows) are legitimate members and never gate here (R2).
+        let seq = vec![F5_KEYCODE as u32, KEYPAD_1_KEYCODE as u32, ARROW_UP_KEYCODE as u32, 0];
+        assert!(validate_sequence(&seq).is_ok());
     }
 }

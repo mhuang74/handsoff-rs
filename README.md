@@ -28,7 +28,7 @@ A macOS utility that prevents accidental or unsolicited input from keyboard, tra
 
 ## Requirements
 
-- macOS 10.11 (El Capitan) or later
+- macOS 13 (Ventura) or later
 - Accessibility permissions (granted on first run)
 
 ## Installation
