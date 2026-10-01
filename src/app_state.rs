@@ -393,11 +393,9 @@ impl AppState {
             return None;
         }
         let idle_secs = Self::current_idle_secs(state.last_input_time.elapsed().as_secs() as f64);
-        Some(
-            state
-                .auto_lock_timeout
-                .saturating_sub(idle_secs.ceil() as u64),
-        )
+        // Truncate (floor) to match should_auto_lock's boundary: it fires when
+        // raw idle_secs >= timeout, so remaining must reach 0 at the same point.
+        Some(state.auto_lock_timeout.saturating_sub(idle_secs as u64))
     }
 
     pub fn set_talk_key_pressed(&self, pressed: bool) {
