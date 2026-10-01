@@ -1207,7 +1207,7 @@ dependencies = [
 
 [[package]]
 name = "handsoff"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1221,6 +1221,9 @@ dependencies = [
  "image",
  "log",
  "notify-rust",
+ "objc2 0.5.2",
+ "objc2-app-kit 0.2.2",
+ "objc2-foundation 0.2.2",
  "parking_lot",
  "ring",
  "rpassword",

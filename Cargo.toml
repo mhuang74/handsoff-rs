@@ -1,6 +1,6 @@
 [package]
 name = "handsoff"
-version = "0.7.1"
+version = "0.8.0"
 edition = "2021"
 rust-version = "1.80"
 authors = ["Michael S. Huang"]
@@ -33,6 +33,9 @@ serde = { version = "1.0", features = ["derive"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.10"
+objc2 = "0.5"
+objc2-app-kit = { version = "0.2", features = ["NSButton", "NSStackView", "NSTextField", "NSSecureTextField", "NSWindow", "NSApplication", "NSResponder", "NSView", "NSGraphics", "NSScreen", "NSControl", "NSCell", "NSRunningApplication", "NSUserInterfaceLayout"] }
+objc2-foundation = { version = "0.2", features = ["NSGeometry", "NSString"] }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("cargo-clippy"))'] }
@@ -50,7 +53,7 @@ path = "src/bin/handsoff-tray.rs"
 [package.metadata.bundle]
 name = "HandsOff"
 identifier = "com.handsoff.inputlock"
-version = "0.1.0"
+version = "0.8.0"
 copyright = "Copyright © 2024 Michael S. Huang"
 category = "public.app-category.utilities"
 short_description = "Prevent accidental input during video calls"
@@ -62,7 +65,7 @@ or when leaving your laptop unattended.
 icon = ["assets/AppIcon.icns"]
 
 # macOS-specific bundle configuration
-osx_minimum_system_version = "10.11"
+osx_minimum_system_version = "13.0"
 osx_frameworks = []
 osx_url_schemes = []
 osx_info_plist_template = "Info.plist.template"

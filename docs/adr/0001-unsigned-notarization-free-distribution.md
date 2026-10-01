@@ -1,0 +1,3 @@
+# Unsigned notarization-free distribution
+
+We ship a DMG with an unsigned (ad-hoc) `HandsOff.app` instead of notarized Developer-ID-signed builds because we currently have no paid Apple Developer Program membership. Consequences we accept: Gatekeeper blocks first launch until the user right-clicks → Open (the Setup Wizard explains this step), and every app update changes the CDHash, so macOS invalidates the Accessibility grant and users must re-grant it (the wizard's permission step doubles as the re-grant flow). Auto-update is handled interim via a tray "Check for Updates…" action that opens the latest GitHub release in the browser; Sparkle (or another signed auto-updater) is deferred until a paid account exists, at which point this ADR is superseded.

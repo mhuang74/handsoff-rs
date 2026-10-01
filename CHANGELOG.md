@@ -1,18 +1,13 @@
 # Changelog
 
-## [0.7.0] - 2026-09-30
-
-## 📦 Uncategorized
-
-- docs: add deep design review notes (2026-09)
-   - PR: #21
-- feat: keycode-sequence passphrases + exponential-backoff auto-unlock (v0.7.0) + 4 rounds review remediation
-   - PR: #23
-
-
-
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-01
+
+- feat: tray lifecycle split (#27) — old Reset renamed **Reenable** (unguarded, always in menu: ends a stuck Lock and restarts input capture without changing config); new **Reset…** is double-confirmed (caution dialog) and wipes the config then relaunches the in-app Setup Wizard; **Preferences…** window edits hotkeys, auto-lock timeout, and auto-unlock backoff without passphrase re-entry (empty field = unchanged); **Change Passphrase…** captures a new passphrase via the same silent double-entry path and preserves all other settings
+- feat: `preferences` library module — `apply_preferences` (merge + constructor revalidation; invalid edits never touch the file), `change_passphrase` (new hash, all other fields preserved), `wipe_config` (idempotent removal), `menu_state` (pure menu-gating rules, unit-tested); path-taking variants (`*_to_path`) back the config round-trip tests in `tests/lifecycle_tests.rs`
+- feat: in-app Setup Wizard — the tray launches a native single-window wizard when the config is absent or fails strict validation (ADR 0002): permission explanation + Grant → Accessibility poll → silent physical-key passphrase capture (double entry, no cleartext) → hotkeys/timeouts form → SMAppService login-item checkbox; no terminal involved; tooltip "Run …--setup" tip removed
+- refactor: `setup.rs` library split — `capture_passphrase_headless` (GUI-usable event-tap capture), `validate_config_strict` (tray run-or-wizard gate), `assemble_config`/`assemble_and_save_config` (config assembly seam); TUI `--setup` unchanged
 - feat: keycode-sequence passphrases (`keycode-v1`) — setup captures physical key-codes via a temporary event tap (interactive only); hash stored in config; legacy encrypted configs force re-setup (V1, V6)
 - feat: auto-unlock exponential backoff — enabled by default, base 60 min, doubling capped at 24 h; only a successful passphrase unlock resets the schedule; awake-time semantics (V2, V7–V9)
 - feat: first-run setup enforcement in tray — default `qwet` passphrase auto-creation removed, tooltip hint removed (S-3, L-5)
@@ -23,15 +18,6 @@
 - refactor: single-guard keystroke handler; removed `crypto.rs` (AES-256-GCM) and its dependencies
 - perf: steady-state CPU reduction — `MouseMoved` removed from the event tap (idle time now read via `CGEventSourceSecondsSinceLastEventType`, `min`-combined with the tap clock for decision and countdown display); tray tooltip rebuilt on state change or every 15 s instead of every 500 ms tick
 - change: auto-lock default 120 s → 180 s
-
-## [0.6.10] - 2026-09-27
-
-## 📦 Uncategorized
-
-- CI: x86_64 macOS release builds, release job restructure, AI code-review updates
-   - PR: #20
-
-
 
 ## [0.6.10] - 2026-09-27
 

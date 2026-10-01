@@ -186,7 +186,7 @@ The bundle's Info.plist includes:
 - **CFBundleVersion**: `0.1.0`
 - **LSUIElement**: `true` - Menu bar only, no Dock icon
 - **NSHighResolutionCapable**: `true` - Retina display support
-- **LSMinimumSystemVersion**: `10.11` - Minimum macOS version
+- **LSMinimumSystemVersion**: `13.0` - Minimum macOS version
 
 ## Distribution
 
