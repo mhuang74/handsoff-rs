@@ -1,5 +1,9 @@
 # Changelog
 
+## [Unreleased]
+
+- fix: wizard stale-TCC-grant dead end (#34) — after an app update replaced the binary, the permission step could hang forever on "Waiting for Accessibility permission…" because the old TCC row is pinned to the previous ad-hoc CDHash (checkbox reads ON, both permission checks fail). Both the wizard and the permission-only re-grant screen now detect the stuck wait (no grant within 30 s of clicking Grant) and surface a **Reset Permission & Restart…** escape hatch: user-confirmed `tccutil reset Accessibility handsoff-tray.handsoff`, then app relaunch so a fresh grant binds to the current build. The TCC service name is `handsoff-tray.handsoff` (cargo-bundle's `<bin>.<package>` fallback), not the `com.handsoff.inputlock` identifier in `Cargo.toml`/docs — verified live via `tccutil`.
+
 ## [0.8.0] - 2026-10-01
 
 

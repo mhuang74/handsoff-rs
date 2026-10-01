@@ -55,7 +55,7 @@ If permissions appear to be granted but the app still fails:
 
 ```bash
 # Reset permissions for the app
-tccutil reset Accessibility com.handsoff.inputlock
+tccutil reset Accessibility handsoff-tray.handsoff
 
 # Then re-grant in System Settings
 open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
@@ -69,7 +69,7 @@ Check that the bundle identifier matches:
 # Check Info.plist
 defaults read /Users/mhuang/Projects/Development/handsoff-rs/target/release/bundle/osx/HandsOff.app/Contents/Info CFBundleIdentifier
 
-# Should output: com.handsoff.inputlock
+# Should output: handsoff-tray.handsoff
 ```
 
 #### Step 5: Check Code Signature
@@ -88,7 +88,7 @@ codesign -dv /Users/mhuang/Projects/Development/handsoff-rs/target/release/bundl
 - The app with a different bundle identifier
 
 **Solution**:
-1. Reset permissions: `tccutil reset Accessibility com.handsoff.inputlock`
+1. Reset permissions: `tccutil reset Accessibility handsoff-tray.handsoff`
 2. Remove the app from Accessibility list in System Settings
 3. Run the app again - it will request permissions fresh
 4. Grant permissions to the new request
@@ -100,7 +100,7 @@ codesign -dv /Users/mhuang/Projects/Development/handsoff-rs/target/release/bundl
 **Solution**:
 ```bash
 # Reset the permission prompt
-tccutil reset Accessibility com.handsoff.inputlock
+tccutil reset Accessibility handsoff-tray.handsoff
 
 # Delete the app from System Settings > Privacy & Security > Accessibility if present
 # Then restart the app
@@ -120,7 +120,7 @@ tccutil reset Accessibility com.handsoff.inputlock
 **Cause**: macOS treats these as separate applications with separate permission grants
 
 **Solution**: Always use the app bundle. Grant permissions specifically to:
-`HandsOff.app` (com.handsoff.inputlock), not the CLI binary.
+`HandsOff.app` (`handsoff-tray.handsoff` as built by `cargo bundle --bin handsoff-tray`), not the CLI binary.
 
 ## Understanding the Permission Checks
 
@@ -147,7 +147,7 @@ When you run the app from terminal, you'll see output like:
 [ERROR handsoff::input_blocking] Accessibility permission check failed:
 [ERROR handsoff::input_blocking]   - AXIsProcessTrusted: false
 [ERROR handsoff::input_blocking]   - Event tap created: false
-[ERROR handsoff::input_blocking]   - Bundle ID should be: com.handsoff.inputlock
+[ERROR handsoff::input_blocking]   - Bundle ID should be: handsoff-tray.handsoff
 [ERROR handsoff::input_blocking]   - Please check System Settings > Privacy & Security > Accessibility
 [ERROR handsoff] Accessibility permissions not granted
 ```

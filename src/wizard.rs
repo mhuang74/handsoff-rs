@@ -165,8 +165,8 @@ mod macos {
     use objc2::runtime::AnyObject;
     use objc2::{declare_class, msg_send, msg_send_id, mutability, ClassType, DeclaredClass};
     use objc2_app_kit::{
-        NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSButton,
-        NSControlStateValueOn, NSStackView, NSStackViewGravity, NSTextField,
+        NSAlert, NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSButton,
+        NSControlStateValueOn, NSModalResponseOK, NSStackView, NSStackViewGravity, NSTextField,
         NSUserInterfaceLayoutOrientation, NSView, NSWindow, NSWindowStyleMask,
     };
     use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
@@ -182,20 +182,51 @@ mod macos {
     const TAG_GRANT: isize = 1;
     const TAG_COMMIT: isize = 2;
     const TAG_FINISH: isize = 3;
+    /// Issue #34 escape hatch: delete the stale TCC row and relaunch.
+    const TAG_RESET: isize = 4;
 
     // Step numbers.
     const STEP_PERMISSION: u8 = 0;
     const STEP_CAPTURE: u8 = 1;
     const STEP_FORM: u8 = 2;
 
+    /// TCC service name tccd uses for the tray app's Accessibility grant.
+    /// NOT the CFBundleIdentifier (`com.handsoff.inputlock`): for the
+    /// ad-hoc-signed tray binary tccd keys the row as
+    /// `<executable>.<app>` — verified live 2026-10-01 (`tccutil reset
+    /// Accessibility com.handsoff.inputlock` fails with -10814, the
+    /// `handsoff-tray.handsoff` spelling succeeds).
+    const TCC_SERVICE: &str = "handsoff-tray.handsoff";
+
+    /// How long the permission poll may keep failing after the user
+    /// clicked Grant before the stale-grant escape hatch (issue #34)
+    /// is surfaced. A normal first grant lands in seconds; a stale
+    /// grant (checkbox ON, checks failing — TCC row pinned to an old
+    /// CDHash) NEVER lands, so a sustained failure is the only
+    /// detectable signature.
+    const STALE_GRANT_TIMEOUT: std::time::Duration =
+        std::time::Duration::from_secs(30);
+
+    const STALE_GRANT_TEXT: &str = "Still stuck? If the HandsOff checkbox in System Settings > \
+         Privacy & Security > Accessibility is already ticked but this window keeps waiting, \
+         the permission is bound to an old copy of the app (this happens after an update).\n\n\
+         Click “Reset Permission & Restart…” to clear it — HandsOff relaunches and asks for \
+         the permission fresh. Your passphrase and settings are NOT affected.";
+
     /// Click signals shared between AppKit button targets and the wizard driver.
     struct WizardSignals {
         grant_clicked: AtomicBool,
         commit_clicked: AtomicBool,
         finish_clicked: AtomicBool,
+        reset_clicked: AtomicBool,
         step: AtomicU8,
         /// Progress text for the status label (dots), set from the tap callback.
         status: parking_lot::Mutex<String>,
+        /// When the user entered the waiting phase (Grant clicked); the
+        /// poll thread starts the stale-grant clock from here, not from
+        /// window open — reading the instructions may legitimately take
+        /// longer than `STALE_GRANT_TIMEOUT`. `None` outside the wait.
+        waiting_since: parking_lot::Mutex<Option<std::time::Instant>>,
     }
 
     impl WizardSignals {
@@ -204,8 +235,10 @@ mod macos {
                 grant_clicked: AtomicBool::new(false),
                 commit_clicked: AtomicBool::new(false),
                 finish_clicked: AtomicBool::new(false),
+                reset_clicked: AtomicBool::new(false),
                 step: AtomicU8::new(STEP_PERMISSION),
                 status: parking_lot::Mutex::new(String::new()),
+                waiting_since: parking_lot::Mutex::new(None),
             })
         }
     }
@@ -234,6 +267,7 @@ mod macos {
                     TAG_GRANT => SIGNALS.grant_clicked.store(true, Ordering::SeqCst),
                     TAG_COMMIT => SIGNALS.commit_clicked.store(true, Ordering::SeqCst),
                     TAG_FINISH => SIGNALS.finish_clicked.store(true, Ordering::SeqCst),
+                    TAG_RESET => SIGNALS.reset_clicked.store(true, Ordering::SeqCst),
                     _ => {}
                 }
             }
@@ -245,6 +279,102 @@ mod macos {
         let _ = std::process::Command::new("open")
             .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
             .status();
+    }
+
+    /// Click the reset escape hatch: confirm, run `tccutil reset
+    /// Accessibility <TCC_SERVICE>`, then relaunch the app. The reset is
+    /// the same action the issue verified live as the remediation; the
+    /// app cannot clear its own row silently (tccd requires user
+    /// consent), hence the confirmation dialog. On confirm this never
+    /// returns (relaunch exits the process); on cancel it falls through
+    /// so the wizard keeps waiting.
+    fn reset_permission_and_relaunch() {
+        let mtm = MainThreadMarker::new()
+            .expect("reset dialog must run on main thread");
+        let alert = unsafe { NSAlert::new(mtm) };
+        unsafe {
+            alert.setMessageText(&NSString::from_str(
+                "Reset Accessibility permission?",
+            ));
+            alert.setInformativeText(&NSString::from_str(
+                "This removes HandsOff's (stale) Accessibility entry in System \
+                 Settings, then relaunches HandsOff so it can request the \
+                 permission fresh. Your passphrase and settings are NOT affected.",
+            ));
+            alert.addButtonWithTitle(&NSString::from_str("Reset & Restart"));
+            alert.addButtonWithTitle(&NSString::from_str("Cancel"));
+        }
+        if unsafe { alert.runModal() } != NSModalResponseOK {
+            log::info!("Stale-grant reset cancelled by user");
+            return;
+        }
+
+        log::info!(
+            "Running tccutil reset Accessibility {} (issue #34 stale-grant remediation)",
+            TCC_SERVICE
+        );
+        let output = std::process::Command::new("/usr/bin/tccutil")
+            .arg("reset")
+            .arg("Accessibility")
+            .arg(TCC_SERVICE)
+            .output();
+        match &output {
+            Ok(o) if o.status.success() => {
+                log::info!(
+                    "tccutil reset succeeded: {}",
+                    String::from_utf8_lossy(&o.stdout).trim()
+                );
+            }
+            other => {
+                log::error!(
+                    "tccutil reset failed ({:?}); not relaunching",
+                    other.as_ref().map(|o| o.status)
+                );
+                let fail = unsafe { NSAlert::new(mtm) };
+                unsafe {
+                    fail.setMessageText(&NSString::from_str("Reset failed"));
+                    fail.setInformativeText(&NSString::from_str(
+                        "Could not reset the permission automatically. Run this \
+                         in Terminal, then relaunch HandsOff:\n\n\
+                         tccutil reset Accessibility handsoff-tray.handsoff",
+                    ));
+                    fail.runModal();
+                }
+                return;
+            }
+        }
+
+        relaunch_after_reset();
+    }
+
+    /// Replace this process with a fresh instance: spawn the same binary,
+    /// then exit. Same approach as the tray's `relaunch_self` (spawn+exit
+    /// rather than exec, so the dying process never runs again and the
+    /// fresh instance re-runs the normal startup path against the reset
+    /// TCC row). Unbundled (cargo run): current_exe has no .app ancestor;
+    /// still exit so the user restarts it themselves.
+    fn relaunch_after_reset() {
+        let exe = match std::env::current_exe() {
+            Ok(e) => e,
+            Err(e) => {
+                log::error!("Cannot locate own binary after reset: {}", e);
+                std::process::exit(1);
+            }
+        };
+        log::info!("Relaunching {:?} after permission reset", exe);
+        match std::process::Command::new(&exe)
+            .args(std::env::args().skip(1))
+            .spawn()
+        {
+            Ok(_) => {
+                log::info!("Relaunched after reset; exiting");
+                std::process::exit(0);
+            }
+            Err(e) => {
+                log::error!("Relaunch failed ({}); exiting so the user can start HandsOff manually", e);
+                std::process::exit(1);
+            }
+        }
     }
 
     /// Register/unregister the SMAppService login item (macOS 13+).
@@ -359,6 +489,19 @@ mod macos {
         let status_label = make_label("", WINDOW_W - 60.0, 20.0);
         let instr_label = make_label("", WINDOW_W - 60.0, 40.0);
 
+        // Issue #34 escape hatch: hidden until the poll concludes the grant
+        // is stale (waited STALE_GRANT_TIMEOUT with zero progress).
+        let reset_btn = unsafe {
+            NSButton::buttonWithTitle_target_action(
+                &NSString::from_str("Reset Permission & Restart…"),
+                Some(&*target),
+                Some(objc2::sel!(buttonClicked:)),
+                mtm,
+            )
+        };
+        unsafe { reset_btn.setTag(TAG_RESET) };
+        reset_btn.setHidden(true);
+
         let make_text_field = |placeholder: &str, width: f64| -> Retained<NSTextField> {
             let f = unsafe {
                 NSTextField::initWithFrame(
@@ -398,6 +541,7 @@ mod macos {
             for v in [
                 &*instr_label as *const NSTextField as *const NSView,
                 &*grant_btn as *const NSButton as *const NSView,
+                &*reset_btn as *const NSButton as *const NSView,
                 &*commit_btn as *const NSButton as *const NSView,
                 &*status_label as *const NSTextField as *const NSView,
                 &*lock_key as *const NSTextField as *const NSView,
@@ -448,15 +592,40 @@ mod macos {
         // AXIsProcessTrusted checks every 500 ms (safe for repeated calls;
         // the full test-tap check degrades WindowServer when hammered), then
         // ONE authoritative full check when the lightweight flips true.
+        //
+        // Issue #34: if the wait lasts STALE_GRANT_TIMEOUT with NO progress
+        // (lightweight never flips true), the grant is stale — the TCC row
+        // is pinned to an old CDHash, the checkbox reads ON, and waiting
+        // longer can never succeed. Surface the reset escape hatch.
         let perm_granted = Arc::new(AtomicBool::new(false));
+        let perm_stale = Arc::new(AtomicBool::new(false));
+        // SIGNALS is process-global and shared across flows (wizard,
+        // re-grant, preferences): clear the stale-detection clock so a
+        // previous flow's instant can't make this flow's reset button
+        // appear before the user even clicks Grant.
+        *SIGNALS.waiting_since.lock() = None;
         std::thread::spawn({
             let perm_granted = perm_granted.clone();
+            let perm_stale = perm_stale.clone();
             move || loop {
                 if crate::input_blocking::check_accessibility_permissions_lightweight()
                     && crate::input_blocking::check_accessibility_permissions()
                 {
                     perm_granted.store(true, Ordering::SeqCst);
                     return;
+                }
+                {
+                    // Clock starts when the user clicks Grant (set by the
+                    // event loop), not at window open — reading the
+                    // instructions can legitimately take longer than
+                    // STALE_GRANT_TIMEOUT. No click yet → no timing.
+                    let mut started = SIGNALS.waiting_since.lock();
+                    if let Some(t0) = *started {
+                        if t0.elapsed() >= STALE_GRANT_TIMEOUT {
+                            drop(started);
+                            perm_stale.store(true, Ordering::SeqCst);
+                        }
+                    }
                 }
                 std::thread::sleep(std::time::Duration::from_millis(500));
             }
@@ -467,6 +636,7 @@ mod macos {
         ));
         let outcome = outcome_slot.clone();
         let mut first_keys: Option<Vec<u32>> = None;
+        let mut stale_shown = false;
 
         let status_label_retained: Retained<NSTextField> = status_label.clone();
         let set_status = move |text: &str| {
@@ -493,9 +663,29 @@ mod macos {
 
             let step = SIGNALS.step.load(Ordering::SeqCst);
 
+            // Issue #34: reset clicked → confirm, tccutil reset, relaunch
+            // (never returns on confirm).
+            if SIGNALS.reset_clicked.swap(false, Ordering::SeqCst) {
+                reset_permission_and_relaunch();
+                return;
+            }
+
+            // Issue #34: wait exceeded STALE_GRANT_TIMEOUT with no progress
+            // → the grant is stale; surface the escape hatch once.
+            if perm_stale.load(Ordering::SeqCst) && !stale_shown {
+                stale_shown = true;
+                reset_btn.setHidden(false);
+                // Long multi-line explanation → the multi-line instruction
+                // label (status label is a 20 pt one-liner; it would clip).
+                unsafe { instr_label.setStringValue(&NSString::from_str(STALE_GRANT_TEXT)) };
+                set_status("Permission appears stale (bound to an old copy of the app).");
+            }
+
             // Step 0 → 1: Grant clicked.
             if SIGNALS.grant_clicked.swap(false, Ordering::SeqCst) {
                 SIGNALS.step.store(STEP_CAPTURE, Ordering::SeqCst);
+                // Issue #34: start the stale-detection clock (see poll thread).
+                *SIGNALS.waiting_since.lock() = Some(std::time::Instant::now());
                 open_accessibility_settings();
                 unsafe {
                     instr_label.setStringValue(&NSString::from_str(
@@ -684,6 +874,19 @@ mod macos {
         };
         unsafe { grant_btn.setTag(TAG_GRANT) };
 
+        // Issue #34 escape hatch: hidden until the poll concludes the grant
+        // is stale (waited STALE_GRANT_TIMEOUT with zero progress).
+        let reset_btn = unsafe {
+            NSButton::buttonWithTitle_target_action(
+                &NSString::from_str("Reset Permission & Restart…"),
+                Some(&*target),
+                Some(objc2::sel!(buttonClicked:)),
+                mtm,
+            )
+        };
+        unsafe { reset_btn.setTag(TAG_RESET) };
+        reset_btn.setHidden(true);
+
         let status_label: Retained<NSTextField> =
             unsafe { NSTextField::labelWithString(&NSString::from_str(""), mtm) };
         unsafe { status_label.setFrameSize(NSSize::new(WINDOW_W - 60.0, 20.0)) };
@@ -715,6 +918,7 @@ mod macos {
             for v in [
                 &*instr_label as *const NSTextField as *const NSView,
                 &*grant_btn as *const NSButton as *const NSView,
+                &*reset_btn as *const NSButton as *const NSView,
                 &*status_label as *const NSTextField as *const NSView,
             ] {
                 content.addView_inGravity(&*v, GRAVITY);
@@ -736,15 +940,37 @@ mod macos {
         // Same poll primitive the wizard uses (see run_wizard_macos): fast
         // lightweight AXIsProcessTrusted checks every 500 ms, then ONE
         // authoritative full test-tap check when the lightweight flips true.
+        // Issue #34: no progress for STALE_GRANT_TIMEOUT → stale grant,
+        // surface the reset escape hatch (checkbox reads ON, TCC row pinned
+        // to an old CDHash; waiting longer can never succeed).
         let perm_granted = Arc::new(AtomicBool::new(false));
+        let perm_stale = Arc::new(AtomicBool::new(false));
+        // SIGNALS is process-global and shared across flows: clear the
+        // stale-detection clock so a previous flow's instant can't make
+        // the reset button appear before Grant is clicked.
+        *SIGNALS.waiting_since.lock() = None;
         std::thread::spawn({
             let perm_granted = perm_granted.clone();
+            let perm_stale = perm_stale.clone();
             move || loop {
                 if crate::input_blocking::check_accessibility_permissions_lightweight()
                     && crate::input_blocking::check_accessibility_permissions()
                 {
                     perm_granted.store(true, Ordering::SeqCst);
                     return;
+                }
+                {
+                    // Clock starts when the user clicks Grant (set by the
+                    // event loop), not at window open — reading the
+                    // instructions can legitimately take longer than
+                    // STALE_GRANT_TIMEOUT. No click yet → no timing.
+                    let mut started = SIGNALS.waiting_since.lock();
+                    if let Some(t0) = *started {
+                        if t0.elapsed() >= STALE_GRANT_TIMEOUT {
+                            drop(started);
+                            perm_stale.store(true, Ordering::SeqCst);
+                        }
+                    }
                 }
                 std::thread::sleep(std::time::Duration::from_millis(500));
             }
@@ -753,6 +979,7 @@ mod macos {
         let outcome_slot: Rc<RefCell<Option<Result<()>>>> =
             std::rc::Rc::new(std::cell::RefCell::new(None));
         let outcome = outcome_slot.clone();
+        let mut stale_shown = false;
 
         event_loop.run_return(move |event, _, control_flow| {
             *control_flow = tao::event_loop::ControlFlow::WaitUntil(
@@ -774,6 +1001,8 @@ mod macos {
             // Grant clicked → open the System Settings pane, wait for the poll.
             if SIGNALS.grant_clicked.swap(false, Ordering::SeqCst) {
                 open_accessibility_settings();
+                // Issue #34: start the stale-detection clock (see poll thread).
+                *SIGNALS.waiting_since.lock() = Some(std::time::Instant::now());
                 let ns = NSString::from_str(
                     "Waiting for Accessibility permission…\n\
                      Tick the box for HandsOff in System Settings > Privacy & Security > Accessibility.",
@@ -782,6 +1011,28 @@ mod macos {
                     instr_label.setStringValue(&ns);
                     status_label.setHidden(false);
                     status_label.setStringValue(&NSString::from_str("Waiting for permission…"));
+                }
+                return;
+            }
+
+            // Issue #34: reset clicked → confirm, tccutil reset, relaunch
+            // (never returns on confirm).
+            if SIGNALS.reset_clicked.swap(false, Ordering::SeqCst) {
+                reset_permission_and_relaunch();
+                return;
+            }
+
+            // Issue #34: wait exceeded STALE_GRANT_TIMEOUT with no progress
+            // → the grant is stale; surface the escape hatch once.
+            if perm_stale.load(Ordering::SeqCst) && !stale_shown {
+                stale_shown = true;
+                reset_btn.setHidden(false);
+                let ns = NSString::from_str(STALE_GRANT_TEXT);
+                unsafe {
+                    instr_label.setStringValue(&ns);
+                    status_label.setStringValue(&NSString::from_str(
+                        "Permission appears granted but is stale (bound to an old copy of the app).",
+                    ));
                 }
                 return;
             }
