@@ -2,26 +2,16 @@
 
 ## [0.8.0] - 2026-10-01
 
-## 📦 Uncategorized
-
-- perf: reduce steady-state CPU usage (MouseMoved tap, tooltip, defaults)
-   - PR: #30
-- feat: in-app Setup Wizard core (#26) + tray lifecycle split (#27)
-   - PR: #31
-- Distribution: DMG cutover, delete .pkg pipeline, doc rewrites (#28)
-   - PR: #32
-- Updates: Check-for-Updates tray action + TCC re-grant reuse (#29)
-   - PR: #33
-
-
-
-## [Unreleased]
 
 - feat: tray **Check for Updates…** menu item (#29) — opens https://github.com/mhuang74/handsoff-rs/releases/latest in the default browser via `open` (no Sparkle / self_update per ADR 0001); fire-and-forget, never blocks the tray
 - feat: Accessibility permission re-grant (#29) — a valid config with a stale grant (e.g. after an unsigned update changed the CDHash) now opens the wizard's permission step only, instead of full passphrase re-setup; new pure `wizard::startup_flow` routing helper (Run / ReGrant / Wizard) and `run_permission_regrant` entry point; config untouched on re-grant; "Fix Accessibility Permission…" tray item reopens the screen manually
 - docs: wizard first screen explains the Gatekeeper right-click → Open dance for unsigned apps (#28)
-
-## [0.8.0] - 2026-10-01
+- feat: DMG distribution (#30) — release pipeline builds and attaches a `.dmg` instead of a `.pkg`
+- fix: review remediation for DMG cutover
+- fix: review fixes for #29 — macOS 13 window activation, non-blocking update-check failure notice, dropped tautological tests
+- perf: steady-state CPU reduction — `MouseMoved` removed from the event tap (idle time now read via `CGEventSourceSecondsSinceLastEventType`, `min`-combined with the tap clock for decision and countdown display); tray tooltip rebuilt on state change or every 15 s instead of every 500 ms tick
+- fix: floor idle seconds in countdown so display boundary matches fire boundary; route countdown through shared idle source, gate tooltip rebuild
+- change: auto-lock default 120 s → 180 s
 
 - feat: tray lifecycle split (#27) — old Reset renamed **Reenable** (unguarded, always in menu: ends a stuck Lock and restarts input capture without changing config); new **Reset…** is double-confirmed (caution dialog) and wipes the config then relaunches the in-app Setup Wizard; **Preferences…** window edits hotkeys, auto-lock timeout, and auto-unlock backoff without passphrase re-entry (empty field = unchanged); **Change Passphrase…** captures a new passphrase via the same silent double-entry path and preserves all other settings
 - feat: `preferences` library module — `apply_preferences` (merge + constructor revalidation; invalid edits never touch the file), `change_passphrase` (new hash, all other fields preserved), `wipe_config` (idempotent removal), `menu_state` (pure menu-gating rules, unit-tested); path-taking variants (`*_to_path`) back the config round-trip tests in `tests/lifecycle_tests.rs`
@@ -35,8 +25,6 @@
 - feat: silent unlock — no notification when input is restored (V10)
 - feat: tooltip shows auto-unlock countdown only when < 5 min away (V11)
 - refactor: single-guard keystroke handler; removed `crypto.rs` (AES-256-GCM) and its dependencies
-- perf: steady-state CPU reduction — `MouseMoved` removed from the event tap (idle time now read via `CGEventSourceSecondsSinceLastEventType`, `min`-combined with the tap clock for decision and countdown display); tray tooltip rebuilt on state change or every 15 s instead of every 500 ms tick
-- change: auto-lock default 120 s → 180 s
 
 ## [0.6.10] - 2026-09-27
 
