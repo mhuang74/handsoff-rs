@@ -1,4 +1,4 @@
-.PHONY: build bundle fix-plist sign dmg pkg clean install test check clippy
+.PHONY: build bundle fix-plist dmg install test check clippy clean help
 
 # Get version from Cargo.toml
 VERSION := $(shell cargo pkgid | cut -d\# -f2 | cut -d: -f2 | cut -d@ -f2)
@@ -7,14 +7,18 @@ APP_NAME := HandsOff
 BUNDLE_PATH := target/release/bundle/osx/handsoff.app
 FINAL_BUNDLE_PATH := target/release/bundle/osx/$(APP_NAME).app
 DIST_DIR := dist
+# uname -m on macOS reports arm64 / x86_64
+ARCH := $(shell uname -m)
+DMG_STAGING := target/release/dmg-staging
+DMG_PATH := $(DIST_DIR)/$(APP_NAME)-v$(VERSION)-$(ARCH).dmg
 
 # Build the release binary
-# Intermediate target - use 'fix-plist' or 'pkg' for complete builds
+# Intermediate target - use 'dmg' for the distributable artifact
 build:
 	cargo build --release
 
 # Create the .app bundle (using tray binary for menu bar icon)
-# Intermediate target - use 'fix-plist' or 'pkg' for complete builds
+# Intermediate target - use 'dmg' for the distributable artifact
 bundle: build
 	cargo bundle --release --bin handsoff-tray
 	@# Rename bundle to proper case if needed
@@ -23,16 +27,24 @@ bundle: build
 	fi
 
 # Fix Info.plist to add LSUIElement (menu bar only app)
-# This is the primary build target - creates a working .app bundle
 fix-plist: bundle
 	plutil -insert LSUIElement -bool true $(FINAL_BUNDLE_PATH)/Contents/Info.plist
 	@echo "Added LSUIElement to Info.plist"
 	@plutil -p $(FINAL_BUNDLE_PATH)/Contents/Info.plist | grep -E "(LSUIElement|CFBundleDisplayName)"
 
-# Create PKG installer with Launch Agent setup
-# This is the distribution target - creates the installer package
-pkg:
-	./installer/build-pkg.sh
+# Create the distributable DMG (macOS only; requires hdiutil)
+# Ad-hoc signed (unsigned) app per docs/adr/0001-unsigned-notarization-free-distribution.md
+dmg: fix-plist
+	codesign --deep --force --sign - $(FINAL_BUNDLE_PATH)
+	@echo "Ad-hoc signed $(FINAL_BUNDLE_PATH)"
+	@rm -rf "$(DMG_STAGING)"
+	@mkdir -p "$(DMG_STAGING)"
+	cp -R "$(FINAL_BUNDLE_PATH)" "$(DMG_STAGING)/"
+	ln -s /Applications "$(DMG_STAGING)/Applications"
+	@mkdir -p $(DIST_DIR)
+	hdiutil create -volname $(APP_NAME) -srcfolder "$(DMG_STAGING)" -ov -format UDZO "$(DMG_PATH)"
+	@rm -rf "$(DMG_STAGING)"
+	@echo "DMG created at: $(DMG_PATH)"
 
 # Install to /Applications
 # Local testing only - installs the .app bundle to /Applications
@@ -55,11 +67,6 @@ clean:
 	cargo clean
 	rm -rf target/release/bundle
 	rm -rf $(DIST_DIR)
-	rm -rf installer/pkg-root
-	rm -f installer/*.pkg
-	rm -f installer/distribution.xml
-	rm -f installer/*.html
-	rm -f installer/LICENSE
 
 # Build everything (bundle with fixes)
 all: fix-plist
@@ -70,7 +77,7 @@ help:
 	@echo ""
 	@echo "Primary targets:"
 	@echo "  fix-plist  - Create .app bundle with LSUIElement fix (menu bar only)"
-	@echo "  pkg        - Create .pkg installer (recommended for distribution)"
+	@echo "  dmg        - Create distributable DMG with ad-hoc signed .app (macOS only)"
 	@echo "  all        - Same as fix-plist (default)"
 	@echo ""
 	@echo "Developer tools:"

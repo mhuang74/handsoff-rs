@@ -241,42 +241,15 @@ cargo test
 
 ---
 
-## Launch Agent Configuration
+## Permanent Configuration
 
-To make the configuration permanent:
+To make HandsOff start at login, enable the login item: tick
+"Launch HandsOff at login" in the Setup Wizard, or toggle it later via
+System Settings → General → Login Items. Environment variable overrides
+(see above) apply to that launch as well:
 
-```xml
-<!-- ~/Library/LaunchAgents/com.handsoff.plist -->
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.handsoff</string>
-
-    <key>ProgramArguments</key>
-    <array>
-        <string>/Applications/HandsOff.app/Contents/MacOS/handsoff</string>
-    </array>
-
-    <key>EnvironmentVariables</key>
-    <dict>
-        <key>HANDS_OFF_AUTO_UNLOCK</key>
-        <string>3600</string>  <!-- 60-minute base interval -->
-    </dict>
-
-    <key>RunAtLoad</key>
-    <true/>
-
-    <key>KeepAlive</key>
-    <true/>
-</dict>
-</plist>
-```
-
-Load with:
 ```bash
-launchctl load ~/Library/LaunchAgents/com.handsoff.plist
+export HANDS_OFF_AUTO_UNLOCK=3600  # 60-minute base interval
 ```
 
 ---

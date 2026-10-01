@@ -99,12 +99,12 @@ This runs: build → bundle → fix-plist
 
 ### Create Distribution Package
 ```bash
-make pkg
+make dmg
 ```
 
-This runs: build → bundle → fix-plist → create PKG
+This runs: build → bundle → fix-plist → ad-hoc sign → create DMG
 
-Output: `dist/HandsOff-v{VERSION}.pkg`
+Output: `dist/HandsOff-v{VERSION}-<arch>.dmg`
 
 ### Install Locally
 ```bash
@@ -157,7 +157,7 @@ plutil -insert LSUIElement -bool true HandsOff.app/Contents/Info.plist
 This is automatically handled by:
 - `make all`
 - `make fix-plist`
-- `make pkg`
+- `make dmg`
 - `make install`
 
 ## Future Enhancements
@@ -205,6 +205,6 @@ The HandsOff application is now properly packaged as a native macOS application 
 
 Users can now:
 - Build with: `make`
-- Create installer with: `make pkg`
+- Create the distributable disk image with: `make dmg`
 - Install locally with: `make install`
-- Distribute: `dist/HandsOff-v{VERSION}.pkg`
+- Distribute: `dist/HandsOff-v{VERSION}-<arch>.dmg`

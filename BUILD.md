@@ -2,33 +2,25 @@
 
 ## TL;DR
 
-On a Mac, build the distributable installer with one command:
+On a Mac, build the distributable DMG with one command:
 
 ```bash
-make pkg
+make dmg
 ```
 
-Produces `dist/HandsOff-v{VERSION}.pkg` — the recommended distribution
-artifact. The installer installs HandsOff.app and creates a Launch Agent that
-starts the app at login (the postinstall is non-interactive); the user then
-runs the one-time setup wizard from the installed app (see
-[installer/INSTALLER-GUIDE.md](installer/INSTALLER-GUIDE.md) for the exact
-post-install steps):
-
-```bash
-~/Applications/HandsOff.app/Contents/MacOS/handsoff-tray --setup
-```
+Produces `dist/HandsOff-v{VERSION}-<arch>.dmg` — the recommended
+distribution artifact: a mountable disk image containing the unsigned
+(ad-hoc signed) HandsOff.app. Users mount it, drag the app to
+`/Applications`, right-click → **Open** on first launch (Gatekeeper, see
+[docs/adr/0001-unsigned-notarization-free-distribution.md](docs/adr/0001-unsigned-notarization-free-distribution.md)),
+and the built-in Setup Wizard collects the Passphrase on first run (see
+[docs/DMG-GUIDE.md](docs/DMG-GUIDE.md)).
 
 Caveats:
 
-- **Bundling and packaging are macOS-only** (`cargo-bundle`, `pkgbuild`,
-  `productsign`); the Linux path below only cross-compiles/validates binaries.
-- **`productsign` needs a signing identity**: `installer/build-pkg.sh` signs the
-  package with `--sign "Installer Signing Self-Signed"`. On a fresh Mac this
-  identity doesn't exist, so `make pkg` fails at the final step. Either create
-  a self-signed *Installer* certificate with that name (Keychain Access →
-  Certificate Assistant → Create a Certificate) or drop the `productsign` step
-  — the unsigned package before it is still valid.
+- **Bundling and DMG creation are macOS-only** (`cargo-bundle`,
+  `codesign`, `hdiutil`); the Linux path below only cross-compiles/validates
+  binaries.
 - For plain binaries without bundling: `cargo build --release` (macOS) or the
   cross-compile route below (Linux). Details: [Quick Start](#quick-start) and
   the rest of this document.
@@ -66,32 +58,31 @@ cargo test
 
 Binaries land at `target/release/handsoff` and `target/release/handsoff-tray`.
 For per-architecture and universal (`lipo`) builds, see the "Build Architecture"
-section below. For the distributable `.app` bundle and `.pkg` installer, use the
-Makefile workflow that follows (`make all`, `make pkg`) — bundling uses
-macOS-only tools (`cargo-bundle`, `plutil`, `codesign`), so it must run on macOS.
+section below. For the distributable `.app` bundle and DMG, use the
+Makefile workflow that follows (`make all`, `make dmg`) — bundling uses
+macOS-only tools (`cargo-bundle`, `plutil`, `codesign`, `hdiutil`), so it must
+run on macOS.
 
 ## Quick Start
 
-**Building an installable macOS package** (on a Mac) — the primary build entry
-point is the Makefile, and the package is its most complete target:
+**Building the distributable DMG** (on a Mac) — the primary build entry
+point is the Makefile, and the DMG is its most complete target:
 
 ```bash
-# Create the .pkg installer (builds the release binaries, the .app bundle,
-# and packages them with Launch Agent setup)
-make pkg
+# Create the DMG (builds the release binaries, the .app bundle,
+# ad-hoc signs it, and packages it into a disk image)
+make dmg
 ```
 
-Output: `dist/HandsOff-v{VERSION}.pkg` — a double-clickable installer that
-installs HandsOff.app and creates a Launch Agent so the app starts at login
-(the postinstall is non-interactive; the passphrase is set afterwards via the
-setup wizard). The exact post-install steps are in
-[installer/INSTALLER-GUIDE.md](installer/INSTALLER-GUIDE.md); see also
-[Distribution → Option 1](#option-1-pkg-installer-with-launch-agent-recommended).
+Output: `dist/HandsOff-v{VERSION}-<arch>.dmg` — a mountable disk image
+containing HandsOff.app. First-launch Gatekeeper handling and Setup
+Wizard steps are in [docs/DMG-GUIDE.md](docs/DMG-GUIDE.md); see also
+[Distribution](#distribution).
 
 Other useful entry points:
 
 ```bash
-# Build the .app bundle only (no installer)
+# Build the .app bundle only (no DMG)
 make            # or: make all
 
 # Development feedback loop (tests, lints)
@@ -107,7 +98,7 @@ make help
 
 - `make` or `make all` - Create .app bundle with LSUIElement fix (default)
 - `make fix-plist` - Create .app bundle with LSUIElement fix (menu bar only)
-- `make pkg` - Create .pkg installer with Launch Agent setup (recommended for distribution)
+- `make dmg` - Create distributable DMG with ad-hoc signed .app (recommended for distribution)
 
 ### Developer Tools
 
@@ -152,7 +143,17 @@ plutil -insert LSUIElement -bool true \
 
 This key makes the app a menu bar-only application (no Dock icon).
 
-### Step 4: Test the Application
+### Step 4: Ad-hoc Sign
+
+HandsOff ships unsigned (ad-hoc signed) per
+[ADR 0001](docs/adr/0001-unsigned-notarization-free-distribution.md):
+
+```bash
+codesign --deep --force --sign - \
+  target/release/bundle/osx/HandsOff.app
+```
+
+### Step 5: Test the Application
 
 ```bash
 open target/release/bundle/osx/HandsOff.app
@@ -190,54 +191,53 @@ The bundle's Info.plist includes:
 
 ## Distribution
 
-### Option 1: PKG Installer with Launch Agent (Recommended)
+### Option 1: DMG (Recommended)
 
-Create a complete installer package that includes setup tooling:
+Create the distributable disk image:
 
 ```bash
-make pkg
+make dmg
 ```
 
-This creates `dist/HandsOff-v{VERSION}.pkg` with:
-- The HandsOff.app bundle
-- Built-in setup script for configuring the Launch Agent
-- Professional installer UI with welcome and instructions
-- Postinstall script that guides users through setup
-
-**Why use PKG instead of DMG?**
-
-The PKG installer solves the environment variable problem by:
-1. Installing the app to /Applications
-2. Including a setup script that prompts for your passphrase
-3. Automatically creating the Launch Agent plist with the passphrase
-4. Configuring the app to start at login
+This creates `dist/HandsOff-v{VERSION}-<arch>.dmg` containing:
+- The ad-hoc signed HandsOff.app bundle
+- An `/Applications` symlink for drag-and-drop install
 
 **User Experience:**
-1. User runs the .pkg installer
-2. After installation, user runs the setup script:
-   ```bash
-   /Applications/HandsOff.app/Contents/MacOS/setup-launch-agent.sh
-   ```
-3. Setup script prompts for passphrase
-4. Launch Agent is configured and app starts automatically
-5. App starts at every login with correct environment variables
+1. User mounts the DMG and drags HandsOff.app to `/Applications`
+2. On first launch, right-click → **Open** to bypass Gatekeeper (unsigned
+   app; see [ADR 0001](docs/adr/0001-unsigned-notarization-free-distribution.md))
+3. The Setup Wizard launches automatically (no config): Accessibility
+   grant, Passphrase capture, hotkeys/timeouts, login item
+   (see [ADR 0002](docs/adr/0002-in-app-setup-wizard-replaces-cli-setup.md))
 
-For detailed information, see [installer/INSTALLER-GUIDE.md](installer/INSTALLER-GUIDE.md).
+For detailed information, see [docs/DMG-GUIDE.md](docs/DMG-GUIDE.md).
 
 ### Option 2: Direct .app Distribution
 
-For simple distribution without Launch Agent setup, simply distribute the `.app` bundle:
+For simple distribution without a disk image, distribute the `.app`
+bundle directly:
 
 ```bash
 cd target/release/bundle/osx
 zip -r HandsOff-v0.1.0.zip HandsOff.app
 ```
 
-Users can extract and drag to `/Applications`.
+Users can extract and drag to `/Applications`. Gatekeeper handling and
+the Setup Wizard work identically to the DMG flow.
 
-**Note**: Users will need to manually configure the Launch Agent. The PKG installer (Option 1) handles this automatically.
+### Option 3: CLI Binary Distribution
 
-### Option 3: Install Locally for Testing
+The CLI binary (`target/release/handsoff`) is built from the same crate
+as the tray app and distributed separately, e.g.:
+
+```bash
+mkdir handsoff-cli
+cp target/release/handsoff handsoff-cli/
+tar -czf handsoff-cli-v{VERSION}-<arch>.tar.gz handsoff-cli/
+```
+
+### Option 4: Install Locally for Testing
 
 To test the installed version on your local machine:
 
@@ -249,9 +249,15 @@ This copies the bundle to `/Applications/HandsOff.app`.
 
 ## Code Signing and Distribution
 
-Code signing and notarization for public distribution are handled automatically by the GitHub Actions CI/CD pipeline. See `.github/workflows/release.yml` for details.
+HandsOff ships **unsigned (ad-hoc signed)** and notarization-free — see
+[ADR 0001](docs/adr/0001-unsigned-notarization-free-distribution.md) for
+the rationale. `make dmg` applies an ad-hoc signature
+(`codesign --deep --force --sign -`) so the bundle is locally consistent;
+no certificate is required.
 
-For local development and testing, unsigned builds work fine. macOS will prompt users to allow the app in System Settings > Privacy & Security if needed.
+For local development and testing, unsigned builds work fine. macOS will
+prompt users to allow the app in System Settings > Privacy & Security if
+needed (or right-click → Open on first launch).
 
 ## Adding an Application Icon
 
@@ -290,6 +296,13 @@ lipo -info target/release/bundle/osx/HandsOff.app/Contents/MacOS/handsoff
 codesign -dvvv target/release/bundle/osx/HandsOff.app
 ```
 
+### Mount the DMG
+```bash
+hdiutil attach dist/HandsOff-v{VERSION}-<arch>.dmg
+ls /Volumes/HandsOff
+hdiutil detach /Volumes/HandsOff
+```
+
 ## Troubleshooting
 
 ### App doesn't start
@@ -308,9 +321,10 @@ codesign -dvvv target/release/bundle/osx/HandsOff.app
 - Ensure app isn't crashing on startup
 
 ### Gatekeeper blocks app
-- For local development, this is normal for unsigned apps
-- Users can override: System Settings > Privacy & Security > "Open Anyway"
-- Official releases are signed and notarized via CI/CD
+- Expected for an ad-hoc signed app (see
+  [ADR 0001](docs/adr/0001-unsigned-notarization-free-distribution.md))
+- First launch: right-click the app and choose **Open**, or use
+  System Settings > Privacy & Security > "Open Anyway"
 
 ## Build Architecture
 
@@ -420,6 +434,7 @@ Notes:
 ## References
 
 - [Spec Document](specs/build_as_macos_app.md) - Complete implementation specification
+- [docs/DMG-GUIDE.md](docs/DMG-GUIDE.md) - DMG distribution and first-run flow
 - [cargo-bundle GitHub](https://github.com/burtonageo/cargo-bundle)
 - [Apple Bundle Documentation](https://developer.apple.com/library/archive/documentation/CoreFoundation/Conceptual/CFBundles/BundleTypes/BundleTypes.html)
 - [Info.plist Keys Reference](https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Introduction/Introduction.html)

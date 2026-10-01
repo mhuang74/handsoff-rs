@@ -587,7 +587,8 @@ Consider integrating Sparkle framework for automatic updates:
 
 ### Launch at Login
 
-Add a launch agent or use the macOS Login Items API:
+Already implemented via the Setup Wizard login-item checkbox (SMAppService);
+toggling is also available in System Settings → General → Login Items:
 - https://developer.apple.com/documentation/servicemanagement
 
 ### Preferences Window

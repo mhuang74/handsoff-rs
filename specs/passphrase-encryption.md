@@ -1,6 +1,8 @@
 # Passphrase Security Enhancement
 
-**Status:** Planned
+**Status:** Superseded — ADR 0002 (in-app Setup Wizard) removed the
+LaunchAgent plaintext storage this spec targeted; passphrase hashing
+(SHA-256 over keycode sequences) shipped instead. Kept for history only.
 **Date:** 2025-11-05
 **Priority:** High - Security Enhancement
 

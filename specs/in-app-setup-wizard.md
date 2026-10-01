@@ -163,9 +163,10 @@ Wizard, Lock, Disable, Reenable, Reset.
   tooling.
 - **CLI artifact**: same crate, unchanged TUI `--setup`, shipped as a separate
   release artifact.
-- **Packaging cutover**: delete the Makefile `pkg` target, the LaunchAgent
-  plist template, and the installer scripts; rewrite `INSTALLER-GUIDE.md` and
-  `BUILD.md` for the DMG flow. No transitional dual-packaging.
+- **Packaging cutover** (done, #28): the Makefile `pkg` target, the LaunchAgent
+  plist template, and the installer scripts are deleted; `INSTALLER-GUIDE.md`
+  was replaced by `docs/DMG-GUIDE.md` and `BUILD.md` describes the DMG flow.
+  No transitional dual-packaging.
 - **Docs**: ADR 0001 (unsigned distribution) and ADR 0002 (in-app wizard
   replaces CLI setup) already record the architectural decisions. Update the
   glossary (`CONTEXT.md`) if any new term emerges during implementation.

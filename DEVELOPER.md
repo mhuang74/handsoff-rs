@@ -69,7 +69,7 @@ For Intel Macs:
 cargo build --release --target x86_64-apple-darwin
 ```
 
-For building the distributable `.app` bundle / `.pkg` installer, see [BUILD.md](BUILD.md).
+For building the distributable `.app` bundle / DMG, see [BUILD.md](BUILD.md).
 
 ### Universal Binary (Both Architectures)
 
@@ -92,7 +92,7 @@ lipo -create \
 ```
 
 **On a Mac**, the full native workflow (`make all` for the `.app` bundle,
-`make pkg` for the installer) is documented in [BUILD.md](BUILD.md).
+`make dmg` for the distributable disk image) is documented in [BUILD.md](BUILD.md).
 **On Linux**, full cross-compile validation (compile+link of binaries and test
 harnesses for both darwin targets) is documented in
 [BUILD.md → Cross-Compiling and Validating the macOS Build on Linux](BUILD.md#cross-compiling-and-validating-the-macos-build-on-linux).
@@ -308,14 +308,12 @@ HANDS_OFF_AUTO_UNLOCK=300 cargo run
 HANDS_OFF_AUTO_UNLOCK=3600 ./handsoff
 ```
 
-**Launch Agent (Permanent Configuration):**
-```xml
-<!-- ~/Library/LaunchAgents/com.handsoff.inputlock.plist -->
-<key>EnvironmentVariables</key>
-<dict>
-    <key>HANDS_OFF_AUTO_UNLOCK</key>
-    <string>3600</string>  <!-- 60-minute base interval -->
-</dict>
+**Login Item (Permanent Configuration):**
+```bash
+# Enable "Launch HandsOff at login" in the Setup Wizard / Preferences, or
+# toggle it in System Settings → General → Login Items. Environment
+# variable overrides below still apply to that launch.
+export HANDS_OFF_AUTO_UNLOCK=3600  # 60-minute base interval
 ```
 
 ### Security Implications
