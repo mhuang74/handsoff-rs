@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+- feat: tray **Check for Updates…** menu item (#29) — opens https://github.com/mhuang74/handsoff-rs/releases/latest in the default browser via `open` (no Sparkle / self_update per ADR 0001); fire-and-forget, never blocks the tray
+- feat: Accessibility permission re-grant (#29) — a valid config with a stale grant (e.g. after an unsigned update changed the CDHash) now opens the wizard's permission step only, instead of full passphrase re-setup; new pure `wizard::startup_flow` routing helper (Run / ReGrant / Wizard) and `run_permission_regrant` entry point; config untouched on re-grant; "Fix Accessibility Permission…" tray item reopens the screen manually
+- docs: wizard first screen explains the Gatekeeper right-click → Open dance for unsigned apps (#28)
+
 ## [0.8.0] - 2026-10-01
 
 - feat: tray lifecycle split (#27) — old Reset renamed **Reenable** (unguarded, always in menu: ends a stuck Lock and restarts input capture without changing config); new **Reset…** is double-confirmed (caution dialog) and wipes the config then relaunches the in-app Setup Wizard; **Preferences…** window edits hotkeys, auto-lock timeout, and auto-unlock backoff without passphrase re-entry (empty field = unchanged); **Change Passphrase…** captures a new passphrase via the same silent double-entry path and preserves all other settings

@@ -44,6 +44,42 @@ pub struct WizardOutcome {
     pub login_item: LoginItemResult,
 }
 
+/// What the tray should do at startup (issue #29): run normally, re-grant
+/// the Accessibility permission, or run the full Setup Wizard.
+///
+/// The distinction is issue #29's core routing rule: a config that passes
+/// strict validation but finds `AXIsProcessTrusted() == false` has a STALE
+/// grant (typical after an unsigned update replaces the binary and its
+/// CDHash) — that user must NOT be sent through passphrase re-setup; only
+/// the permission step. A config that fails strict validation needs the
+/// full wizard (whose first step is the same permission screen).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StartupFlow {
+    /// Config valid, permissions granted: run the tray normally.
+    Run,
+    /// Config valid but Accessibility grant stale/missing: permission-only
+    /// re-grant (reuses the wizard's permission step; config untouched).
+    ReGrant,
+    /// Config absent or invalid: full Setup Wizard.
+    Wizard,
+}
+
+/// Pure startup-routing decision (issue #29), unit-tested in
+/// `tests/wizard_tests.rs`. `config_valid` is `validate_config_strict()`'s
+/// result; `has_accessibility_permissions` the authoritative full check.
+pub fn startup_flow(
+    config_valid: bool,
+    has_accessibility_permissions: bool,
+) -> StartupFlow {
+    if !config_valid {
+        StartupFlow::Wizard
+    } else if !has_accessibility_permissions {
+        StartupFlow::ReGrant
+    } else {
+        StartupFlow::Run
+    }
+}
+
 /// Launch the wizard modally and return the collected outcome.
 ///
 /// Runs the wizard on the CALLER's tao event loop via `run_return` and
@@ -73,6 +109,32 @@ pub fn run_wizard(
     _event_loop: &mut tao::event_loop::EventLoop<WizardEvent>,
 ) -> Result<WizardOutcome> {
     anyhow::bail!("Setup wizard requires macOS")
+}
+
+/// Permission-only re-grant flow (issue #29): the wizard's permission step
+/// WITHOUT passphrase capture or any other step. The tray routes here when
+/// the config is valid but the Accessibility grant is stale — typically
+/// because an unsigned update replaced the binary and its CDHash, so TCC's
+/// per-code-signature grant no longer matches. The user re-ticks the box in
+/// System Settings; the config is never read, shown, or written.
+///
+/// Runs on the CALLER's tao event loop via `run_return` (same
+/// single-process-loop contract as `run_wizard`; see its doc comment).
+///
+/// # Errors
+/// Window creation failure, or window closed before the grant completes.
+#[cfg(target_os = "macos")]
+pub fn run_permission_regrant(
+    event_loop: &mut tao::event_loop::EventLoop<WizardEvent>,
+) -> Result<()> {
+    self::macos::run_permission_regrant_macos(event_loop)
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn run_permission_regrant(
+    _event_loop: &mut tao::event_loop::EventLoop<WizardEvent>,
+) -> Result<()> {
+    anyhow::bail!("Permission re-grant requires macOS")
 }
 
 /// User-event payload for the wizard's event loop (tray forwards these
@@ -109,6 +171,8 @@ mod macos {
     };
     use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
     use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+    use std::cell::RefCell;
+    use std::rc::Rc;
     use std::sync::Arc;
 
     const WINDOW_W: f64 = 480.0;
@@ -362,7 +426,10 @@ mod macos {
             instr_label.setStringValue(&NSString::from_str(
                 "HandsOff blocks all keyboard and mouse input until you type your secret passphrase. \
                  For that it needs the macOS Accessibility permission — granted to HandsOff itself, \
-                 not a terminal.\n\nClick the button, then tick the box for HandsOff in System Settings.",
+                 not a terminal.\n\nClick the button, then tick the box for HandsOff in System Settings.\
+                 \n\nNote: HandsOff is unsigned. If macOS blocks it from launching, right-click \
+                 (or Control-click) HandsOff.app and choose Open, then confirm Open in the dialog. \
+                 You only need to do this once.",
             ))
         };
 
@@ -563,6 +630,185 @@ mod macos {
             .borrow_mut()
             .take()
             .unwrap_or_else(|| Err(anyhow!("Setup wizard event loop ended unexpectedly")));
+        result
+    }
+
+    /// Permission-only re-grant window (issue #29): the wizard's step-0
+    /// screen alone — explanation, Grant button, background poll — with no
+    /// passphrase capture, form, or login-item step. Same primitives as the
+    /// wizard: `open_accessibility_settings()` on click, the lightweight +
+    /// full permission poll thread (500 ms cadence, one authoritative full
+    /// check when the lightweight flips true), and the same shared tao loop
+    /// (`run_return` from the caller). Resolves Ok the moment the grant is
+    /// detected; window-closed resolves Err.
+    ///
+    /// Only valid to call on macOS; see also `super::startup_flow` for how
+    /// the tray decides between this, the full wizard, and plain startup.
+    pub(super) fn run_permission_regrant_macos(
+        event_loop: &mut tao::event_loop::EventLoop<super::WizardEvent>,
+    ) -> Result<()> {
+        let mtm =
+            MainThreadMarker::new().ok_or_else(|| anyhow!("re-grant must run on main thread"))?;
+
+        let app = NSApplication::sharedApplication(mtm);
+        app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
+
+        let style = NSWindowStyleMask::Titled | NSWindowStyleMask::Closable;
+        let frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(WINDOW_W, WINDOW_H));
+        let window = unsafe {
+            NSWindow::initWithContentRect_styleMask_backing_defer(
+                mtm.alloc(),
+                frame,
+                style,
+                NSBackingStoreType::NSBackingStoreBuffered,
+                false,
+            )
+        };
+        window.setTitle(&NSString::from_str("HandsOff — Permission Needed"));
+        unsafe { window.setReleasedWhenClosed(false) };
+
+        let target: Retained<WizardTarget> = unsafe {
+            let t = mtm.alloc().set_ivars(());
+            msg_send_id![super(t), initWithFrame: frame]
+        };
+
+        // Same wizard widgets; only step 0 is ever shown. The Grant button
+        // routes through the SAME WizardSignals (TAG_GRANT) the wizard uses.
+        let grant_btn = unsafe {
+            NSButton::buttonWithTitle_target_action(
+                &NSString::from_str("Grant Accessibility Permission"),
+                Some(&*target),
+                Some(objc2::sel!(buttonClicked:)),
+                mtm,
+            )
+        };
+        unsafe { grant_btn.setTag(TAG_GRANT) };
+
+        let status_label: Retained<NSTextField> =
+            unsafe { NSTextField::labelWithString(&NSString::from_str(""), mtm) };
+        unsafe { status_label.setFrameSize(NSSize::new(WINDOW_W - 60.0, 20.0)) };
+        status_label.setHidden(true);
+
+        let instr_label: Retained<NSTextField> = unsafe {
+            NSTextField::labelWithString(
+                &NSString::from_str(
+                    "HandsOff was updated, so macOS needs the Accessibility permission \
+                     granted again to HandsOff itself — your passphrase and settings are \
+                     NOT affected.\n\nClick the button, then tick the box for HandsOff in \
+                     System Settings > Privacy & Security > Accessibility.",
+                ),
+                mtm,
+            )
+        };
+        unsafe { instr_label.setFrameSize(NSSize::new(WINDOW_W - 60.0, 80.0)) };
+
+        let content = unsafe {
+            NSStackView::initWithFrame(
+                mtm.alloc(),
+                NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(WINDOW_W, WINDOW_H)),
+            )
+        };
+        unsafe {
+            content.setOrientation(NSUserInterfaceLayoutOrientation::Vertical);
+            content.setSpacing(12.0);
+            const GRAVITY: NSStackViewGravity = NSStackViewGravity::Leading;
+            for v in [
+                &*instr_label as *const NSTextField as *const NSView,
+                &*grant_btn as *const NSButton as *const NSView,
+                &*status_label as *const NSTextField as *const NSView,
+            ] {
+                content.addView_inGravity(&*v, GRAVITY);
+            }
+        }
+        unsafe { window.contentView().unwrap().addSubview(&content) };
+
+        window.center();
+        window.makeKeyAndOrderFront(None);
+        // `-[NSApplication activateIgnoringOtherApps:]` is deprecated
+        // ( objc2-app-kit 0.2 marks it ); `activate` is the replacement and
+        // exists since macOS 10.9 — fine for the 13.0 minimum.
+        unsafe { app.activate() };
+
+        use tao::event::Event;
+        use tao::platform::run_return::EventLoopExtRunReturn;
+
+        // Same poll primitive the wizard uses (see run_wizard_macos): fast
+        // lightweight AXIsProcessTrusted checks every 500 ms, then ONE
+        // authoritative full test-tap check when the lightweight flips true.
+        let perm_granted = Arc::new(AtomicBool::new(false));
+        std::thread::spawn({
+            let perm_granted = perm_granted.clone();
+            move || loop {
+                if crate::input_blocking::check_accessibility_permissions_lightweight()
+                    && crate::input_blocking::check_accessibility_permissions()
+                {
+                    perm_granted.store(true, Ordering::SeqCst);
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(500));
+            }
+        });
+
+        let outcome_slot: Rc<RefCell<Option<Result<()>>>> =
+            std::rc::Rc::new(std::cell::RefCell::new(None));
+        let outcome = outcome_slot.clone();
+
+        event_loop.run_return(move |event, _, control_flow| {
+            *control_flow = tao::event_loop::ControlFlow::WaitUntil(
+                std::time::Instant::now() + std::time::Duration::from_millis(100),
+            );
+
+            if let Event::WindowEvent {
+                event: tao::event::WindowEvent::CloseRequested,
+                ..
+            } = &event
+            {
+                *outcome.borrow_mut() = Some(Err(anyhow!(
+                    "Permission window closed before the Accessibility grant completed"
+                )));
+                app.stop(None);
+                return;
+            }
+
+            // Grant clicked → open the System Settings pane, wait for the poll.
+            if SIGNALS.grant_clicked.swap(false, Ordering::SeqCst) {
+                open_accessibility_settings();
+                let ns = NSString::from_str(
+                    "Waiting for Accessibility permission…\n\
+                     Tick the box for HandsOff in System Settings > Privacy & Security > Accessibility.",
+                );
+                unsafe {
+                    instr_label.setStringValue(&ns);
+                    status_label.setHidden(false);
+                    status_label.setStringValue(&NSString::from_str("Waiting for permission…"));
+                }
+                return;
+            }
+
+            // Poll resolves → done. The tray re-runs its startup permission
+            // check after this returns, so no further bookkeeping is needed.
+            if perm_granted.load(Ordering::SeqCst) {
+                *outcome.borrow_mut() = Some(Ok(()));
+                app.stop(None);
+                return;
+            }
+
+            // Keep the waiting text fresh (same pattern as the wizard's
+            // SIGNALS.status guard — only fill when not already set).
+            {
+                let mut status = SIGNALS.status.lock();
+                if status.is_empty() {
+                    *status = "Waiting for Accessibility permission…".to_string();
+                    let ns = NSString::from_str(status.as_str());
+                    unsafe { status_label.setStringValue(&ns) };
+                }
+            }
+        });
+
+        let result = outcome_slot
+            .borrow_mut()
+            .take()
+            .unwrap_or_else(|| Err(anyhow!("Permission re-grant event loop ended unexpectedly")));
         result
     }
 

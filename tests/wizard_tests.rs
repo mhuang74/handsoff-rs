@@ -270,3 +270,37 @@ fn test_strict_validation_accepts_well_formed_config() {
 // is_unlock_blocked_keycode / validate_sequence); they are unit-tested there.
 // Here we test the wizard-level edge cases through the config seam.
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Issue #29: startup routing (pure decision helper) — Run / ReGrant / Wizard
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_startup_flow_config_valid_and_permitted_runs() {
+    assert_eq!(
+        handsoff::wizard::startup_flow(true, true),
+        handsoff::wizard::StartupFlow::Run
+    );
+}
+
+#[test]
+fn test_startup_flow_stale_grant_routes_to_regrant_not_wizard() {
+    // Config VALID but AXIsProcessTrusted false (post-update CDHash change):
+    // must be the permission-only re-grant, never passphrase re-setup.
+    assert_eq!(
+        handsoff::wizard::startup_flow(true, false),
+        handsoff::wizard::StartupFlow::ReGrant
+    );
+}
+
+#[test]
+fn test_startup_flow_invalid_config_routes_to_wizard() {
+    assert_eq!(
+        handsoff::wizard::startup_flow(false, true),
+        handsoff::wizard::StartupFlow::Wizard
+    );
+    assert_eq!(
+        handsoff::wizard::startup_flow(false, false),
+        handsoff::wizard::StartupFlow::Wizard
+    );
+}
