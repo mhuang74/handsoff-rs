@@ -498,24 +498,14 @@ HANDS_OFF_AUTO_UNLOCK=600 cargo run  # 10 minutes
 cargo run
 ```
 
-### Launch Agent (Production)
+### Launch at Login (Production)
 
-```xml
-<!-- ~/Library/LaunchAgents/com.handsoff.plist -->
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.handsoff</string>
+Enable the login item (Setup Wizard checkbox or System Settings → General →
+Login Items) so HandsOff starts at login. Environment variable overrides
+apply to that launch too:
 
-    <key>EnvironmentVariables</key>
-    <dict>
-        <key>HANDS_OFF_AUTO_UNLOCK</key>
-        <string>300</string>  <!-- 5 minutes -->
-    </dict>
-
-    <!-- ... other configuration ... -->
-</dict>
-</plist>
+```bash
+HANDS_OFF_AUTO_UNLOCK=300  # 5 minutes
 ```
 
 ## Future Enhancements

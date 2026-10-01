@@ -37,35 +37,33 @@ HandsOff is available in two forms: **Tray App** (recommended for most users) an
 
 ### Option 1: Tray App (Recommended)
 
-**Download the PKG installer from [GitHub Releases](https://github.com/mhuang74/handsoff-rs/releases):**
+**Download the DMG from [GitHub Releases](https://github.com/mhuang74/handsoff-rs/releases):**
 
-1. Download the PKG installer for your Mac's architecture from the latest release:
-   - Apple Silicon: `HandsOff-v{VERSION}-arm64.pkg`
-   - Intel: `HandsOff-v{VERSION}-x86_64.pkg`
-2. Run the installer (installs to `~/Applications/HandsOff.app` and configures launch agent automatically)
-3. Grant Accessibility permissions:
+1. Download the DMG for your Mac's architecture from the latest release:
+   - Apple Silicon: `HandsOff-v{VERSION}-arm64.dmg`
+   - Intel: `HandsOff-v{VERSION}-x86_64.dmg`
+2. Mount the DMG and drag HandsOff.app to `/Applications`
+3. First launch (unsigned app): right-click (or Control-click) HandsOff.app
+   and choose **Open**, then confirm **Open** in the Gatekeeper dialog.
+   You only need to do this once.
+4. Grant Accessibility permissions:
    - Go to System Settings > Privacy & Security > Accessibility
    - Add HandsOff to the list of allowed apps
-4. Configure your passphrase:
-   ```bash
-   ~/Applications/HandsOff.app/Contents/MacOS/handsoff-tray --setup
-   ```
-   This will prompt you for:
+5. Configure your passphrase with the built-in Setup Wizard, which opens
+   automatically on first run (when no valid config exists). It prompts for:
    - Secret passphrase (captured as physical key presses — layout-independent)
    - Auto-lock timeout (default: 180 seconds)
    - Auto-unlock (default: enabled — 60-minute base, doubling up to 24 h)
-5. Start the app:
-   ```bash
-   launchctl start com.handsoff.inputlock
-   ```
-6. The app will start automatically at login
+   - Hotkeys and a "Launch at login" checkbox
+6. Optionally enable the login item (wizard checkbox) so the app starts
+   automatically at login
 
 **Key advantages:**
 - ✅ Native menu bar interface with notifications
-- ✅ Automatic startup at login
+- ✅ Optional automatic startup at login (login item)
 - ✅ Passphrase stored as a SHA-256 hash (no plaintext on disk)
 - ✅ Visual lock status indicator (locked: red)
-- ✅ One-time setup
+- ✅ One-time setup via the built-in Setup Wizard
 
 ### Option 2: CLI (Advanced Users)
 
@@ -120,7 +118,8 @@ Both CLI and Tray App use the same encrypted configuration file:
 **Configuration file location:** `~/Library/Application Support/handsoff/config.toml`
 
 **Initial setup:**
-- **Tray App**: `~/Applications/HandsOff.app/Contents/MacOS/handsoff-tray --setup`
+- **Tray App**: launch HandsOff.app — the Setup Wizard opens automatically
+  when no valid config exists (reconfigure later via tray menu → Preferences)
 - **CLI**: `handsoff --setup`
 
 The setup wizard will prompt you for:
@@ -153,7 +152,8 @@ For permanent overrides, add these to your `~/.zshrc` or `~/.bash_profile`.
 
 ### Using the Tray App
 
-If you installed via PKG installer, the app will start automatically at login.
+If you enabled the login item in the Setup Wizard (or System Settings →
+General → Login Items), the app starts automatically at login.
 
 **Tray App Features:**
 - Menu bar icon color showing lock status (locked: red, unlocked/disabled: white)
@@ -251,8 +251,9 @@ When locked, press `Ctrl+Cmd+Shift+T` to temporarily pass through a spacebar key
 - Restart the app after granting permissions
 
 ### Forgot passphrase
-- **Both CLI and Tray App**: Run the setup command again to reconfigure:
-  - Tray App: `~/Applications/HandsOff.app/Contents/MacOS/handsoff-tray --setup`
+- **Both CLI and Tray App**: reconfigure by running the setup flow again:
+  - Tray App: delete the config file, relaunch the app — the Setup Wizard
+    opens automatically (or use tray menu → Change Passphrase)
   - CLI: `handsoff --setup`
 - If locked and can't unlock: Restart in Safe Mode to avoid launching HandsOff, then run setup again
 - If remote access is enabled: ssh into host and `killall handsoff-tray` or `killall handsoff`

@@ -17,7 +17,7 @@ env:
   BUNDLE_ID: com.handsoff.inputlock
 
 jobs:
-  build-macos-pkg-arm64:
+  build-macos-dmg-arm64:
     runs-on: macos-latest
     permissions:
       contents: write
@@ -63,38 +63,6 @@ jobs:
       with:
         path: target
         key: ${{ runner.os }}-cargo-build-release-${{ hashFiles('**/Cargo.lock') }}
-
-    - name: Setup code signing
-      env:
-        MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
-        MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
-        MACOS_KEYCHAIN_PWD: ${{ secrets.MACOS_KEYCHAIN_PWD }}
-      run: |
-        # Skip if no certificate configured
-        if [ -z "$MACOS_CERTIFICATE" ]; then
-          echo "No signing certificate configured, skipping code signing setup"
-          exit 0
-        fi
-
-        # Create temporary keychain
-        KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
-        security create-keychain -p "$MACOS_KEYCHAIN_PWD" $KEYCHAIN_PATH
-        security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
-        security unlock-keychain -p "$MACOS_KEYCHAIN_PWD" $KEYCHAIN_PATH
-
-        # Import certificate
-        echo $MACOS_CERTIFICATE | base64 --decode > certificate.p12
-        security import certificate.p12 -k $KEYCHAIN_PATH -P "$MACOS_CERTIFICATE_PWD" -T /usr/bin/codesign -T /usr/bin/productsign
-        security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$MACOS_KEYCHAIN_PWD" $KEYCHAIN_PATH
-        rm -f certificate.p12
-
-        # Set as default keychain
-        security list-keychain -d user -s $KEYCHAIN_PATH
-
-        # List available signing identities
-        echo "Available signing identities:"
-        security find-identity -v -p codesigning
-        security find-identity -v -p basic
 
     - name: Build release binary
       run: |
@@ -143,158 +111,37 @@ jobs:
         echo "CLI tarball created at: ${TARBALL}"
         ls -lh "${TARBALL}"
 
-    - name: Sign app bundle
-      run: |
-        FINAL_BUNDLE_PATH="target/aarch64-apple-darwin/release/bundle/osx/${{ env.APP_NAME }}.app"
-
-        if [ -n "${{ secrets.MACOS_CERTIFICATE }}" ]; then
-          # Sign with Developer ID certificate
-          IDENTITY=$(security find-identity -v -p codesigning | grep "Developer ID Application" | head -1 | awk '{print $2}')
-          if [ -z "$IDENTITY" ]; then
-            echo "Warning: No Developer ID Application certificate found, using first available identity"
-            IDENTITY=$(security find-identity -v -p codesigning | grep -v "0 valid identities found" | head -1 | awk '{print $2}')
-          fi
-          echo "Signing with identity: $IDENTITY"
-          codesign --force --deep --sign "$IDENTITY" --options runtime --timestamp "$FINAL_BUNDLE_PATH"
-          echo "App signed with Developer ID"
-        else
-          echo "No signing certificate configured, creating unsigned package"
-          echo "To enable code signing, add MACOS_CERTIFICATE, MACOS_CERTIFICATE_PWD, and MACOS_KEYCHAIN_PWD secrets"
-        fi
-
-    - name: Create PKG installer
+    - name: Create DMG
       run: |
         VERSION="${{ steps.version.outputs.version }}"
-        BUNDLE_PATH="target/aarch64-apple-darwin/release/bundle/osx/${{ env.APP_NAME }}.app"
+        BUNDLE_PATH="target/arm64/release/bundle/osx/${{ env.APP_NAME }}.app"
         DIST_DIR="dist"
-        INSTALLER_DIR="installer"
-        SCRIPTS_DIR="${INSTALLER_DIR}/scripts"
-        PKG_ROOT="${INSTALLER_DIR}/pkg-root"
-        PKG_COMPONENT="${INSTALLER_DIR}/${{ env.APP_NAME }}-component.pkg"
-        PKG_UNSIGNED="${INSTALLER_DIR}/${{ env.APP_NAME }}-v${VERSION}-unsigned.pkg"
-        PKG_FINAL="${DIST_DIR}/${{ env.APP_NAME }}-v${VERSION}-arm64.pkg"
+        DMG_STAGING="target/arm64/release/dmg-staging"
+        DMG_FINAL="${DIST_DIR}/${{ env.APP_NAME }}-v${VERSION}-arm64.dmg"
 
-        echo "Building PKG installer..."
+        echo "Building DMG..."
 
-        # Prepare package root
-        rm -rf "${PKG_ROOT}"
-        mkdir -p "${PKG_ROOT}/Applications"
+        # Ad-hoc sign (unsigned distribution, ADR 0001)
+        codesign --deep --force --sign - "${BUNDLE_PATH}"
 
-        # Copy the app bundle
-        cp -R "${BUNDLE_PATH}" "${PKG_ROOT}/Applications/"
-
-
-        # Create component package
-        pkgbuild \
-            --root "${PKG_ROOT}" \
-            --identifier "${{ env.BUNDLE_ID }}" \
-            --version "${VERSION}" \
-            --install-location "/" \
-            --scripts "${SCRIPTS_DIR}" \
-            "${PKG_COMPONENT}"
-
-        # Create distribution XML
-        DISTRIBUTION_XML="${INSTALLER_DIR}/distribution.xml"
-        cat > "${DISTRIBUTION_XML}" << 'EOF'
-        <?xml version="1.0" encoding="utf-8"?>
-        <installer-gui-script minSpecVersion="1">
-            <title>${{ env.APP_NAME }}</title>
-            <organization>${{ env.BUNDLE_ID }}</organization>
-            <domains enable_currentUserHome="true"/>
-            <options customize="never" require-scripts="false" hostArchitectures="arm64"/>
-
-            <welcome file="welcome.html" mime-type="text/html" />
-            <license file="EULA" />
-            <conclusion file="conclusion.html" mime-type="text/html" />
-
-            <pkg-ref id="${{ env.BUNDLE_ID }}">
-                <bundle-version>
-                    <bundle id="${{ env.BUNDLE_ID }}" CFBundleVersion="${VERSION}" path="Applications/${{ env.APP_NAME }}.app" />
-                </bundle-version>
-            </pkg-ref>
-
-            <choices-outline>
-                <line choice="default">
-                    <line choice="${{ env.BUNDLE_ID }}"/>
-                </line>
-            </choices-outline>
-
-            <choice id="default"/>
-            <choice id="${{ env.BUNDLE_ID }}" visible="false">
-                <pkg-ref id="${{ env.BUNDLE_ID }}"/>
-            </choice>
-
-            <pkg-ref id="${{ env.BUNDLE_ID }}" version="${VERSION}" onConclusion="none">${{ env.APP_NAME }}-component.pkg</pkg-ref>
-        </installer-gui-script>
-        EOF
-
-        # Verify installer resources (HTML templates are in the repository)
-        if [ ! -f "${INSTALLER_DIR}/welcome.html" ]; then
-            echo "ERROR: welcome.html not found in ${INSTALLER_DIR}/"
-            exit 1
-        fi
-
-        if [ ! -f "${INSTALLER_DIR}/conclusion.html" ]; then
-            echo "ERROR: conclusion.html not found in ${INSTALLER_DIR}/"
-            exit 1
-        fi
-
-        # Copy EULA file
-        if [ -f "EULA" ]; then
-            cp EULA "${INSTALLER_DIR}/"
-        fi
-
-        # Build product package
+        # Stage app + Applications symlink
+        rm -rf "${DMG_STAGING}"
+        mkdir -p "${DMG_STAGING}"
+        cp -R "${BUNDLE_PATH}" "${DMG_STAGING}/"
+        ln -s /Applications "${DMG_STAGING}/Applications"
         mkdir -p "${DIST_DIR}"
-        productbuild \
-            --distribution "${DISTRIBUTION_XML}" \
-            --package-path "${INSTALLER_DIR}" \
-            --resources "${INSTALLER_DIR}" \
-            "${PKG_UNSIGNED}"
 
-        # Sign the package if certificate is available
-        if [ -n "${{ secrets.MACOS_CERTIFICATE }}" ]; then
-          IDENTITY=$(security find-identity -v -p basic | grep "Developer ID Installer" | head -1 | awk '{print $2}')
-          if [ -z "$IDENTITY" ]; then
-            echo "Warning: No Developer ID Installer certificate found, using first available identity"
-            IDENTITY=$(security find-identity -v -p basic | grep -v "0 valid identities found" | head -1 | awk '{print $2}')
-          fi
-          echo "Signing package with identity: $IDENTITY"
-          productsign --sign "$IDENTITY" "${PKG_UNSIGNED}" "${PKG_FINAL}"
-          rm -f "${PKG_UNSIGNED}"
+        hdiutil create -volname "${{ env.APP_NAME }}" -srcfolder "${DMG_STAGING}" -ov -format UDZO "${DMG_FINAL}"
+        rm -rf "${DMG_STAGING}"
 
-          # Verify signature
-          echo "Verifying package signature:"
-          pkgutil --check-signature "${PKG_FINAL}"
-        else
-          # No certificate, use unsigned package
-          mv "${PKG_UNSIGNED}" "${PKG_FINAL}"
-          echo "Package created (unsigned)"
-        fi
+        echo "DMG created at: ${DMG_FINAL}"
+        ls -lh "${DMG_FINAL}"
 
-        # Clean up intermediate files
-        rm -rf "${PKG_ROOT}"
-        rm -f "${PKG_COMPONENT}"
-        rm -f "${DISTRIBUTION_XML}"
-        rm -f "${INSTALLER_DIR}/EULA"
-
-        echo "PKG installer created at: ${PKG_FINAL}"
-        ls -lh "${PKG_FINAL}"
-
-    - name: Cleanup keychain
-      if: always()
-      run: |
-        # Clean up keychain if it exists
-        KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
-        if [ -f "$KEYCHAIN_PATH" ]; then
-          security delete-keychain $KEYCHAIN_PATH || true
-        fi
-
-    - name: Upload PKG as artifact
+    - name: Upload DMG as artifact
       uses: actions/upload-artifact@v5
       with:
-        name: handsoff-pkg-macos-arm64
-        path: dist/${{ env.APP_NAME }}-v${{ steps.version.outputs.version }}-arm64.pkg
+        name: handsoff-dmg-macos-arm64
+        path: dist/${{ env.APP_NAME }}-v${{ steps.version.outputs.version }}-arm64.dmg
         retention-days: 30
 
     - name: Upload CLI tarball as artifact
@@ -304,7 +151,7 @@ jobs:
         path: dist/handsoff-cli-v${{ steps.version.outputs.version }}-arm64.tar.gz
         retention-days: 30
 
-  build-macos-pkg-x86_64:
+  build-macos-dmg-x86_64:
     runs-on: macos-latest
     permissions:
       contents: write
@@ -350,38 +197,6 @@ jobs:
       with:
         path: target
         key: ${{ runner.os }}-cargo-build-release-${{ hashFiles('**/Cargo.lock') }}
-
-    - name: Setup code signing
-      env:
-        MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
-        MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
-        MACOS_KEYCHAIN_PWD: ${{ secrets.MACOS_KEYCHAIN_PWD }}
-      run: |
-        # Skip if no certificate configured
-        if [ -z "$MACOS_CERTIFICATE" ]; then
-          echo "No signing certificate configured, skipping code signing setup"
-          exit 0
-        fi
-
-        # Create temporary keychain
-        KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
-        security create-keychain -p "$MACOS_KEYCHAIN_PWD" $KEYCHAIN_PATH
-        security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
-        security unlock-keychain -p "$MACOS_KEYCHAIN_PWD" $KEYCHAIN_PATH
-
-        # Import certificate
-        echo $MACOS_CERTIFICATE | base64 --decode > certificate.p12
-        security import certificate.p12 -k $KEYCHAIN_PATH -P "$MACOS_CERTIFICATE_PWD" -T /usr/bin/codesign -T /usr/bin/productsign
-        security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$MACOS_KEYCHAIN_PWD" $KEYCHAIN_PATH
-        rm -f certificate.p12
-
-        # Set as default keychain
-        security list-keychain -d user -s $KEYCHAIN_PATH
-
-        # List available signing identities
-        echo "Available signing identities:"
-        security find-identity -v -p codesigning
-        security find-identity -v -p basic
 
     - name: Build release binary
       run: |
@@ -430,158 +245,37 @@ jobs:
         echo "CLI tarball created at: ${TARBALL}"
         ls -lh "${TARBALL}"
 
-    - name: Sign app bundle
-      run: |
-        FINAL_BUNDLE_PATH="target/x86_64-apple-darwin/release/bundle/osx/${{ env.APP_NAME }}.app"
-
-        if [ -n "${{ secrets.MACOS_CERTIFICATE }}" ]; then
-          # Sign with Developer ID certificate
-          IDENTITY=$(security find-identity -v -p codesigning | grep "Developer ID Application" | head -1 | awk '{print $2}')
-          if [ -z "$IDENTITY" ]; then
-            echo "Warning: No Developer ID Application certificate found, using first available identity"
-            IDENTITY=$(security find-identity -v -p codesigning | grep -v "0 valid identities found" | head -1 | awk '{print $2}')
-          fi
-          echo "Signing with identity: $IDENTITY"
-          codesign --force --deep --sign "$IDENTITY" --options runtime --timestamp "$FINAL_BUNDLE_PATH"
-          echo "App signed with Developer ID"
-        else
-          echo "No signing certificate configured, creating unsigned package"
-          echo "To enable code signing, add MACOS_CERTIFICATE, MACOS_CERTIFICATE_PWD, and MACOS_KEYCHAIN_PWD secrets"
-        fi
-
-    - name: Create PKG installer
+    - name: Create DMG
       run: |
         VERSION="${{ steps.version.outputs.version }}"
-        BUNDLE_PATH="target/x86_64-apple-darwin/release/bundle/osx/${{ env.APP_NAME }}.app"
+        BUNDLE_PATH="target/x86_64/release/bundle/osx/${{ env.APP_NAME }}.app"
         DIST_DIR="dist"
-        INSTALLER_DIR="installer"
-        SCRIPTS_DIR="${INSTALLER_DIR}/scripts"
-        PKG_ROOT="${INSTALLER_DIR}/pkg-root"
-        PKG_COMPONENT="${INSTALLER_DIR}/${{ env.APP_NAME }}-component.pkg"
-        PKG_UNSIGNED="${INSTALLER_DIR}/${{ env.APP_NAME }}-v${VERSION}-unsigned.pkg"
-        PKG_FINAL="${DIST_DIR}/${{ env.APP_NAME }}-v${VERSION}-x86_64.pkg"
+        DMG_STAGING="target/x86_64/release/dmg-staging"
+        DMG_FINAL="${DIST_DIR}/${{ env.APP_NAME }}-v${VERSION}-x86_64.dmg"
 
-        echo "Building PKG installer..."
+        echo "Building DMG..."
 
-        # Prepare package root
-        rm -rf "${PKG_ROOT}"
-        mkdir -p "${PKG_ROOT}/Applications"
+        # Ad-hoc sign (unsigned distribution, ADR 0001)
+        codesign --deep --force --sign - "${BUNDLE_PATH}"
 
-        # Copy the app bundle
-        cp -R "${BUNDLE_PATH}" "${PKG_ROOT}/Applications/"
-
-
-        # Create component package
-        pkgbuild \
-            --root "${PKG_ROOT}" \
-            --identifier "${{ env.BUNDLE_ID }}" \
-            --version "${VERSION}" \
-            --install-location "/" \
-            --scripts "${SCRIPTS_DIR}" \
-            "${PKG_COMPONENT}"
-
-        # Create distribution XML
-        DISTRIBUTION_XML="${INSTALLER_DIR}/distribution.xml"
-        cat > "${DISTRIBUTION_XML}" << 'EOF'
-        <?xml version="1.0" encoding="utf-8"?>
-        <installer-gui-script minSpecVersion="1">
-            <title>${{ env.APP_NAME }}</title>
-            <organization>${{ env.BUNDLE_ID }}</organization>
-            <domains enable_currentUserHome="true"/>
-            <options customize="never" require-scripts="false" hostArchitectures="x86_64"/>
-
-            <welcome file="welcome.html" mime-type="text/html" />
-            <license file="EULA" />
-            <conclusion file="conclusion.html" mime-type="text/html" />
-
-            <pkg-ref id="${{ env.BUNDLE_ID }}">
-                <bundle-version>
-                    <bundle id="${{ env.BUNDLE_ID }}" CFBundleVersion="${VERSION}" path="Applications/${{ env.APP_NAME }}.app" />
-                </bundle-version>
-            </pkg-ref>
-
-            <choices-outline>
-                <line choice="default">
-                    <line choice="${{ env.BUNDLE_ID }}"/>
-                </line>
-            </choices-outline>
-
-            <choice id="default"/>
-            <choice id="${{ env.BUNDLE_ID }}" visible="false">
-                <pkg-ref id="${{ env.BUNDLE_ID }}"/>
-            </choice>
-
-            <pkg-ref id="${{ env.BUNDLE_ID }}" version="${VERSION}" onConclusion="none">${{ env.APP_NAME }}-component.pkg</pkg-ref>
-        </installer-gui-script>
-        EOF
-
-        # Verify installer resources (HTML templates are in the repository)
-        if [ ! -f "${INSTALLER_DIR}/welcome.html" ]; then
-            echo "ERROR: welcome.html not found in ${INSTALLER_DIR}/"
-            exit 1
-        fi
-
-        if [ ! -f "${INSTALLER_DIR}/conclusion.html" ]; then
-            echo "ERROR: conclusion.html not found in ${INSTALLER_DIR}/"
-            exit 1
-        fi
-
-        # Copy EULA file
-        if [ -f "EULA" ]; then
-            cp EULA "${INSTALLER_DIR}/"
-        fi
-
-        # Build product package
+        # Stage app + Applications symlink
+        rm -rf "${DMG_STAGING}"
+        mkdir -p "${DMG_STAGING}"
+        cp -R "${BUNDLE_PATH}" "${DMG_STAGING}/"
+        ln -s /Applications "${DMG_STAGING}/Applications"
         mkdir -p "${DIST_DIR}"
-        productbuild \
-            --distribution "${DISTRIBUTION_XML}" \
-            --package-path "${INSTALLER_DIR}" \
-            --resources "${INSTALLER_DIR}" \
-            "${PKG_UNSIGNED}"
 
-        # Sign the package if certificate is available
-        if [ -n "${{ secrets.MACOS_CERTIFICATE }}" ]; then
-          IDENTITY=$(security find-identity -v -p basic | grep "Developer ID Installer" | head -1 | awk '{print $2}')
-          if [ -z "$IDENTITY" ]; then
-            echo "Warning: No Developer ID Installer certificate found, using first available identity"
-            IDENTITY=$(security find-identity -v -p basic | grep -v "0 valid identities found" | head -1 | awk '{print $2}')
-          fi
-          echo "Signing package with identity: $IDENTITY"
-          productsign --sign "$IDENTITY" "${PKG_UNSIGNED}" "${PKG_FINAL}"
-          rm -f "${PKG_UNSIGNED}"
+        hdiutil create -volname "${{ env.APP_NAME }}" -srcfolder "${DMG_STAGING}" -ov -format UDZO "${DMG_FINAL}"
+        rm -rf "${DMG_STAGING}"
 
-          # Verify signature
-          echo "Verifying package signature:"
-          pkgutil --check-signature "${PKG_FINAL}"
-        else
-          # No certificate, use unsigned package
-          mv "${PKG_UNSIGNED}" "${PKG_FINAL}"
-          echo "Package created (unsigned)"
-        fi
+        echo "DMG created at: ${DMG_FINAL}"
+        ls -lh "${DMG_FINAL}"
 
-        # Clean up intermediate files
-        rm -rf "${PKG_ROOT}"
-        rm -f "${PKG_COMPONENT}"
-        rm -f "${DISTRIBUTION_XML}"
-        rm -f "${INSTALLER_DIR}/EULA"
-
-        echo "PKG installer created at: ${PKG_FINAL}"
-        ls -lh "${PKG_FINAL}"
-
-    - name: Cleanup keychain
-      if: always()
-      run: |
-        # Clean up keychain if it exists
-        KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
-        if [ -f "$KEYCHAIN_PATH" ]; then
-          security delete-keychain $KEYCHAIN_PATH || true
-        fi
-
-    - name: Upload PKG as artifact
+    - name: Upload DMG as artifact
       uses: actions/upload-artifact@v5
       with:
-        name: handsoff-pkg-macos-x86_64
-        path: dist/${{ env.APP_NAME }}-v${{ steps.version.outputs.version }}-x86_64.pkg
+        name: handsoff-dmg-macos-x86_64
+        path: dist/${{ env.APP_NAME }}-v${{ steps.version.outputs.version }}-x86_64.dmg
         retention-days: 30
 
     - name: Upload CLI tarball as artifact
@@ -693,7 +387,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-    needs: [build-macos-pkg-arm64, build-macos-pkg-x86_64, changelog]
+    needs: [build-macos-dmg-arm64, build-macos-dmg-x86_64, changelog]
 
     steps:
     - name: Download build artifacts
@@ -727,8 +421,8 @@ jobs:
         draft: false
         prerelease: false
         files: |
-          dist/${{ env.APP_NAME }}-v${{ needs.changelog.outputs.version }}-arm64.pkg
-          dist/${{ env.APP_NAME }}-v${{ needs.changelog.outputs.version }}-x86_64.pkg
+          dist/${{ env.APP_NAME }}-v${{ needs.changelog.outputs.version }}-arm64.dmg
+          dist/${{ env.APP_NAME }}-v${{ needs.changelog.outputs.version }}-x86_64.dmg
           dist/handsoff-cli-v${{ needs.changelog.outputs.version }}-arm64.tar.gz
           dist/handsoff-cli-v${{ needs.changelog.outputs.version }}-x86_64.tar.gz
       env:
@@ -739,8 +433,8 @@ jobs:
       with:
         name: release-bundles
         path: |
-          dist/${{ env.APP_NAME }}-v${{ needs.changelog.outputs.version }}-arm64.pkg
-          dist/${{ env.APP_NAME }}-v${{ needs.changelog.outputs.version }}-x86_64.pkg
+          dist/${{ env.APP_NAME }}-v${{ needs.changelog.outputs.version }}-arm64.dmg
+          dist/${{ env.APP_NAME }}-v${{ needs.changelog.outputs.version }}-x86_64.dmg
           dist/handsoff-cli-v${{ needs.changelog.outputs.version }}-arm64.tar.gz
           dist/handsoff-cli-v${{ needs.changelog.outputs.version }}-x86_64.tar.gz
         retention-days: 30
