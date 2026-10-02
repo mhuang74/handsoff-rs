@@ -133,10 +133,7 @@ pub fn parse_lock_hotkey() -> Option<String> {
                 Some(val.to_uppercase())
             }
             Err(err) => {
-                warn!(
-                    "Invalid lock hotkey '{}': {}. Using default.",
-                    val, err
-                );
+                warn!("Invalid lock hotkey '{}': {}. Using default.", val, err);
                 None
             }
         },
@@ -159,10 +156,7 @@ pub fn parse_talk_hotkey() -> Option<String> {
                 Some(val.to_uppercase())
             }
             Err(err) => {
-                warn!(
-                    "Invalid talk hotkey '{}': {}. Using default.",
-                    val, err
-                );
+                warn!("Invalid talk hotkey '{}': {}. Using default.", val, err);
                 None
             }
         },
@@ -203,8 +197,7 @@ fn resolve_auto_unlock_internal(
                 .unwrap_or(AUTO_UNLOCK_BASE_SECONDS)
                 .clamp(AUTO_UNLOCK_MIN_BASE_SECONDS, AUTO_UNLOCK_CEILING_SECONDS);
             AutoUnlockConfig::Backoff {
-                base_interval_secs: NonZeroU64::new(secs)
-                    .expect("clamped above minimum"),
+                base_interval_secs: NonZeroU64::new(secs).expect("clamped above minimum"),
             }
         }
         Some(false) => AutoUnlockConfig::Disabled,
@@ -326,7 +319,11 @@ mod tests {
 
         // Above ceiling
         env::set_var("HANDS_OFF_AUTO_UNLOCK", "86401");
-        assert_eq!(parse_auto_unlock_config(), None, "Should reject above 86400");
+        assert_eq!(
+            parse_auto_unlock_config(),
+            None,
+            "Should reject above 86400"
+        );
 
         // Negative / non-numeric / units / empty
         for bad in ["-60", "invalid", "30s", ""] {
@@ -484,12 +481,18 @@ mod tests {
     fn test_chosen_hotkey_keycodes_explicit_choice() {
         // Explicitly chosen letters map to their macOS keycodes (Q=12), not
         // the defaults (L=37 / T=17).
-        let (lock, _talk) = chosen_hotkey_keycodes(None, None, Some("Q"), None)
-            .expect("Q is a valid hotkey");
-        assert_eq!(lock, 12, "Q must map to macOS keycode 12, not default L (37)");
-        let (_lock, talk) = chosen_hotkey_keycodes(None, None, None, Some("P"))
-            .expect("P is a valid hotkey");
-        assert_eq!(talk, 35, "P must map to macOS keycode 35, not default T (17)");
+        let (lock, _talk) =
+            chosen_hotkey_keycodes(None, None, Some("Q"), None).expect("Q is a valid hotkey");
+        assert_eq!(
+            lock, 12,
+            "Q must map to macOS keycode 12, not default L (37)"
+        );
+        let (_lock, talk) =
+            chosen_hotkey_keycodes(None, None, None, Some("P")).expect("P is a valid hotkey");
+        assert_eq!(
+            talk, 35,
+            "P must map to macOS keycode 35, not default T (17)"
+        );
     }
 
     #[test]

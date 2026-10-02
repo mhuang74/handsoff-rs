@@ -202,7 +202,9 @@ impl Config {
     /// - Config file doesn't exist
     /// - Failed to read file
     /// - TOML parsing fails
-    /// - File permissions are too permissive (warning only)
+    /// - The file is group/other-readable AND chmod 0600 fails (a usable
+    ///   config with a wrong mode is repaired in place, issue #37 N7 — a
+    ///   repair failure is a hard error, NOT a Setup-Wizard case)
     /// - Passphrase format is not `keycode-v1` (legacy configs must re-setup)
     pub fn load_from_path(path: &Path) -> Result<Self> {
         if !path.exists() {
@@ -212,7 +214,11 @@ impl Config {
             );
         }
 
-        // Check file permissions (warning if too permissive)
+        // Config-file permission enforcement (issue #37 N7): the file holds
+        // the passphrase hash — a group/other-readable config is a USABLE
+        // config with a wrong mode, so load repairs it in place (chmod 0600)
+        // and continues; only a FAILED repair is fatal. Never route this to
+        // the Setup Wizard: re-setup would discard a working Passphrase.
         #[cfg(unix)]
         {
             let metadata = fs::metadata(path).context("Failed to read config file metadata")?;
@@ -222,8 +228,21 @@ impl Config {
             // Check if readable by group or others
             if mode & CONFIG_PERMISSION_MASK_GROUP_OTHER != 0 {
                 log::warn!(
-                    "Config file has permissive permissions: {:o}. Should be {:o} (user read/write only).",
+                    "Config file has permissive permissions: {:o}. Repairing to {:o} (user read/write only).",
                     mode & 0o777,
+                    CONFIG_FILE_PERMISSIONS
+                );
+                let mut repaired = permissions;
+                repaired.set_mode(CONFIG_FILE_PERMISSIONS);
+                fs::set_permissions(path, repaired).with_context(|| {
+                    format!(
+                        "Config file is group/other-readable and could not be repaired.\n\
+                         Fix it manually with: chmod 600 {}",
+                        path.display()
+                    )
+                })?;
+                log::info!(
+                    "Config file permissions repaired to {:o}",
                     CONFIG_FILE_PERMISSIONS
                 );
             }
@@ -355,8 +374,10 @@ impl Config {
 
     /// Save config to standard location
     ///
-    /// Creates the config directory if it doesn't exist.
-    /// Sets file permissions to 600 (user read/write only).
+    /// Creates the config directory if it doesn't exist. The file is created
+    /// with 0600 permissions atomically (issue #37 N7: `fs::write` first would
+    /// leave a world-readable window before the chmod) and `set_permissions`
+    /// afterwards only repairs pre-existing files with looser modes.
     pub fn save(&self) -> Result<()> {
         let path = Self::config_path();
 
@@ -368,30 +389,71 @@ impl Config {
         // Serialize to TOML
         let contents = toml::to_string_pretty(self).context("Failed to serialize config")?;
 
-        // Write to file
-        fs::write(&path, contents)
-            .with_context(|| format!("Failed to write config file: {}", path.display()))?;
-
-        // Set permissions (user read/write only)
+        // Write the file: created 0600 from the first byte, no world-readable
+        // window (issue #37 N7). `set_permissions` after the write repairs the
+        // mode of a pre-existing file that was looser.
         #[cfg(unix)]
         {
+            use std::io::Write;
+            use std::os::unix::fs::OpenOptionsExt;
+
+            let mut file = fs::OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .mode(CONFIG_FILE_PERMISSIONS)
+                .open(&path)
+                .with_context(|| format!("Failed to write config file: {}", path.display()))?;
+            file.write_all(contents.as_bytes())
+                .with_context(|| format!("Failed to write config file: {}", path.display()))?;
+            file.sync_all()
+                .with_context(|| format!("Failed to flush config file: {}", path.display()))?;
+
             let mut permissions = fs::metadata(&path)?.permissions();
-            permissions.set_mode(CONFIG_FILE_PERMISSIONS);
-            fs::set_permissions(&path, permissions)
-                .context("Failed to set config file permissions")?;
+            if permissions.mode() & 0o777 != CONFIG_FILE_PERMISSIONS {
+                permissions.set_mode(CONFIG_FILE_PERMISSIONS);
+                fs::set_permissions(&path, permissions)
+                    .context("Failed to set config file permissions")?;
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            fs::write(&path, contents)
+                .with_context(|| format!("Failed to write config file: {}", path.display()))?;
         }
 
         log::info!("Configuration saved to: {}", path.display());
         Ok(())
     }
 
-    /// Save config to a specific path (no directory creation, no permission
-    /// enforcement — the standard-location `save()` is the hardened variant).
+    /// Save config to a specific path (no directory creation; the file is
+    /// still created 0600 on unix — a config file must never exist
+    /// world-readable, issue #37 N7 — and a pre-existing looser mode is not
+    /// repaired here; the standard-location `save()` is the hardened variant).
     /// Used by tests and any caller with its own path policy.
     pub fn save_to_path(&self, path: &Path) -> Result<()> {
         let contents = toml::to_string_pretty(self).context("Failed to serialize config")?;
-        fs::write(path, contents)
-            .with_context(|| format!("Failed to write config file: {}", path.display()))
+        #[cfg(unix)]
+        {
+            use std::io::Write;
+            use std::os::unix::fs::OpenOptionsExt;
+
+            let mut file = fs::OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .mode(CONFIG_FILE_PERMISSIONS)
+                .open(path)
+                .with_context(|| format!("Failed to write config file: {}", path.display()))?;
+            file.write_all(contents.as_bytes())
+                .with_context(|| format!("Failed to write config file: {}", path.display()))?;
+        }
+        #[cfg(not(unix))]
+        {
+            fs::write(path, contents)
+                .with_context(|| format!("Failed to write config file: {}", path.display()))?;
+        }
+        Ok(())
     }
 
     /// Whether the backoff auto-unlock schedule is enabled
@@ -409,7 +471,10 @@ impl Config {
     /// `previous`).
     pub fn preserve_hash(mut self, previous: &Config) -> Result<Self> {
         if previous.passphrase_format != KEYCODE_SEQUENCE_FORMAT {
-            anyhow::bail!("Cannot preserve passphrase from unsupported format '{}'", previous.passphrase_format);
+            anyhow::bail!(
+                "Cannot preserve passphrase from unsupported format '{}'",
+                previous.passphrase_format
+            );
         }
         let hash_ok = previous
             .passphrase_hash

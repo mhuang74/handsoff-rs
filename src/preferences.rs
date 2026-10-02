@@ -17,10 +17,15 @@ use crate::setup::SetupOutcome;
 use anyhow::{Context, Result};
 use std::path::PathBuf;
 
-/// Which tray actions are available in a given app state (issue #27).
+/// Which tray actions are available in a given app state (issue #27;
+/// extended into the single gating authority by issue #37).
 ///
 /// Pure function so the gating rules are unit-testable; the tray's event loop
-/// just applies the flags to the menu items each poll.
+/// just applies the flags to the menu items each poll — AND every action
+/// execution path (live clicks, deferred clicks re-validated at dispatch,
+/// and the Reset / Change Passphrase handlers) consults this same function.
+/// One authority, so the paths can never drift apart again (the drift that
+/// caused N2).
 ///
 /// Rules:
 /// - **Lock**: needs permissions; never while locked (menu is unreachable
@@ -29,13 +34,14 @@ use std::path::PathBuf;
 /// - **Disable**: needs permissions; not while locked or already disabled.
 /// - **Reenable** (old Reset): ALWAYS enabled — the deliberate anti-lockout
 ///   escape hatch (CONTEXT.md: unguarded, by design).
-/// - **Preferences / Change Passphrase / Reset**: config-level actions; they
-///   open windows or wipe config, none of which needs input blocking or
-///   permissions, so they are ALWAYS available. Reset must stay reachable in
-///   principle from any state (it is the recovery path for a forgotten
-///   passphrase); in practice the mouse is blocked while locked, so the
-///   realistic path is Disable → Reset — but the item is never disabled on
-///   our side.
+/// - **Preferences**: opens a config-editing window; never needs input
+///   blocking or permissions.
+/// - **Change Passphrase / Reset**: REFUSED while locked (issue #37 N5) —
+///   in a dead-tap-while-locked window the menu is reachable while the
+///   tooltip claims LOCKED, and wiping the config or re-keying the Lock must
+///   not be possible without authentication. Gated here (not via tap
+///   mouse-blocking) so the deferred-dispatch path and the handlers are
+///   covered by the same rule.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MenuState {
     pub lock_enabled: bool,
@@ -44,9 +50,9 @@ pub struct MenuState {
     pub reenable_enabled: bool,
     /// Always true: opens the Preferences window.
     pub preferences_enabled: bool,
-    /// Always true: opens the Change Passphrase flow.
+    /// False while locked (N5: dead-tap windows must not allow re-keying).
     pub change_passphrase_enabled: bool,
-    /// Always true: double-confirmed wipe + wizard relaunch.
+    /// False while locked (N5: dead-tap windows must not allow a config wipe).
     pub reset_enabled: bool,
 }
 
@@ -56,8 +62,8 @@ pub fn menu_state(is_locked: bool, is_disabled: bool, has_permissions: bool) -> 
         disable_enabled: has_permissions && !is_locked && !is_disabled,
         reenable_enabled: true,
         preferences_enabled: true,
-        change_passphrase_enabled: true,
-        reset_enabled: true,
+        change_passphrase_enabled: !is_locked,
+        reset_enabled: !is_locked,
     }
 }
 
@@ -129,19 +135,13 @@ pub fn apply_preferences(edit: &PreferencesEdit) -> Result<Config> {
 /// Loads from `path`, merges `edit`, validates via the `Config` constructor,
 /// and saves back to `path`. Nothing is written when validation fails.
 pub fn apply_preferences_to_path(path: &std::path::Path, edit: &PreferencesEdit) -> Result<Config> {
-    let current = Config::load_from_path(path)
-        .context("Failed to load current configuration")?;
-    apply_preferences_to(&current, path.to_path_buf(), edit)
-        .context("Failed to save configuration")
+    let current = Config::load_from_path(path).context("Failed to load current configuration")?;
+    apply_preferences_to(&current, path.to_path_buf(), edit).context("Failed to save configuration")
 }
 
 /// Merge core shared by both wrappers: validate the merged config via the
 /// constructor, preserve the stored passphrase, persist to `path`.
-fn apply_preferences_to(
-    current: &Config,
-    path: PathBuf,
-    edit: &PreferencesEdit,
-) -> Result<Config> {
+fn apply_preferences_to(current: &Config, path: PathBuf, edit: &PreferencesEdit) -> Result<Config> {
     let lock_key = match &edit.lock_key {
         Some(k) => Some(Config::normalize_hotkey(k)),
         None => current.lock_hotkey.clone(),
@@ -155,7 +155,7 @@ fn apply_preferences_to(
     let (backoff_enabled, base) = match edit.auto_unlock_base {
         None => (
             current.auto_unlock_backoff_enabled(),
-            current.auto_unlock_base_interval.unwrap_or(0),
+            effective_backoff_base(current),
         ),
         Some(0) => (false, 0),
         Some(v) => (true, v),
@@ -197,30 +197,56 @@ fn apply_preferences_to(
 /// Config load failure, or a too-short sequence (nothing is saved).
 pub fn change_passphrase(keys: &[u32]) -> Result<Config> {
     let current = Config::load().context("Failed to load current configuration")?;
-    let updated = change_passphrase_to(&current, keys)
-        .context("Failed to apply new passphrase")?;
-    persist_to(&updated, &Config::config_path())
-        .context("Failed to save configuration")?;
+    let updated = change_passphrase_to(&current, keys).context("Failed to apply new passphrase")?;
+    persist_to(&updated, &Config::config_path()).context("Failed to save configuration")?;
     Ok(updated)
 }
 
 /// Path-taking variant (the testable core): loads from `path`, replaces only
 /// the passphrase hash, saves back to `path`. Nothing written on failure.
 pub fn change_passphrase_to_path(path: &std::path::Path, keys: &[u32]) -> Result<Config> {
-    let current = Config::load_from_path(path)
-        .context("Failed to load current configuration")?;
-    let updated =
-        change_passphrase_to(&current, keys).context("Failed to apply new passphrase")?;
+    let current = Config::load_from_path(path).context("Failed to load current configuration")?;
+    let updated = change_passphrase_to(&current, keys).context("Failed to apply new passphrase")?;
     persist_to(&updated, path).context("Failed to save configuration")?;
     Ok(updated)
 }
 
 /// Alias kept for test readability: same as `change_passphrase_to_path`.
-pub fn change_passphrase_available_seam(
-    path: &std::path::Path,
-    keys: &[u32],
-) -> Result<Config> {
+pub fn change_passphrase_available_seam(path: &std::path::Path, keys: &[u32]) -> Result<Config> {
     change_passphrase_to_path(path, keys)
+}
+
+/// Change the passphrase WITH proof of knowledge of the current one
+/// (issue #37 N6).
+///
+/// Flow-function seam for the verify-then-recapture flow: the caller (tray
+/// dialog, or a test standing in for the capture tap) supplies both captured
+/// sequences — the current Passphrase and the confirmed new one. The current
+/// Passphrase is verified against the stored hash BEFORE anything is
+/// captured into the new hash; a failed verification aborts with no state
+/// change (nothing is written).
+///
+/// # Errors
+/// Config load failure, wrong current Passphrase, or a too-short new
+/// sequence — in every failure case the file is untouched.
+pub fn change_passphrase_verified_to_path(
+    path: &std::path::Path,
+    current_keys: &[u32],
+    new_keys: &[u32],
+) -> Result<Config> {
+    let current =
+        Config::load_from_path(path).context("Failed to load current configuration")?;
+    let stored_hash = current.passphrase_hash.clone().ok_or_else(|| {
+        anyhow::anyhow!("No stored passphrase hash — cannot verify the current Passphrase")
+    })?;
+    if !crate::auth::verify_keycodes(current_keys, &stored_hash) {
+        anyhow::bail!(
+            "Current Passphrase verification failed — the Passphrase was NOT changed"
+        );
+    }
+    let updated = change_passphrase_to(&current, new_keys).context("Failed to apply new passphrase")?;
+    persist_to(&updated, path).context("Failed to save configuration")?;
+    Ok(updated)
 }
 
 /// Merge core shared by both wrappers: validate the new sequence via the
@@ -230,10 +256,25 @@ fn change_passphrase_to(current: &Config, keys: &[u32]) -> Result<Config> {
         keys,
         current.auto_lock_timeout,
         current.auto_unlock_backoff_enabled(),
-        current.auto_unlock_base_interval.unwrap_or(0),
+        effective_backoff_base(current),
         current.lock_hotkey.clone(),
         current.talk_hotkey.clone(),
     )
+}
+
+/// Effective backoff base interval for a stored config (issue #37 N8).
+///
+/// Legacy configs have `auto_unlock_mode = "backoff"` but no stored base
+/// interval; the runtime resolver falls back to `AUTO_UNLOCK_BASE_SECONDS`
+/// (`config::resolve_auto_unlock_internal`), so the preferences merge and
+/// Change Passphrase must fall back the same way — passing 0 into the
+/// validating `Config::new` made every Preferences save and every
+/// Change Passphrase attempt fail on such configs, blocking Passphrase
+/// rotation without a full Reset.
+fn effective_backoff_base(current: &Config) -> u64 {
+    current
+        .auto_unlock_base_interval
+        .unwrap_or(crate::constants::AUTO_UNLOCK_BASE_SECONDS)
 }
 
 /// Wipe the configuration (the Reset recovery path).
@@ -278,13 +319,21 @@ fn persist_to(cfg: &Config, path: &std::path::Path) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).context("Failed to create config directory")?;
     }
+    // Atomic 0600 creation (issue #37 N7): `save_to_path` already opens with
+    // .mode(0o600); the explicit set_permissions below repairs the mode of a
+    // pre-existing file that was looser.
     cfg.save_to_path(path)?;
-    let mut permissions = std::fs::metadata(path)
+    let mode = std::fs::metadata(path)
         .context("Failed to read config file metadata")?
-        .permissions();
-    permissions.set_mode(crate::constants::CONFIG_FILE_PERMISSIONS);
-    std::fs::set_permissions(path, permissions)
-        .context("Failed to set config file permissions")?;
+        .permissions()
+        .mode()
+        & 0o777;
+    if mode != crate::constants::CONFIG_FILE_PERMISSIONS {
+        let mut permissions = std::fs::metadata(path)?.permissions();
+        permissions.set_mode(crate::constants::CONFIG_FILE_PERMISSIONS);
+        std::fs::set_permissions(path, permissions)
+            .context("Failed to set config file permissions")?;
+    }
     Ok(())
 }
 
@@ -295,7 +344,8 @@ fn persist_to(cfg: &Config, path: &std::path::Path) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).context("Failed to create config directory")?;
     }
-    cfg.save_to_path(path).context("Failed to write config file")
+    cfg.save_to_path(path)
+        .context("Failed to write config file")
 }
 
 /// Build a full `SetupOutcome`-shaped value from an existing config plus a

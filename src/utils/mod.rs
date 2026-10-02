@@ -1,4 +1,5 @@
 pub mod keycode;
+pub mod lock_file;
 
 use ring::digest;
 

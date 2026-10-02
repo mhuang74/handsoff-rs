@@ -1861,7 +1861,10 @@ mod macos {
         let instr_label = make_label("", 170.0);
         // Explicit capture start (keyboard-lockout fix): capture runs only
         // after this click, never automatically on window open.
-        let capture_btn = make_button("Capture New Passphrase", TAG_CAPTURE);
+        // Issue #37 N6: phase 0 is now VERIFY — the user must first prove
+        // knowledge of the CURRENT Passphrase; only a verified capture moves
+        // to phase 1 (the new-Passphrase double capture).
+        let capture_btn = make_button("Verify Current Passphrase", TAG_CAPTURE);
         let cancel_btn = make_button("Cancel", TAG_CANCEL);
         let ok_btn = make_button("OK", TAG_OK);
         ok_btn.setHidden(true);
@@ -1870,32 +1873,23 @@ mod macos {
         let feedback_label = make_label("", 20.0);
         feedback_label.setHidden(true);
 
+        // Stored hash for the verify step (N6): loaded from the config file,
+        // the same authority `change_passphrase` re-reads when saving.
+        let stored_hash: Option<String> = crate::config_file::Config::load()
+            .ok()
+            .and_then(|c| c.passphrase_hash);
+
         // Permission gate as an in-dialog failure state (issue #36: every
         // failure shows its reason the same way). Previously this returned
         // Err before any window existed; with the leak fix (orderOut on
         // every exit) the window is safe to use as the failure surface.
         let permission_ok = crate::input_blocking::check_accessibility_permissions();
-        // phase: 0 = waiting for the capture click; 2 = success shown,
-        // waiting for OK; 3 = failure shown, waiting for OK.
+        // phase: 0 = waiting for the VERIFY click (current Passphrase);
+        // 1 = waiting for the capture click (new Passphrase, double entry);
+        // 2 = success shown, waiting for OK; 3 = failure shown, waiting for OK.
         let mut phase;
         let mut failure_reason = String::new();
-        if permission_ok {
-            phase = 0u8;
-            unsafe {
-                instr_label.setStringValue(&NSString::from_str(&format!(
-                    "Choose a new Passphrase: a sequence of physical keys. Nothing you type \
-                     is ever shown — dots mark progress only. You will type it twice to confirm.\n\n\
-                     {}\n\n\
-                     Click “Capture New Passphrase” when ready. Your keyboard is captured until \
-                     you press Enter (max {}s); nothing you type reaches other apps.",
-                    setup::capture_rules_text(
-                        crate::constants::DEFAULT_LOCK_KEYCODE,
-                        crate::constants::DEFAULT_TALK_KEYCODE,
-                    ),
-                    setup::CAPTURE_TIMEOUT_SECS,
-                )))
-            };
-        } else {
+        if !permission_ok {
             phase = 3u8;
             failure_reason = "Accessibility permission is required to capture the new \
                  Passphrase.\nGrant it to HandsOff in System Settings > Privacy & Security > \
@@ -1910,6 +1904,32 @@ mod macos {
                 &feedback_label,
                 &failure_reason,
             );
+        } else if stored_hash.is_none() {
+            phase = 3u8;
+            failure_reason = "No stored Passphrase hash found in the configuration — \
+                 cannot verify the current Passphrase.\nYour existing Passphrase is unchanged."
+                .to_string();
+            show_terminal_state(
+                &instr_label,
+                &capture_btn,
+                &cancel_btn,
+                &ok_btn,
+                &status_label,
+                &feedback_label,
+                &failure_reason,
+            );
+        } else {
+            phase = 0u8;
+            unsafe {
+                instr_label.setStringValue(&NSString::from_str(&format!(
+                    "To change your Passphrase, first type your CURRENT Passphrase to \
+                     prove it is you.\n\nNothing you type is ever shown — dots mark \
+                     progress only. Your keyboard is captured until you press Enter \
+                     (max {}s); nothing you type reaches other apps.\n\n\
+                     Click “Verify Current Passphrase” when ready.",
+                    setup::CAPTURE_TIMEOUT_SECS,
+                )))
+            };
         }
 
         let content = unsafe {
@@ -1947,6 +1967,10 @@ mod macos {
         let outcome_slot = std::rc::Rc::new(std::cell::RefCell::new(None::<Result<Config>>));
         let outcome = outcome_slot.clone();
         let mut saved: Option<Config> = None;
+        // Captured CURRENT Passphrase from the verify phase (issue #37 N6);
+        // reused by the phase-1 save so the re-key step proves knowledge of
+        // the existing Passphrase.
+        let mut current_keys: Vec<u32> = Vec::new();
         // Retained clone for the post-loop hide (the closure owns the
         // original `window` from here on).
         let window_for_cleanup = window.clone();
@@ -1965,8 +1989,8 @@ mod macos {
 
             let closed = SIGNALS.close_requested.load(Ordering::SeqCst);
 
-            if phase == 0 {
-                // Phase-0 close/cancel: the 2026-10-02 wedge — previously
+            if phase == 0 || phase == 1 {
+                // Phase-0/1 close/cancel: the 2026-10-02 wedge — previously
                 // only capture observed the abort, so closing here spun
                 // forever. Now every exit path terminates the flow.
                 if closed || SIGNALS.cancel_clicked.swap(false, Ordering::SeqCst) {
@@ -1983,6 +2007,97 @@ mod macos {
                     cancel_btn.setHidden(true);
                     status_label.setHidden(false);
                     feedback_label.setHidden(false);
+
+                    // N6 phase 0: capture the CURRENT Passphrase once and
+                    // verify it against the stored hash. A failed verification
+                    // aborts the flow with a dialog — no state change.
+                    if phase == 0 {
+                        unsafe {
+                            instr_label.setStringValue(&NSString::from_str(
+                                "Verifying — type your CURRENT Passphrase, then press Enter.",
+                            ))
+                        };
+                        match capture_with_status(
+                            "Current Passphrase",
+                            &status_label,
+                            &feedback_label,
+                        ) {
+                            Ok(keys_captured) => {
+                                let verified = stored_hash.as_ref().is_some_and(|h| {
+                                    crate::auth::verify_keycodes(&keys_captured, h)
+                                });
+                                if !verified {
+                                    phase = 3;
+                                    failure_reason = "The Passphrase you typed does not \
+                                         match the current Passphrase.\nThe Passphrase was \
+                                         NOT changed — your existing Passphrase still works."
+                                        .to_string();
+                                    show_terminal_state(
+                                        &instr_label,
+                                        &capture_btn,
+                                        &cancel_btn,
+                                        &ok_btn,
+                                        &status_label,
+                                        &feedback_label,
+                                        &failure_reason,
+                                    );
+                                    return;
+                                }
+                                // Verified: move to the new-Passphrase phase.
+                                current_keys = keys_captured;
+                                phase = 1;
+                                capture_btn.setHidden(false);
+                                unsafe {
+                                    capture_btn
+                                        .setTitle(&NSString::from_str("Capture New Passphrase"));
+                                }
+                                cancel_btn.setHidden(false);
+                                status_label.setHidden(true);
+                                feedback_label.setHidden(true);
+                                unsafe {
+                                    instr_label.setStringValue(&NSString::from_str(&format!(
+                                        "Current Passphrase verified. Now choose a NEW \
+                                         Passphrase: a sequence of physical keys. Nothing \
+                                         you type is ever shown — dots mark progress only. \
+                                         You will type it twice to confirm.\n\n{}\n\n\
+                                         Click “Capture New Passphrase” when ready.",
+                                        setup::capture_rules_text(
+                                            crate::constants::DEFAULT_LOCK_KEYCODE,
+                                            crate::constants::DEFAULT_TALK_KEYCODE,
+                                        ),
+                                    )))
+                                };
+                                return;
+                            }
+                            Err(e) => {
+                                if SIGNALS.close_requested.load(Ordering::SeqCst) {
+                                    window.orderOut(None);
+                                    *outcome.borrow_mut() = Some(Err(anyhow!(
+                                        "Change Passphrase cancelled — config unchanged"
+                                    )));
+                                    stop_run_loop(&app);
+                                    return;
+                                }
+                                phase = 3;
+                                failure_reason = format!(
+                                    "Capture failed: {e}\nThe Passphrase was NOT changed — \
+                                     your existing Passphrase still works."
+                                );
+                                show_terminal_state(
+                                    &instr_label,
+                                    &capture_btn,
+                                    &cancel_btn,
+                                    &ok_btn,
+                                    &status_label,
+                                    &feedback_label,
+                                    &failure_reason,
+                                );
+                                return;
+                            }
+                        }
+                    }
+
+                    // Phase 1: double capture of the NEW Passphrase.
                     unsafe {
                         instr_label.setStringValue(&NSString::from_str(
                             "Capturing — type your new Passphrase, then press Enter.",
@@ -2053,7 +2168,16 @@ mod macos {
                         return;
                     }
 
-                    match crate::preferences::change_passphrase(&first) {
+                    // Save through the verified seam (issue #37 N6): the
+                    // current Passphrase was already captured and verified
+                    // against the stored hash in phase 0 — the save path
+                    // re-checks it, so no state change can bypass
+                    // authentication even if the flow ordering changed.
+                    match crate::preferences::change_passphrase_verified_to_path(
+                        &crate::config_file::Config::config_path(),
+                        &current_keys,
+                        &first,
+                    ) {
                         Ok(cfg) => {
                             saved = Some(cfg);
                             phase = 2;
