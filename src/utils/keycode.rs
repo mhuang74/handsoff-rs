@@ -40,3 +40,41 @@ pub fn code_to_keycode(code: global_hotkey::hotkey::Code) -> Option<i64> {
         _ => None, // Not a letter key
     }
 }
+
+/// Inverse of `code_to_keycode`: macOS virtual keycode → uppercase letter.
+///
+/// Display-only (issue #36): the Change Passphrase dialog names a rejected
+/// hotkey key in its status line ("L is reserved — it is part of the Lock
+/// hotkey"). Returns `None` for non-letter keycodes; callers fall back to
+/// the raw keycode number. Never used to gate Passphrase membership.
+pub fn keycode_to_letter(keycode: i64) -> Option<char> {
+    match keycode {
+        0 => Some('A'),
+        11 => Some('B'),
+        8 => Some('C'),
+        2 => Some('D'),
+        14 => Some('E'),
+        3 => Some('F'),
+        5 => Some('G'),
+        4 => Some('H'),
+        34 => Some('I'),
+        38 => Some('J'),
+        40 => Some('K'),
+        37 => Some('L'),
+        46 => Some('M'),
+        45 => Some('N'),
+        31 => Some('O'),
+        35 => Some('P'),
+        12 => Some('Q'),
+        15 => Some('R'),
+        1 => Some('S'),
+        17 => Some('T'),
+        32 => Some('U'),
+        9 => Some('V'),
+        13 => Some('W'),
+        7 => Some('X'),
+        16 => Some('Y'),
+        6 => Some('Z'),
+        _ => None,
+    }
+}

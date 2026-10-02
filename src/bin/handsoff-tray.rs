@@ -33,10 +33,7 @@ const CHECK_UPDATES_LABEL: &str = "Check for Updates…";
 /// a browser surfaces as a NON-BLOCKING notification — a modal osascript
 /// alert here would freeze the tray poll loop (run_session callback).
 fn handle_check_updates() {
-    match std::process::Command::new("open")
-        .arg(RELEASES_URL)
-        .spawn()
-    {
+    match std::process::Command::new("open").arg(RELEASES_URL).spawn() {
         Ok(_) => info!("Opened release page in browser: {}", RELEASES_URL),
         Err(e) => {
             error!("Failed to open release page {}: {}", RELEASES_URL, e);
@@ -48,7 +45,9 @@ fn handle_check_updates() {
                         "Could not open your browser.\nVisit the releases page manually:\n{}",
                         RELEASES_URL
                     ))
-                    .timeout(notify_rust::Timeout::Milliseconds(NOTIFICATION_ERROR_TIMEOUT_MS))
+                    .timeout(notify_rust::Timeout::Milliseconds(
+                        NOTIFICATION_ERROR_TIMEOUT_MS,
+                    ))
                     .show();
             }
         }
@@ -170,7 +169,9 @@ fn main() -> Result<()> {
     // grant stale/missing (typical after an unsigned update changed the
     // CDHash) routes to the permission-only re-grant screen — never full
     // passphrase re-setup, and the config is not touched.
-    let config_valid = Config::load().and_then(|_| setup::validate_config_strict()).is_ok();
+    let config_valid = Config::load()
+        .and_then(|_| setup::validate_config_strict())
+        .is_ok();
     let mut permissions = initial_permissions;
     let cfg = match wizard::startup_flow(config_valid, permissions) {
         wizard::StartupFlow::Run => Config::load().expect("config validated above"),
@@ -298,7 +299,8 @@ fn main() -> Result<()> {
         .context("Failed to add change passphrase menu item")?;
     menu.append(&reset_item)
         .context("Failed to add reset menu item")?;
-    menu.append(&separator).context("Failed to add second separator")?;
+    menu.append(&separator)
+        .context("Failed to add second separator")?;
     menu.append(&regrant_item)
         .context("Failed to add re-grant menu item")?;
     menu.append(&check_updates_item)
@@ -325,6 +327,16 @@ fn main() -> Result<()> {
     let regrant_id = regrant_item.id().clone();
     let check_updates_id = check_updates_item.id().clone();
 
+    // Single-dialog invariant (issue #36): while a dialog owns the nested
+    // run_return, IT drains the menu channel — clicks on these window-flow
+    // items re-front the live dialog instead of queueing duplicate dialogs.
+    *wizard::WINDOW_FLOW_MENU_IDS.lock() = vec![
+        preferences_id.clone(),
+        change_passphrase_id.clone(),
+        reset_id.clone(),
+        regrant_id.clone(),
+    ];
+
     // Track state for tooltip updates and permission state. Mutable because
     // the values are threaded through `TrackedState` across tray sessions.
     let was_locked = false;
@@ -340,8 +352,13 @@ fn main() -> Result<()> {
     // when a window-flow action was requested; main services it, then
     // re-enters the session (the action handlers themselves end their window
     // flows via app.stop and fall back through to here).
-    let tracked: &mut TrackedState =
-        &mut (was_locked, was_disabled, last_tooltip, last_tooltip_update, has_permissions);
+    let tracked: &mut TrackedState = &mut (
+        was_locked,
+        was_disabled,
+        last_tooltip,
+        last_tooltip_update,
+        has_permissions,
+    );
     loop {
         let action = run_session(
             &mut event_loop,
@@ -373,7 +390,9 @@ fn main() -> Result<()> {
 
         match action {
             SessionAction::Preferences => handle_preferences(&mut event_loop, core.clone()),
-            SessionAction::ChangePassphrase => handle_change_passphrase(&mut event_loop, core.clone()),
+            SessionAction::ChangePassphrase => {
+                handle_change_passphrase(&mut event_loop, core.clone())
+            }
             SessionAction::Reset => handle_reset(&mut event_loop),
             SessionAction::ReGrantPermission => handle_regrant_permission(&mut event_loop),
         }
@@ -383,13 +402,7 @@ fn main() -> Result<()> {
 /// Tracker state that must survive across tray sessions (icon/tooltip caches,
 /// tooltip rebuild cadence timestamp, and permission logging dedup).
 #[allow(clippy::type_complexity)]
-type TrackedState = (
-    bool,
-    bool,
-    String,
-    std::time::Instant,
-    bool,
-);
+type TrackedState = (bool, bool, String, std::time::Instant, bool);
 
 /// Which menu item requested the session end, if any.
 #[allow(clippy::enum_variant_names)]
@@ -400,6 +413,36 @@ enum SessionAction {
     /// Issue #29 re-grant: config valid, Accessibility grant stale —
     /// permission-only wizard screen, no passphrase re-setup.
     ReGrantPermission,
+}
+
+/// End the tray session NOW: `-[NSApplication stop:]` alone only takes
+/// effect on the next run-loop wake, which made window-flow dialogs take
+/// seconds to appear after their menu click (issue #36). Posting a dummy
+/// app-defined event forces an immediate wake — the technique tao's own
+/// `stop_app_on_panic` uses (SO 48064752).
+#[cfg(target_os = "macos")]
+fn stop_session_now(mtm: objc2_foundation::MainThreadMarker) {
+    use objc2_app_kit::{NSApplication, NSEvent, NSEventModifierFlags, NSEventType};
+    use objc2_foundation::NSPoint;
+
+    let app = NSApplication::sharedApplication(mtm);
+    app.stop(None);
+    let dummy = unsafe {
+        NSEvent::otherEventWithType_location_modifierFlags_timestamp_windowNumber_context_subtype_data1_data2(
+            NSEventType::ApplicationDefined,
+            NSPoint::new(0.0, 0.0),
+            NSEventModifierFlags::empty(),
+            0.0,
+            0,
+            None,
+            0,
+            0,
+            0,
+        )
+    };
+    if let Some(event) = dummy {
+        app.postEvent_atStart(&event, true);
+    }
 }
 
 /// One tray session: a `run_return` pass on the process-wide event loop that
@@ -467,12 +510,32 @@ fn run_session(
     ) = items;
     let (was_locked, was_disabled, last_tooltip, last_tooltip_update, has_permissions) = tracked;
 
-    // Grabbing the NSApplication handle for session end (see doc comment).
+    // Dispatch menu clicks deferred while a dialog owned the loop (issue
+    // #36): dialogs consume window-flow clicks themselves (re-fronting the
+    // live dialog), so only immediate-action clicks land here. Dispatched
+    // before the session loop so the actions take effect immediately.
+    for id in wizard::take_deferred_menu_events() {
+        info!("Dispatching menu click deferred during a dialog: {:?}", id);
+        if id == lock_id {
+            handle_lock_toggle(core.clone());
+        } else if id == disable_id {
+            info!("Disable menu item clicked");
+            handle_disable(core.clone());
+        } else if id == reenable_id {
+            info!("Reenable menu item clicked, resetting app state");
+            handle_reenable(core.clone());
+        } else if id == check_updates_id {
+            info!("Check for Updates menu item clicked");
+            handle_check_updates();
+        }
+        // Window-flow IDs cannot appear here (the dialog consumed them);
+        // unknown IDs are ignored.
+    }
+
+    // Main-thread marker consumed by stop_session_now (see doc comment):
     #[cfg(target_os = "macos")]
-    use objc2_app_kit::NSApplication;
-    #[cfg(target_os = "macos")]
-    let mtm = objc2_foundation::MainThreadMarker::new()
-        .expect("tray session must run on main thread");
+    let mtm =
+        objc2_foundation::MainThreadMarker::new().expect("tray session must run on main thread");
 
     use tao::platform::run_return::EventLoopExtRunReturn;
 
@@ -511,10 +574,10 @@ fn run_session(
                 *pending_in_callback.borrow_mut() = Some(SessionAction::Preferences);
                 #[cfg(target_os = "macos")]
                 {
-                    // Note: app.stop returns from [NSApp run] on the NEXT
-                    // wake; the closure keeps running until then, but the
-                    // pending action is already recorded.
-                    NSApplication::sharedApplication(mtm).stop(None);
+                    // Wake the run loop so `stop` takes effect NOW (see
+                    // stop_session_now); the pending action is recorded
+                    // before the stop either way.
+                    stop_session_now(mtm);
                     return; // control_flow untouched (ExitWithCode latches)
                 }
                 #[cfg(not(target_os = "macos"))]
@@ -526,7 +589,7 @@ fn run_session(
                 *pending_in_callback.borrow_mut() = Some(SessionAction::ChangePassphrase);
                 #[cfg(target_os = "macos")]
                 {
-                    NSApplication::sharedApplication(mtm).stop(None);
+                    stop_session_now(mtm);
                     return;
                 }
                 #[cfg(not(target_os = "macos"))]
@@ -538,7 +601,7 @@ fn run_session(
                 *pending_in_callback.borrow_mut() = Some(SessionAction::Reset);
                 #[cfg(target_os = "macos")]
                 {
-                    NSApplication::sharedApplication(mtm).stop(None);
+                    stop_session_now(mtm);
                     return;
                 }
                 #[cfg(not(target_os = "macos"))]
@@ -550,7 +613,7 @@ fn run_session(
                 *pending_in_callback.borrow_mut() = Some(SessionAction::ReGrantPermission);
                 #[cfg(target_os = "macos")]
                 {
-                    NSApplication::sharedApplication(mtm).stop(None);
+                    stop_session_now(mtm);
                     return;
                 }
                 #[cfg(not(target_os = "macos"))]
@@ -722,9 +785,7 @@ fn run_session(
 /// resumes normally: the permission monitor's existing `request_start_event_tap`
 /// path (or the next poll tick) restarts the event tap once the grant lands,
 /// so no relaunch and no config touch is needed.
-fn handle_regrant_permission(
-    event_loop: &mut tao::event_loop::EventLoop<wizard::WizardEvent>,
-) {
+fn handle_regrant_permission(event_loop: &mut tao::event_loop::EventLoop<wizard::WizardEvent>) {
     match wizard::run_permission_regrant(event_loop) {
         Ok(()) => {
             info!("Accessibility permission re-granted; resuming normal operation");
@@ -732,7 +793,9 @@ fn handle_regrant_permission(
             {
                 let _ = notify_rust::Notification::new()
                     .summary("HandsOff")
-                    .body("Accessibility permission restored.\nHandsOff will resume input blocking.")
+                    .body(
+                        "Accessibility permission restored.\nHandsOff will resume input blocking.",
+                    )
                     .timeout(notify_rust::Timeout::Milliseconds(NOTIFICATION_TIMEOUT_MS))
                     .show();
             }
@@ -937,6 +1000,10 @@ fn apply_config_to_core(core: &Rc<RefCell<HandsOffCore>>, cfg: &Config) {
 /// with only the hash changed. Restart is NOT required (the hash is read per
 /// unlock attempt from AppState) — but the running core still holds the old
 /// hash in memory, so sync it after a successful save.
+///
+/// Cancellation, mismatch, and failure reasons are shown IN the dialog
+/// (issue #36): on Err here the user was already informed (or dismissed
+/// the window), so only log — no second alert.
 fn handle_change_passphrase(
     event_loop: &mut tao::event_loop::EventLoop<wizard::WizardEvent>,
     core: Rc<RefCell<HandsOffCore>>,
@@ -945,26 +1012,13 @@ fn handle_change_passphrase(
         Ok(cfg) => {
             info!("Passphrase changed successfully");
             if let Some(hash) = &cfg.passphrase_hash {
-                core.borrow()
-                    .state
-                    .set_passphrase_hash(hash.clone());
-            }
-            #[cfg(target_os = "macos")]
-            {
-                let _ = notify_rust::Notification::new()
-                    .summary("HandsOff")
-                    .body("Passphrase changed.\nUse the new passphrase to unlock.")
-                    .timeout(notify_rust::Timeout::Milliseconds(NOTIFICATION_TIMEOUT_MS))
-                    .show();
+                core.borrow().state.set_passphrase_hash(hash.clone());
             }
         }
-        Err(e) => {
-            info!("Change Passphrase not completed: {}", e);
-            show_alert(
-                "HandsOff - Change Passphrase",
-                &format!("Passphrase not changed:\n{}\n\nYour existing passphrase still works.", e),
-            );
-        }
+        Err(e) => info!(
+            "Change Passphrase not completed (reason shown in dialog): {}",
+            e
+        ),
     }
 }
 
@@ -992,7 +1046,10 @@ fn handle_reset(event_loop: &mut tao::event_loop::EventLoop<wizard::WizardEvent>
             error!("Reset failed to wipe config: {}", e);
             show_alert(
                 "HandsOff - Reset Failed",
-                &format!("Could not remove the configuration:\n{}\n\nNothing was changed.", e),
+                &format!(
+                    "Could not remove the configuration:\n{}\n\nNothing was changed.",
+                    e
+                ),
             );
             return;
         }
@@ -1009,7 +1066,10 @@ fn handle_reset(event_loop: &mut tao::event_loop::EventLoop<wizard::WizardEvent>
                 error!("Reset: wizard config save failed: {}", e);
                 show_alert(
                     "HandsOff - Reset Failed",
-                    &format!("The new setup could not be saved:\n{}\n\nRelaunch HandsOff to try again.", e),
+                    &format!(
+                        "The new setup could not be saved:\n{}\n\nRelaunch HandsOff to try again.",
+                        e
+                    ),
                 );
                 std::process::exit(1);
             }
@@ -1305,10 +1365,7 @@ mod tests {
         );
 
         // Config valid, permissions granted → run normally.
-        assert_eq!(
-            wizard::startup_flow(true, true),
-            wizard::StartupFlow::Run
-        );
+        assert_eq!(wizard::startup_flow(true, true), wizard::StartupFlow::Run);
 
         // Config valid but Accessibility grant stale (post-update CDHash
         // change) → permission-only re-grant, NOT passphrase re-setup.

@@ -17,6 +17,11 @@ use anyhow::{anyhow, Context, Result};
 
 const ESCAPE_KEYCODE: i64 = 53;
 
+/// Maximum duration of one capture pass before it times out (seconds).
+/// Pub so the GUI dialogs can render the countdown's starting value.
+#[cfg(target_os = "macos")]
+pub const CAPTURE_TIMEOUT_SECS: u64 = 120;
+
 /// Unlock-path blocked keys: only the keys that are control keys in the
 /// unlock flow (Enter / keypad Enter) and can never be passphrase members
 /// (capture never records them). Hotkey last-keys are deliberately NOT
@@ -47,6 +52,78 @@ pub fn is_rejected_keycode(
         || keycode == ENTER_KEYCODE_KEYPAD
         || keycode == lock_hotkey_keycode
         || keycode == talk_hotkey_keycode
+}
+
+/// A reserved key, named and explained for the capture UI (issue #36).
+///
+/// The `Some`/`None` split of `reserved_key` is DEFINED to match
+/// `is_rejected_keycode` exactly for the same hotkey keycodes — a test
+/// enumerates every keycode and fails on drift, so the advertised set can
+/// never diverge from the enforced set.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReservedKey {
+    /// Display name: "Escape", "Backspace", "Return", or the hotkey letter.
+    pub name: String,
+    /// Why the key is reserved, as a parenthetical phrase ("Lock hotkey").
+    pub why: &'static str,
+}
+
+/// Name and explain a reserved keycode for the capture UI, or `None` for an
+/// eligible Passphrase member. Takes the same lock/talk keycodes the caller
+/// passes to `capture_passphrase_headless` — the GUI dialogs always use the
+/// DEFAULT hotkey constants (not the user's configured hotkeys), so the
+/// disclosure must be sourced from those same constants (issue #36).
+pub fn reserved_key(
+    keycode: i64,
+    lock_hotkey_keycode: i64,
+    talk_hotkey_keycode: i64,
+) -> Option<ReservedKey> {
+    let (name, why): (String, &'static str) = if keycode == ESCAPE_KEYCODE {
+        ("Escape".to_string(), "restarts the entry")
+    } else if keycode == BACKSPACE_KEYCODE {
+        ("Backspace".to_string(), "deletes the last key")
+    } else if keycode == ENTER_KEYCODE || keycode == ENTER_KEYCODE_KEYPAD {
+        ("Return".to_string(), "commits the entry")
+    } else if keycode == lock_hotkey_keycode {
+        let name = crate::utils::keycode::keycode_to_letter(keycode)
+            .map(|c| c.to_string())
+            .unwrap_or_else(|| format!("keycode {keycode}"));
+        (name, "Lock hotkey")
+    } else if keycode == talk_hotkey_keycode {
+        let name = crate::utils::keycode::keycode_to_letter(keycode)
+            .map(|c| c.to_string())
+            .unwrap_or_else(|| format!("keycode {keycode}"));
+        (name, "Talk hotkey")
+    } else {
+        return None;
+    };
+    Some(ReservedKey { name, why })
+}
+
+/// The capture-rules paragraph shown by the GUI dialogs (Change Passphrase
+/// and the Setup Wizard capture step), built from the SAME hotkey keycodes
+/// the dialogs pass to capture, so the advertised reserved set equals the
+/// enforced set (issue #36).
+pub fn capture_rules_text(lock_hotkey_keycode: i64, talk_hotkey_keycode: i64) -> String {
+    let item = |kc: i64| {
+        let k = reserved_key(kc, lock_hotkey_keycode, talk_hotkey_keycode)
+            .expect("structural keycodes are always reserved");
+        format!("{} ({})", k.name, k.why)
+    };
+    let reserved = [
+        item(ESCAPE_KEYCODE),
+        item(BACKSPACE_KEYCODE),
+        item(ENTER_KEYCODE),
+        item(lock_hotkey_keycode),
+        item(talk_hotkey_keycode),
+    ]
+    .join(", ");
+    format!(
+        "Enter commits (minimum {min} keys), Backspace deletes the last key, \
+         Escape restarts the entry.\n\
+         Reserved keys cannot be part of a Passphrase: {reserved}.",
+        min = crate::utils::MIN_PASSPHRASE_KEYS,
+    )
 }
 
 /// Validate a completed capture: minimum key count (§3).
@@ -198,7 +275,7 @@ pub fn capture_passphrase(
         Some(Box::new(|event: CaptureEvent| {
             match event {
                 CaptureEvent::Key => print!("•"),
-                CaptureEvent::Reserved => print!(" [reserved] "),
+                CaptureEvent::Reserved(_) => print!(" [reserved] "),
                 CaptureEvent::Restart => print!(" [restart] "),
                 CaptureEvent::Backspace => print!("\x08 \x08"),
                 CaptureEvent::Tick(_) => {} // countdown is GUI-only
@@ -222,8 +299,10 @@ pub fn capture_passphrase(
 pub enum CaptureEvent {
     /// A key was recorded.
     Key,
-    /// A reserved key was swallowed.
-    Reserved,
+    /// A reserved key was swallowed; payload is the rejected keycode so the
+    /// GUI can NAME the key in its status line (issue #36; the TUI prints a
+    /// generic flash).
+    Reserved(i64),
     /// Escape cleared the sequence.
     Restart,
     /// Backspace deleted the last key.
@@ -435,7 +514,7 @@ pub fn capture_passphrase_headless(
             LOCK_HOTKEY_KEYCODE.load(std::sync::atomic::Ordering::Relaxed),
             TALK_HOTKEY_KEYCODE.load(std::sync::atomic::Ordering::Relaxed),
         ) {
-            report(&st, CaptureEvent::Reserved);
+            report(&st, CaptureEvent::Reserved(keycode));
             return std::ptr::null_mut();
         }
 
@@ -478,7 +557,6 @@ pub fn capture_passphrase_headless(
     };
 
     // Pump the run loop until Enter commits the capture.
-    const CAPTURE_TIMEOUT_SECS: u64 = 120;
     let started = std::time::Instant::now();
     let deadline = started + std::time::Duration::from_secs(CAPTURE_TIMEOUT_SECS);
     let mut last_tick = u64::MAX;
@@ -870,6 +948,99 @@ mod tests {
     }
 
     #[test]
+    fn test_reserved_key_matches_enforced_set() {
+        // Issue #36: advertised == enforced. The dialogs disclose reserved
+        // keys via `reserved_key`; capture enforces via `is_rejected_keycode`.
+        // Enumerate every plausible keycode with BOTH the default hotkeys
+        // (what the GUI passes) and a shifted pair (drift in the hotkey
+        // parameters must also be caught).
+        for (lock, talk) in [
+            (DEFAULT_LOCK_KEYCODE, DEFAULT_TALK_KEYCODE),
+            (12, 13), // Q / W
+        ] {
+            for keycode in 0..=127i64 {
+                assert_eq!(
+                    is_rejected_keycode(keycode, lock, talk),
+                    reserved_key(keycode, lock, talk).is_some(),
+                    "disclosure/enforcement drift at keycode {} (lock {}, talk {})",
+                    keycode,
+                    lock,
+                    talk
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_reserved_key_names_and_reasons() {
+        let k = reserved_key(ESCAPE_KEYCODE, DEFAULT_LOCK_KEYCODE, DEFAULT_TALK_KEYCODE).unwrap();
+        assert_eq!(k.name, "Escape");
+        let k = reserved_key(
+            BACKSPACE_KEYCODE,
+            DEFAULT_LOCK_KEYCODE,
+            DEFAULT_TALK_KEYCODE,
+        )
+        .unwrap();
+        assert_eq!(k.name, "Backspace");
+        let k = reserved_key(ENTER_KEYCODE, DEFAULT_LOCK_KEYCODE, DEFAULT_TALK_KEYCODE).unwrap();
+        assert_eq!(k.name, "Return");
+        let k = reserved_key(
+            ENTER_KEYCODE_KEYPAD,
+            DEFAULT_LOCK_KEYCODE,
+            DEFAULT_TALK_KEYCODE,
+        )
+        .unwrap();
+        assert_eq!(k.name, "Return");
+        // Hotkey keys are named by letter and attributed to their hotkey.
+        let k = reserved_key(
+            DEFAULT_LOCK_KEYCODE,
+            DEFAULT_LOCK_KEYCODE,
+            DEFAULT_TALK_KEYCODE,
+        )
+        .unwrap();
+        assert_eq!(k.name, "L");
+        assert_eq!(k.why, "Lock hotkey");
+        let k = reserved_key(
+            DEFAULT_TALK_KEYCODE,
+            DEFAULT_LOCK_KEYCODE,
+            DEFAULT_TALK_KEYCODE,
+        )
+        .unwrap();
+        assert_eq!(k.name, "T");
+        assert_eq!(k.why, "Talk hotkey");
+        // Non-letter hotkey keycode falls back to the raw number.
+        let k = reserved_key(96, 96, 13).unwrap(); // F5 as a hypothetical hotkey
+        assert_eq!(k.name, "keycode 96");
+        // Eligible keys disclose nothing.
+        assert!(reserved_key(0, DEFAULT_LOCK_KEYCODE, DEFAULT_TALK_KEYCODE).is_none());
+    }
+
+    #[test]
+    fn test_capture_rules_text_discloses_every_reserved_key() {
+        // The instruction text must name every key the capture rejects
+        // (with the default hotkeys the GUI passes), so a user never
+        // discovers a reserved key by trial and error.
+        let text = capture_rules_text(DEFAULT_LOCK_KEYCODE, DEFAULT_TALK_KEYCODE);
+        for keycode in [
+            ESCAPE_KEYCODE,
+            BACKSPACE_KEYCODE,
+            ENTER_KEYCODE,
+            DEFAULT_LOCK_KEYCODE,
+            DEFAULT_TALK_KEYCODE,
+        ] {
+            let k = reserved_key(keycode, DEFAULT_LOCK_KEYCODE, DEFAULT_TALK_KEYCODE).unwrap();
+            assert!(
+                text.contains(&k.name),
+                "rules text must name {}: {}",
+                k.name,
+                text
+            );
+        }
+        // And the minimum-length rule.
+        assert!(text.contains(&format!("{}", crate::utils::MIN_PASSPHRASE_KEYS)));
+    }
+
+    #[test]
     fn test_validate_sequence_minimum_boundary() {
         // Exactly MIN keys is valid (wizard double-entry commits at this size).
         let min = vec![0u32; crate::utils::MIN_PASSPHRASE_KEYS];
@@ -892,7 +1063,12 @@ mod tests {
     fn test_validate_sequence_allows_unrenderable_members() {
         // Validation is count-only: unrenderable keycodes (F5, keypad,
         // arrows) are legitimate members and never gate here (R2).
-        let seq = vec![F5_KEYCODE as u32, KEYPAD_1_KEYCODE as u32, ARROW_UP_KEYCODE as u32, 0];
+        let seq = vec![
+            F5_KEYCODE as u32,
+            KEYPAD_1_KEYCODE as u32,
+            ARROW_UP_KEYCODE as u32,
+            0,
+        ];
         assert!(validate_sequence(&seq).is_ok());
     }
 }
