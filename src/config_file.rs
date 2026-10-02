@@ -185,7 +185,9 @@ impl Config {
     /// - Config file doesn't exist
     /// - Failed to read file
     /// - TOML parsing fails
-    /// - File permissions are too permissive (warning only)
+    /// - The file is group/other-readable AND chmod 0600 fails (a usable
+    ///   config with a wrong mode is repaired in place, issue #37 N7 — a
+    ///   repair failure is a hard error, NOT a Setup-Wizard case)
     /// - Passphrase format is not `keycode-v1` (legacy configs must re-setup)
     pub fn load() -> Result<Self> {
         let path = Self::config_path();
