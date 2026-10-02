@@ -162,12 +162,12 @@ mod macos {
     use crate::setup::{self, SetupOutcome};
     use anyhow::{anyhow, Result};
     use objc2::rc::Retained;
-    use objc2::runtime::AnyObject;
+    use objc2::runtime::{AnyObject, NSObjectProtocol, ProtocolObject};
     use objc2::{declare_class, msg_send, msg_send_id, mutability, ClassType, DeclaredClass};
     use objc2_app_kit::{
         NSAlert, NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSButton,
         NSControlStateValueOn, NSModalResponseOK, NSStackView, NSStackViewGravity, NSTextField,
-        NSUserInterfaceLayoutOrientation, NSView, NSWindow, NSWindowStyleMask,
+        NSUserInterfaceLayoutOrientation, NSView, NSWindow, NSWindowDelegate, NSWindowStyleMask,
     };
     use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
     use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
@@ -184,6 +184,8 @@ mod macos {
     const TAG_FINISH: isize = 3;
     /// Issue #34 escape hatch: delete the stale TCC row and relaunch.
     const TAG_RESET: isize = 4;
+    /// Explicit "Capture Passphrase" button: capture starts only on click.
+    const TAG_CAPTURE: isize = 5;
 
     // Step numbers.
     const STEP_PERMISSION: u8 = 0;
@@ -219,6 +221,10 @@ mod macos {
         commit_clicked: AtomicBool,
         finish_clicked: AtomicBool,
         reset_clicked: AtomicBool,
+        /// "Capture Passphrase" clicked: capture starts ONLY on this explicit
+        /// user action — never automatically on permission grant (keyboard
+        /// lockout incident 2026-10-01).
+        capture_clicked: AtomicBool,
         step: AtomicU8,
         /// Progress text for the status label (dots), set from the tap callback.
         status: parking_lot::Mutex<String>,
@@ -236,6 +242,7 @@ mod macos {
                 commit_clicked: AtomicBool::new(false),
                 finish_clicked: AtomicBool::new(false),
                 reset_clicked: AtomicBool::new(false),
+                capture_clicked: AtomicBool::new(false),
                 step: AtomicU8::new(STEP_PERMISSION),
                 status: parking_lot::Mutex::new(String::new()),
                 waiting_since: parking_lot::Mutex::new(None),
@@ -259,6 +266,15 @@ mod macos {
             type Ivars = ();
         }
 
+        // Supertrait of NSWindowDelegate; conformance is required before
+        // NSWindowDelegate can be implemented.
+        unsafe impl NSObjectProtocol for WizardTarget {}
+
+        unsafe impl NSWindowDelegate for WizardTarget {
+            // Only the optional `windowShouldClose:` is implemented (below);
+            // remaining optional delegate methods are untouched.
+        }
+
         unsafe impl WizardTarget {
             #[method(buttonClicked:)]
             fn button_clicked(&self, sender: &AnyObject) {
@@ -268,8 +284,22 @@ mod macos {
                     TAG_COMMIT => SIGNALS.commit_clicked.store(true, Ordering::SeqCst),
                     TAG_FINISH => SIGNALS.finish_clicked.store(true, Ordering::SeqCst),
                     TAG_RESET => SIGNALS.reset_clicked.store(true, Ordering::SeqCst),
+                    TAG_CAPTURE => SIGNALS.capture_clicked.store(true, Ordering::SeqCst),
                     _ => {}
                 }
+            }
+
+            // NSWindowDelegate (optional method): the red close button ends
+            // an in-flight passphrase capture immediately. The wizard's tao
+            // event loop is blocked inside the capture's nested CFRunLoop
+            // pump, so CloseRequested cannot be processed until capture
+            // ends — but AppKit dispatch (this delegate callback) still runs
+            // during the pump, so the abort flag is seen within one 100 ms
+            // pump slice.
+            #[method(windowShouldClose:)]
+            fn window_should_close(&self, _sender: &NSWindow) -> bool {
+                setup::request_capture_abort();
+                true
             }
         }
     );
@@ -363,7 +393,14 @@ mod macos {
         };
         log::info!("Relaunching {:?} after permission reset", exe);
         match std::process::Command::new(&exe)
-            .args(std::env::args().skip(1))
+            .args(
+                std::env::args()
+                    .skip(1)
+                    // Designated successor: parent exits right after
+                    // spawning but still holds the flock — child must
+                    // skip the single-instance guard.
+                    .chain(["--skip-instance-lock".to_string()]),
+            )
             .spawn()
         {
             Ok(_) => {
@@ -502,6 +539,28 @@ mod macos {
         unsafe { reset_btn.setTag(TAG_RESET) };
         reset_btn.setHidden(true);
 
+        // Explicit capture start (keyboard-lockout fix): the wizard must
+        // never silently install the keyboard-capture event tap. Hidden
+        // until the Accessibility permission is granted; hidden again while
+        // a capture runs.
+        let capture_btn = unsafe {
+            NSButton::buttonWithTitle_target_action(
+                &NSString::from_str("Capture Passphrase"),
+                Some(&*target),
+                Some(objc2::sel!(buttonClicked:)),
+                mtm,
+            )
+        };
+        unsafe { capture_btn.setTag(TAG_CAPTURE) };
+        capture_btn.setHidden(true);
+
+        // Close button aborts an in-flight capture (see windowShouldClose:).
+        {
+            let delegate =
+                ProtocolObject::<dyn NSWindowDelegate>::from_retained(target.clone());
+            window.setDelegate(Some(&delegate));
+        }
+
         let make_text_field = |placeholder: &str, width: f64| -> Retained<NSTextField> {
             let f = unsafe {
                 NSTextField::initWithFrame(
@@ -542,6 +601,7 @@ mod macos {
                 &*instr_label as *const NSTextField as *const NSView,
                 &*grant_btn as *const NSButton as *const NSView,
                 &*reset_btn as *const NSButton as *const NSView,
+                &*capture_btn as *const NSButton as *const NSView,
                 &*commit_btn as *const NSButton as *const NSView,
                 &*status_label as *const NSTextField as *const NSView,
                 &*lock_key as *const NSTextField as *const NSView,
@@ -559,6 +619,7 @@ mod macos {
         // Step 0 visibility.
         grant_btn.setHidden(false);
         commit_btn.setHidden(true);
+        capture_btn.setHidden(true);
         status_label.setHidden(true);
         lock_key.setHidden(true);
         talk_key.setHidden(true);
@@ -636,6 +697,7 @@ mod macos {
         ));
         let outcome = outcome_slot.clone();
         let mut first_keys: Option<Vec<u32>> = None;
+        let mut capture_offered = false;
         let mut stale_shown = false;
 
         let status_label_retained: Retained<NSTextField> = status_label.clone();
@@ -699,23 +761,32 @@ mod macos {
                 return;
             }
 
-            // Step 1: poll permission; when granted, run the double capture.
+            // Step 1: poll permission; when granted, show the explicit
+            // capture button — the keyboard-capturing tap is installed ONLY
+            // on a click (keyboard-lockout fix: silent automatic capture
+            // locked the whole keyboard for up to 300 s per launch).
+            // `step` stays STEP_CAPTURE until both captures succeed, so a
+            // failed capture can be retried from the button.
             if step == STEP_CAPTURE {
-                if perm_granted.load(Ordering::SeqCst) {
-                    SIGNALS.step.store(STEP_FORM, Ordering::SeqCst);
+                if perm_granted.load(Ordering::SeqCst) && SIGNALS.capture_clicked.swap(false, Ordering::SeqCst) {
                     // UI out of the way for capture; dots go to the status label.
                     instr_label.setHidden(true);
                     set_status("");
-                    commit_btn.setHidden(false);
+                    capture_btn.setHidden(true);
 
                     // Double capture on the main thread. The headless pump
                     // yields control in 100 ms slices, so the AppKit event
                     // loop keeps servicing while the tap is installed.
+                    // Cancel path: closing the window sets the abort flag
+                    // via windowShouldClose:, ending the capture and
+                    // restoring keyboard input.
                     let first = match capture_with_status(&status_label) {
                         Ok(k) => k,
                         Err(e) => {
-                            *outcome.borrow_mut() = Some(Err(anyhow!("Passphrase capture failed: {}", e)));
-                            app.stop(None);
+                            set_status(&format!(
+                                "Capture failed: {e} — click the button to retry."
+                            ));
+                            capture_btn.setHidden(false);
                             return;
                         }
                     };
@@ -724,8 +795,10 @@ mod macos {
                     let second = match capture_with_status(&status_label) {
                         Ok(k) => k,
                         Err(e) => {
-                            *outcome.borrow_mut() = Some(Err(anyhow!("Passphrase capture failed: {}", e)));
-                            app.stop(None);
+                            set_status(&format!(
+                                "Capture failed: {e} — click the button to retry."
+                            ));
+                            capture_btn.setHidden(false);
                             return;
                         }
                     };
@@ -737,6 +810,7 @@ mod macos {
                         app.stop(None);
                         return;
                     }
+                    SIGNALS.step.store(STEP_FORM, Ordering::SeqCst);
                     first_keys = Some(first);
                     // Reveal the form.
                     status_label.setHidden(true);
@@ -753,6 +827,27 @@ mod macos {
                             "Choose hotkeys and timeouts. Empty fields use the defaults.",
                         ))
                     };
+                    return;
+                }
+                // Permission granted, capture not yet requested: show the
+                // explicit start button once (a local flag, not the step —
+                // the step must stay STEP_CAPTURE so the click above is
+                // still reachable).
+                if perm_granted.load(Ordering::SeqCst) && !capture_offered {
+                    capture_offered = true;
+                    grant_btn.setHidden(true);
+                    status_label.setHidden(false);
+                    capture_btn.setHidden(false);
+                    unsafe {
+                        instr_label.setHidden(false);
+                        instr_label.setStringValue(&NSString::from_str(
+                            "Accessibility granted. Click “Capture Passphrase” when ready.\n\n\
+                             Your keyboard will be captured until you type a passphrase and press \
+                             Enter (max 2 min). Nothing you type reaches other apps during capture. \
+                             Close this window to cancel.",
+                        ))
+                    };
+                    set_status("");
                     return;
                 }
                 // Keep the waiting text fresh while permission is pending.
@@ -1065,7 +1160,7 @@ mod macos {
     }
 
     /// Run one headless capture pass on the main thread, mirroring progress
-    /// into the status label.
+    /// into the status label (dots, countdown ticks).
     ///
     /// Called from inside the tao loop callback: the nested CFRunLoop pump
     /// in `capture_passphrase_headless` yields in 100 ms slices so AppKit
@@ -1100,6 +1195,16 @@ mod macos {
                         let mut s = SIGNALS.status.lock();
                         s.pop();
                         s.clone()
+                    }
+                    setup::CaptureEvent::Tick(remaining) => {
+                        // Countdown: prefix the in-progress dots so the user
+                        // sees both progress and the time bound.
+                        let dots = SIGNALS.status.lock().clone();
+                        let dots = match dots.find(" (") {
+                            Some(i) => dots[..i].to_string(),
+                            None => dots,
+                        };
+                        format!("{dots} ({remaining}s left)")
                     }
                     setup::CaptureEvent::TooShort(len) => {
                         let mut s = SIGNALS.status.lock();
@@ -1457,6 +1562,17 @@ mod macos {
         window.setTitle(&NSString::from_str("HandsOff — Change Passphrase"));
         unsafe { window.setReleasedWhenClosed(false) };
 
+        let target: Retained<WizardTarget> = unsafe {
+            let t = mtm.alloc().set_ivars(());
+            msg_send_id![super(t), initWithFrame: frame]
+        };
+        // Close button aborts an in-flight capture (see windowShouldClose:).
+        {
+            let delegate =
+                ProtocolObject::<dyn NSWindowDelegate>::from_retained(target.clone());
+            window.setDelegate(Some(&delegate));
+        }
+
         let instr_label: Retained<NSTextField> = unsafe {
             NSTextField::labelWithString(
                 &NSString::from_str(
@@ -1472,6 +1588,18 @@ mod macos {
             unsafe { NSTextField::labelWithString(&NSString::from_str(""), mtm) };
         unsafe { status_label.setFrameSize(NSSize::new(WINDOW_W - 60.0, 20.0)) };
 
+        // Explicit capture start (keyboard-lockout fix): capture runs only
+        // after this click, never automatically on window open.
+        let capture_btn = unsafe {
+            NSButton::buttonWithTitle_target_action(
+                &NSString::from_str("Capture New Passphrase"),
+                Some(&*target),
+                Some(objc2::sel!(buttonClicked:)),
+                mtm,
+            )
+        };
+        unsafe { capture_btn.setTag(TAG_CAPTURE) };
+
         let content = unsafe {
             NSStackView::initWithFrame(
                 mtm.alloc(),
@@ -1484,6 +1612,7 @@ mod macos {
             const GRAVITY: NSStackViewGravity = NSStackViewGravity::Leading;
             for v in [
                 &*instr_label as *const NSTextField as *const NSView,
+                &*capture_btn as *const NSButton as *const NSView,
                 &*status_label as *const NSTextField as *const NSView,
             ] {
                 content.addView_inGravity(&*v, GRAVITY);
@@ -1500,7 +1629,7 @@ mod macos {
 
         let outcome_slot = std::rc::Rc::new(std::cell::RefCell::new(None::<Result<Config>>));
         let outcome = outcome_slot.clone();
-        let mut phase = 0u8; // 0 = idle, 1 = first capture, 2 = confirm capture
+        let mut phase = 0u8; // 0 = waiting for capture click, 1 = capturing
 
         event_loop.run_return(move |event, _, control_flow| {
             *control_flow = tao::event_loop::ControlFlow::WaitUntil(
@@ -1518,9 +1647,10 @@ mod macos {
                 return;
             }
 
-            if phase == 0 {
+            if phase == 0 && SIGNALS.capture_clicked.swap(false, Ordering::SeqCst) {
                 phase = 1;
                 status_label.setHidden(false);
+                capture_btn.setHidden(true);
                 let saved: Result<Config> = (|| {
                     let first = capture_with_status(&status_label)?;
                     unsafe {
