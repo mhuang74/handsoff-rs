@@ -1453,10 +1453,28 @@ menu bar, or use your lock shortcut (hover the menu bar
 icon to see it — it depends on your setup).
 
 Unlock: type your passphrase. While locked, mouse clicks
-are blocked — even the menu can't be clicked — so typing
-is the only way back in.
+are blocked — even the menu can't be clicked — so there
+are only TWO ways back in: your passphrase on the
+keyboard, or rebooting your Mac. (The Reenable menu item
+can't help — it only turns HandsOff back on after
+Disable, and the menu can't be clicked while locked.)
 
 Made a typo? Press Escape to start over."
+                .to_string(),
+            table: Vec::new(),
+        },
+        wizard::HelpSection {
+            heading: "Choosing your passphrase".to_string(),
+            body: "\
+Pick something SHORT: 4–6 characters
+you can type with one hand. While
+locked, your mouse is dead — typing is
+all you have, and a short passphrase is
+much easier to get right.
+
+And WRITE IT DOWN somewhere safe. If
+you forget it, the only way back in is
+rebooting your Mac."
                 .to_string(),
             table: Vec::new(),
         },
@@ -1483,8 +1501,7 @@ call apps."
                 ),
                 (
                     "Reenable".to_string(),
-                    "Ends a stuck lock and\nrestarts blocking. Your\nsettings are not touched."
-                        .to_string(),
+                    "Turns HandsOff back on after\nDisable. Does NOT help with\na stuck lock.".to_string(),
                 ),
                 (
                     "Preferences…".to_string(),
@@ -1518,9 +1535,13 @@ permission (System Settings > Privacy & Security). Then
 try \"Fix Accessibility Permission…\".
 
 Locked and nothing clicks? That's HandsOff working.
-Type your passphrase to unlock.
+Your only ways back in: type your passphrase, or reboot
+your Mac. Reenable can't help — it only turns HandsOff
+back on after Disable, and the menu is unreachable while
+locked.
 
-Forgot your passphrase? Use \"Reset…\" to start fresh."
+Forgot your passphrase? Once unlocked, use \"Reset…\" to
+start fresh."
                 .to_string(),
             table: Vec::new(),
         },

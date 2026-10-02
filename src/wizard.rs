@@ -2118,7 +2118,7 @@ mod macos {
         // Wide enough that the instructions (including the reserved-key
         // list) fit without clipping — issue #36.
         const CP_WINDOW_W: f64 = 560.0;
-        const CP_WINDOW_H: f64 = 300.0;
+        const CP_WINDOW_H: f64 = 340.0;
 
         let style = NSWindowStyleMask::Titled | NSWindowStyleMask::Closable;
         let frame = NSRect::new(
@@ -2171,7 +2171,17 @@ mod macos {
             b
         };
 
-        let instr_label = make_label("", 170.0);
+        // Wrapping label: instruction text word-wraps at the content width
+        // (plain labels bleed off-window); Auto Layout grows the stack
+        // vertically for multi-paragraph text.
+        let instr_label = unsafe {
+            NSTextField::wrappingLabelWithString(&NSString::from_str(""), mtm)
+        };
+        unsafe {
+            instr_label.setFrameSize(NSSize::new(CP_WINDOW_W - 60.0, 210.0));
+            instr_label.setPreferredMaxLayoutWidth(CP_WINDOW_W - 60.0);
+            instr_label.setMaximumNumberOfLines(0);
+        }
         // Explicit capture start (keyboard-lockout fix): capture runs only
         // after this click, never automatically on window open.
         // Issue #37 N6: phase 0 is now VERIFY — the user must first prove
@@ -2373,6 +2383,10 @@ mod macos {
                                          Passphrase: a sequence of physical keys. Nothing \
                                          you type is ever shown — dots mark progress only. \
                                          You will type it twice to confirm.\n\n{}\n\n\
+                                         TIP: pick something SHORT — 4–6 keys you can \
+                                         type with one hand — and WRITE IT DOWN somewhere \
+                                         safe. If you ever get locked out and forget it, \
+                                         rebooting your Mac is the only way back in.\n\n\
                                          Click “Capture New Passphrase” when ready.",
                                         setup::capture_rules_text(
                                             crate::constants::DEFAULT_LOCK_KEYCODE,
