@@ -426,6 +426,15 @@ mod macos {
         }
     }
 
+    /// `-[NSApplication activate]` is macOS 14+; min deployment is 13.0
+    /// (Info.plist.template), where the unrecognized selector would crash the
+    /// first-run path. `activateIgnoringOtherApps` exists since 10.0; the
+    /// binding is deprecated-but-safe in objc2-app-kit 0.2.
+    fn activate_app(app: &NSApplication) {
+        #[allow(deprecated)]
+        app.activateIgnoringOtherApps(true);
+    }
+
     /// Single-dialog invariant (issue #36): while a dialog owns the nested
     /// `run_return`, the tray's session loop is NOT draining the
     /// process-global menu event channel, so clicks would pile up and each
@@ -463,7 +472,7 @@ mod macos {
         }
         if absorbed {
             window.makeKeyAndOrderFront(None);
-            unsafe { app.activateIgnoringOtherApps(true) };
+            activate_app(app);
         }
     }
 
@@ -808,10 +817,7 @@ mod macos {
 
         window.center();
         window.makeKeyAndOrderFront(None);
-        // `-[NSApplication activate]` is macOS 14+; min version is 13.0
-        // (Info.plist.template), where the unrecognized selector would crash
-        // the first-run path. activateIgnoringOtherApps exists since 10.0.
-        unsafe { app.activateIgnoringOtherApps(true) };
+        activate_app(&app);
 
         // ---- Drive the flow through the CALLER's tao event loop ----
         use tao::platform::run_return::EventLoopExtRunReturn;
@@ -847,7 +853,7 @@ mod macos {
                     // event loop), not at window open — reading the
                     // instructions can legitimately take longer than
                     // STALE_GRANT_TIMEOUT. No click yet → no timing.
-                    let mut started = SIGNALS.waiting_since.lock();
+                    let started = SIGNALS.waiting_since.lock();
                     if let Some(t0) = *started {
                         if t0.elapsed() >= STALE_GRANT_TIMEOUT {
                             drop(started);
@@ -1241,11 +1247,7 @@ mod macos {
 
         window.center();
         window.makeKeyAndOrderFront(None);
-        // Same activation path as the wizard (see run_wizard_macos):
-        // `-[NSApplication activate]` is macOS 14+ and the min version is
-        // 13.0 (Info.plist.template), where the unrecognized selector would
-        // crash this path. activateIgnoringOtherApps exists since 10.0.
-        unsafe { app.activateIgnoringOtherApps(true) };
+        activate_app(&app);
 
         use tao::platform::run_return::EventLoopExtRunReturn;
 
@@ -1276,7 +1278,7 @@ mod macos {
                     // event loop), not at window open — reading the
                     // instructions can legitimately take longer than
                     // STALE_GRANT_TIMEOUT. No click yet → no timing.
-                    let mut started = SIGNALS.waiting_since.lock();
+                    let started = SIGNALS.waiting_since.lock();
                     if let Some(t0) = *started {
                         if t0.elapsed() >= STALE_GRANT_TIMEOUT {
                             drop(started);
@@ -1607,11 +1609,7 @@ mod macos {
 
         window.center();
         window.makeKeyAndOrderFront(None);
-        // Same activation path as the wizard and re-grant windows:
-        // `-[NSApplication activate]` is macOS 14+ and the min version is
-        // 13.0 (Info.plist.template). activateIgnoringOtherApps exists
-        // since 10.0.
-        unsafe { app.activateIgnoringOtherApps(true) };
+        activate_app(&app);
 
         use tao::platform::run_return::EventLoopExtRunReturn;
 
@@ -1642,7 +1640,6 @@ mod macos {
                 window.orderOut(None);
                 *outcome.borrow_mut() = Some(Ok(()));
                 stop_run_loop(&app);
-                return;
             }
         });
 
@@ -1976,7 +1973,7 @@ mod macos {
 
         window.center();
         window.makeKeyAndOrderFront(None);
-        unsafe { app.activateIgnoringOtherApps(true) };
+        activate_app(&app);
 
         use tao::platform::run_return::EventLoopExtRunReturn;
 
@@ -2283,7 +2280,7 @@ mod macos {
 
         window.center();
         window.makeKeyAndOrderFront(None);
-        unsafe { app.activateIgnoringOtherApps(true) };
+        activate_app(&app);
 
         use tao::platform::run_return::EventLoopExtRunReturn;
 
@@ -2535,7 +2532,6 @@ mod macos {
                             );
                         }
                     }
-                    return;
                 }
             } else {
                 // Terminal phases: OK (or the window close button) dismisses.
@@ -2547,7 +2543,6 @@ mod macos {
                         Err(anyhow!("{}", failure_reason))
                     });
                     stop_run_loop(&app);
-                    return;
                 }
             }
         });

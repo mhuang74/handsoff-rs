@@ -559,7 +559,7 @@ fn test_deferred_disable_then_lock_sequence_gate() {
 fn test_change_passphrase_verified_correct_current_succeeds() {
     let path = temp_config_path();
     seeded_config().save_to_path(&path).unwrap();
-    let original_hash = hash_keycodes(&valid_keys());
+    let _original_hash = hash_keycodes(&valid_keys());
 
     let new_keys = vec![11u32, 7, 31, 45];
     let updated = change_passphrase_verified_to_path(&path, &valid_keys(), &new_keys)

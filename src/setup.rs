@@ -361,7 +361,7 @@ pub fn capture_passphrase_headless(
     }
 
     use parking_lot::Mutex;
-    use std::sync::Arc;
+    use std::rc::Rc;
 
     struct CaptureState {
         keys: Vec<u32>,
@@ -370,7 +370,7 @@ pub fn capture_passphrase_headless(
         on_event: Option<Box<dyn Fn(CaptureEvent) + 'static>>,
     }
 
-    let state = Arc::new(Mutex::new(CaptureState {
+    let state = Rc::new(Mutex::new(CaptureState {
         keys: Vec::new(),
         done: false,
         aborted: false,
@@ -380,32 +380,15 @@ pub fn capture_passphrase_headless(
     // A fresh capture must not inherit a stale abort from a previous one.
     CAPTURE_ABORT.store(false, std::sync::atomic::Ordering::SeqCst);
 
-    // ---- throwaway tap (mirrors event_tap.rs FFI; see R-4 for consolidation) ----
+    // ---- throwaway tap (FFI shared with input_blocking::event_tap) ----
     use core_foundation::base::TCFType;
     use core_foundation::runloop::{kCFRunLoopDefaultMode, CFRunLoop};
     use core_graphics::event::{CGEventFlags, EventField};
+    use core_graphics::sys::CGEventTapRef;
     use foreign_types::ForeignType;
     use std::ffi::c_void;
 
-    type TapRef = *mut c_void;
-
-    #[link(name = "CoreGraphics", kind = "framework")]
-    extern "C" {
-        fn CGEventTapCreate(
-            tap: u32,
-            place: u32,
-            options: u32,
-            events_of_interest: u64,
-            callback: unsafe extern "C" fn(
-                proxy: *mut c_void,
-                event_type: u32,
-                event: core_graphics::sys::CGEventRef,
-                user_info: *mut c_void,
-            ) -> core_graphics::sys::CGEventRef,
-            user_info: *mut c_void,
-        ) -> TapRef;
-        fn CGEventTapEnable(tap: TapRef, enable: bool);
-    }
+    use crate::input_blocking::event_tap::{CGEventTapCreate, CGEventTapEnable};
 
     #[link(name = "CoreFoundation", kind = "framework")]
     extern "C" {
@@ -422,7 +405,7 @@ pub fn capture_passphrase_headless(
     const K_CGEVENT_TAP_OPTION_DEFAULT: u32 = 0;
     const K_CGEVENT_KEY_DOWN: u64 = 10;
 
-    type Shared = Arc<Mutex<CaptureState>>;
+    type Shared = Rc<Mutex<CaptureState>>;
 
     static LOCK_HOTKEY_KEYCODE: std::sync::atomic::AtomicI64 =
         std::sync::atomic::AtomicI64::new(DEFAULT_LOCK_KEYCODE);
@@ -529,7 +512,7 @@ pub fn capture_passphrase_headless(
 
     // Install the tap on the calling (main) run loop.
     let shared_box = Box::into_raw(Box::new(state.clone())) as *mut c_void;
-    let tap: TapRef = unsafe {
+    let tap: CGEventTapRef = unsafe {
         let t = CGEventTapCreate(
             K_CGSESSION_EVENT_TAP,
             K_CGHEAD_INSERT_EVENT_TAP,
@@ -542,9 +525,9 @@ pub fn capture_passphrase_headless(
             drop(Box::from_raw(shared_box as *mut Shared));
             return Err(anyhow!("Failed to create setup capture event tap"));
         }
-        let source = CFMachPortCreateRunLoopSource(std::ptr::null_mut(), t, 0);
+        let source = CFMachPortCreateRunLoopSource(std::ptr::null_mut(), t as *mut c_void, 0);
         if source.is_null() {
-            CFRelease(t);
+            CFRelease(t as *const c_void);
             drop(Box::from_raw(shared_box as *mut Shared));
             return Err(anyhow!("Failed to create run loop source for capture tap"));
         }
@@ -607,7 +590,7 @@ pub fn capture_passphrase_headless(
         // Drain in-flight callbacks before releasing (same rationale as
         // event_tap.rs EVENT_TAP_DRAIN_DELAY_MS).
         std::thread::sleep(std::time::Duration::from_millis(20));
-        CFRelease(tap);
+        CFRelease(tap as *const c_void);
         drop(Box::from_raw(shared_box as *mut Shared));
     }
 

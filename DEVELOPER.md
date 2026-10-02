@@ -148,7 +148,7 @@ HandsOff is built with Rust and leverages the following libraries:
 
 Non-obvious patterns in the event-tap implementation (`src/input_blocking/event_tap.rs`), useful before touching that code:
 
-- **Raw FFI bindings**: the `core-graphics` crate doesn't expose all CGEventTap functions, so `event_tap.rs` declares raw `extern "C"` bindings to the CoreGraphics framework directly (e.g. `CGEventTapCreate`, `CGEventTapEnable`, plus the `CFMachPort` functions from CoreFoundation).
+- **Raw FFI bindings**: the `core-graphics` crate doesn't expose all CGEventTap functions, so `input_blocking/event_tap.rs` declares the raw `extern "C"` bindings to the CoreGraphics framework directly (`CGEventTapCreate`, `CGEventTapEnable`, `CGEventTapIsEnabled`); `setup.rs` and `input_blocking/mod.rs` reuse them instead of redeclaring.
 - **`CGEventType` comparison**: `CGEventType` doesn't implement `PartialEq`. Compare via a cast to `u32`: `(event_type as u32) == (CGEventType::KeyDown as u32)`.
 - **Callback state passing**: the event-tap callback receives state through the C `user_info` pointer. It is boxed and leaked with `Box::into_raw(Box::new(state))` at tap creation, then reconstructed in the callback without taking ownership: `&*(user_info as *const Arc<AppState>)`.
 
