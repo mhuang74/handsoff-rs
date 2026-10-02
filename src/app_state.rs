@@ -269,6 +269,20 @@ impl AppState {
         }
     }
 
+    /// Clear the locked state WITHOUT touching the backoff schedule.
+    ///
+    /// Used by `HandsOffCore::disable` (issue #37 N2): a disabled tap
+    /// enforces nothing, so `is_locked` must go — but §2.3 says only a
+    /// successful Passphrase unlock resets the schedule, so `window_index`
+    /// and `stretch_start` are left untouched (unlike `reset_all`).
+    pub fn clear_lock_state(&self) {
+        let mut state = self.inner.lock();
+        state.is_locked = false;
+        state.lock_start_time = None;
+        state.input_buffer.clear();
+        state.last_key_time = None;
+    }
+
     /// Trigger auto-unlock (a backoff window fired). Unlocks without
     /// authentication.
     ///
@@ -782,5 +796,35 @@ mod tests {
         assert!(state.get_lock_elapsed_secs().is_some());
         state.set_locked(false);
         assert!(state.get_lock_elapsed_secs().is_none());
+    }
+
+    #[test]
+    fn test_clear_lock_state_preserves_backoff_schedule() {
+        // Issue #37 N2: disable() clears the Lock flag but must NOT restart
+        // the backoff schedule (§2.3 — only a passphrase unlock resets it).
+        let state = AppState::new();
+        state.set_auto_unlock_config(crate::config::AutoUnlockConfig::Backoff {
+            base_interval_secs: std::num::NonZeroU64::new(3600).unwrap(),
+        });
+        state.set_locked(true);
+        // Simulate two windows already fired (window_index advanced by
+        // trigger_auto_unlock).
+        {
+            let mut inner = state.lock();
+            inner.auto_unlock.as_mut().unwrap().window_index = 2;
+        }
+
+        state.clear_lock_state();
+
+        assert!(!state.is_locked());
+        assert_eq!(state.buffer_len(), 0);
+        {
+            let inner = state.lock();
+            let unlock = inner.auto_unlock.as_ref().unwrap();
+            assert_eq!(
+                unlock.window_index, 2,
+                "clear_lock_state must NOT reset the backoff counter (§2.3)"
+            );
+        }
     }
 }

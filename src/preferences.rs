@@ -234,17 +234,15 @@ pub fn change_passphrase_verified_to_path(
     current_keys: &[u32],
     new_keys: &[u32],
 ) -> Result<Config> {
-    let current =
-        Config::load_from_path(path).context("Failed to load current configuration")?;
+    let current = Config::load_from_path(path).context("Failed to load current configuration")?;
     let stored_hash = current.passphrase_hash.clone().ok_or_else(|| {
         anyhow::anyhow!("No stored passphrase hash — cannot verify the current Passphrase")
     })?;
     if !crate::auth::verify_keycodes(current_keys, &stored_hash) {
-        anyhow::bail!(
-            "Current Passphrase verification failed — the Passphrase was NOT changed"
-        );
+        anyhow::bail!("Current Passphrase verification failed — the Passphrase was NOT changed");
     }
-    let updated = change_passphrase_to(&current, new_keys).context("Failed to apply new passphrase")?;
+    let updated =
+        change_passphrase_to(&current, new_keys).context("Failed to apply new passphrase")?;
     persist_to(&updated, path).context("Failed to save configuration")?;
     Ok(updated)
 }

@@ -170,10 +170,28 @@ fn main() -> Result<()> {
     // grant stale/missing (typical after an unsigned update changed the
     // CDHash) routes to the permission-only re-grant screen — never full
     // passphrase re-setup, and the config is not touched.
+    let mut permissions = initial_permissions;
+    // Issue #37 N7: a config that is valid in content but whose permission
+    // repair failed is a hard error, NOT a Setup-Wizard case — re-setup would
+    // re-capture and discard the working Passphrase. Surface the `chmod 600`
+    // instruction and exit instead.
+    match Config::load() {
+        Err(e) if Config::is_permission_repair_failure(&e) => {
+            error!("Config permission repair failed: {e:#}");
+            show_alert(
+                "HandsOff - Config Permissions",
+                &format!(
+                    "Your config file is group/other-readable and could not be repaired.\n\n\
+                     {e:#}"
+                ),
+            );
+            std::process::exit(1);
+        }
+        _ => {}
+    }
     let config_valid = Config::load()
         .and_then(|_| setup::validate_config_strict())
         .is_ok();
-    let mut permissions = initial_permissions;
     let cfg = match wizard::startup_flow(config_valid, permissions) {
         wizard::StartupFlow::Run => Config::load().expect("config validated above"),
 

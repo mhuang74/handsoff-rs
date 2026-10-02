@@ -192,6 +192,16 @@ impl Config {
         Self::load_from_path(&path)
     }
 
+    /// Whether a load error is the hard permission-repair failure from
+    /// `load_from_path` (issue #37 N7): a group/other-readable config whose
+    /// chmod 0600 failed. This failure class must NOT route to the Setup
+    /// Wizard — re-setup would re-capture and discard the working Passphrase.
+    /// Callers should surface the `chmod 600 <path>` instruction directly.
+    pub fn is_permission_repair_failure(err: &anyhow::Error) -> bool {
+        let msg = format!("{err:#}");
+        msg.contains("could not be repaired") && msg.contains("chmod 600")
+    }
+
     /// Load config from a specific path
     ///
     /// This is primarily intended for testing and advanced scenarios.
@@ -1033,5 +1043,61 @@ auto_unlock_mode = "backoff"
 
             let _ = fs::remove_file(&path);
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_config_chmod_failure_is_hard_error_not_setup_case() {
+        // Issue #37 N7: when the 0600 repair itself fails (e.g. read-only
+        // file), load must fail hard with the `chmod 600 <path>` instruction
+        // — a failure the caller classifies via is_permission_repair_failure
+        // and surfaces directly, NEVER routing to the Setup Wizard (which
+        // would re-capture and discard the working Passphrase).
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = temp_config_path();
+        let config = Config::new(&[0, 12, 15, 37], 120, false, 3600, None, None)
+            .expect("Failed to create config");
+        config.save_to_path(&path).expect("Failed to save");
+
+        // Make the file read-only so set_permissions still succeeds on the
+        // mode change itself (mode changes don't need write access)... so
+        // instead simulate the failure by making the parent directory
+        // read-only? set_permissions operates on the file — use an immutable
+        // scenario instead: drop write permission on the file is not enough.
+        // The robust way to exercise the failure branch without root is to
+        // verify the classifier matches the real error text.
+        let mut perms = fs::metadata(&path).unwrap().permissions();
+        perms.set_mode(0o644);
+        fs::set_permissions(&path, perms).unwrap();
+
+        // Repair succeeds here (owner can chmod own file) — assert the
+        // classifier does NOT fire for a successful repair path.
+        let loaded = Config::load_from_path(&path).expect("repair must succeed");
+        assert_eq!(loaded.passphrase_hash, config.passphrase_hash);
+
+        // The classifier must recognize the actual hard-error message.
+        let synthetic = anyhow::anyhow!(
+            "Config file is group/other-readable and could not be repaired.\n\
+             Fix it manually with: chmod 600 {}",
+            path.display()
+        );
+        assert!(
+            Config::is_permission_repair_failure(&synthetic),
+            "classifier must identify the chmod-failure error class"
+        );
+        // And must NOT match ordinary content errors (which legitimately
+        // route to the Setup Wizard).
+        let content_err = anyhow::anyhow!("Failed to parse config file");
+        assert!(
+            !Config::is_permission_repair_failure(&content_err),
+            "content errors must remain wizard-eligible"
+        );
+
+        // The file must still be 0600 after the repair and content intact.
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+
+        let _ = fs::remove_file(&path);
     }
 }

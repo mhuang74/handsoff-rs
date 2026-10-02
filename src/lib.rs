@@ -472,10 +472,11 @@ impl HandsOffCore {
         self.state.set_disabled(true);
 
         // A stopped tap enforces nothing: the Lock flag must go with it.
-        if self.state.is_locked() {
-            info!("Disable clears an active Lock (no enforcement behind a stopped tap)");
-        }
-        self.state.reset_all();
+        // Clear ONLY the lock state — do NOT restart the backoff schedule
+        // (issue #37: §2.3 says only a successful Passphrase unlock resets
+        // it; disable() previously reset it via reset_all(), shifting any
+        // remaining auto-unlock windows earlier than the §2.1 timeline).
+        self.state.clear_lock_state();
 
         // Stop event tap
         self.stop_event_tap();
@@ -883,5 +884,88 @@ impl Drop for HandsOffCore {
         }
 
         info!("HandsOffCore cleanup complete");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_service_tap_lifecycle_consumes_stop_flag() {
+        // Issue #37 N3: the shared servicing method must consume the stop
+        // flag and report TapStopped (CLI exits on this event).
+        let mut core = HandsOffCore::new(crate::utils::hash_keycodes(&[0, 12, 15, 37]));
+        core.state.request_stop_event_tap();
+
+        match core.service_tap_lifecycle() {
+            TapLifecycleEvent::TapStopped => {} // expected
+            other => panic!("stop flag must yield TapStopped, got {other:?}"),
+        }
+        // Flag consumed: a second pass must be idle.
+        assert!(matches!(
+            core.service_tap_lifecycle(),
+            TapLifecycleEvent::Idle
+        ));
+    }
+
+    #[test]
+    fn test_service_tap_lifecycle_consumes_reenable_flag() {
+        // Issue #37 N3: the re-enable flag (set on macOS tap timeout) must
+        // be consumed by the shared servicing block — this is the parity the
+        // CLI previously lacked. reenable_event_tap falls back to a full
+        // restart when no tap is held, so this exercises the full fallback
+        // path and must NOT return TapStopped.
+        let mut core = HandsOffCore::new(crate::utils::hash_keycodes(&[0, 12, 15, 37]));
+        core.state.request_reenable_event_tap();
+
+        let event = core.service_tap_lifecycle();
+        assert!(
+            !matches!(event, TapLifecycleEvent::TapStopped),
+            "re-enable must never report TapStopped"
+        );
+        // Flag consumed: second pass must be idle.
+        assert!(matches!(
+            core.service_tap_lifecycle(),
+            TapLifecycleEvent::Idle
+        ));
+    }
+
+    #[test]
+    fn test_service_tap_lifecycle_consumes_start_flag() {
+        // Issue #37 N3: the start flag (permissions restored) must also be
+        // consumed. restart_event_tap fails without permissions on CI, so
+        // either Restarted or RestartFailed is acceptable — the requirement
+        // is that the flag is cleared and the event is one of the two.
+        let mut core = HandsOffCore::new(crate::utils::hash_keycodes(&[0, 12, 15, 37]));
+        core.state.request_start_event_tap();
+
+        let event = core.service_tap_lifecycle();
+        assert!(
+            matches!(
+                event,
+                TapLifecycleEvent::Restarted | TapLifecycleEvent::RestartFailed(_)
+            ),
+            "start flag must yield a restart event, got {event:?}"
+        );
+        assert!(matches!(
+            core.service_tap_lifecycle(),
+            TapLifecycleEvent::Idle
+        ));
+    }
+
+    #[test]
+    fn test_service_tap_lifecycle_stop_takes_priority() {
+        // If both stop and re-enable are somehow set, stop must win: the
+        // method returns TapStopped and the re-enable flag is left for the
+        // next pass (or consumed — but never blocks the stop report).
+        let mut core = HandsOffCore::new(crate::utils::hash_keycodes(&[0, 12, 15, 37]));
+        core.state.request_stop_event_tap();
+        core.state.request_reenable_event_tap();
+
+        assert!(matches!(
+            core.service_tap_lifecycle(),
+            TapLifecycleEvent::TapStopped
+        ));
     }
 }
