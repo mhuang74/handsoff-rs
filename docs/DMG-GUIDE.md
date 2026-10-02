@@ -73,6 +73,31 @@ codesign -dv /Applications/HandsOff.app 2>&1 | grep -E 'Signature|flags'
 # Expected: Signature=adhoc
 ```
 
+## Updating / Reinstalling
+
+Each release has a different ad-hoc signature (CDHash), so macOS treats
+every build of HandsOff as a distinct app. When you replace
+`/Applications/HandsOff.app` with a new version, the old Accessibility
+entry no longer matches — the permission looks granted but is stale, and
+input blocking will not work.
+
+Before reinstalling, delete the old permission entry first:
+
+```bash
+tccutil reset Accessibility handsoff-tray.handsoff
+```
+
+Then quit the running app, replace the bundle, launch the new one, and
+grant the Accessibility permission again (System Settings → Privacy &
+Security → Accessibility, or via the in-app Setup Wizard's permission
+step). Re-adding without deleting the old entry first can leave both a
+stale and a fresh entry, and the stale one may keep winning.
+
+Alternatively, if you reinstall without the reset and the app reports a
+permission problem, use the tray menu's
+**Fix Accessibility Permission…** — it detects the stale grant and
+performs the reset + relaunch for you.
+
 ## Uninstalling
 
 Quit the app from the tray menu, then:

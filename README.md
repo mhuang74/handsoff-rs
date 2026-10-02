@@ -65,6 +65,14 @@ HandsOff is available in two forms: **Tray App** (recommended for most users) an
 - ✅ Visual lock status indicator (locked: red)
 - ✅ One-time setup via the built-in Setup Wizard
 
+> **Updating to a newer release?** Each build has a different signature, so
+> the old Accessibility permission must be **deleted and re-added** — see
+> "Updating / Reinstalling" in
+> [docs/DMG-GUIDE.md](docs/DMG-GUIDE.md). In short:
+> `tccutil reset Accessibility handsoff-tray.handsoff`, then replace the
+> app and grant the permission again (or use the in-app
+> **Fix Accessibility Permission…** menu item).
+
 ### Option 2: CLI (Advanced Users)
 
 **Download the CLI tarball from [GitHub Releases](https://github.com/mhuang74/handsoff-rs/releases):**
