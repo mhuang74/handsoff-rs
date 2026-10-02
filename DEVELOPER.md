@@ -192,7 +192,7 @@ The application stores a SHA-256 hash of the passphrase's **physical keycode seq
 - **Keycode-sequence capture**: setup uses a temporary event tap (interactive console sessions only — refused over SSH)
 - **Layout-independent**: no char decoding in the unlock path; raw keycodes are hashed and compared
 - **Reserved keys**: capture rejects Escape, Backspace, Enter/keypad-Enter, and the effective hotkey keys (env var > chosen hotkeys > defaults, R3) as passphrase members; minimum 4 keys. Setup prompts for hotkeys before capture. The unlock path blocks only Enter/keypad-Enter (its control keys) and intercepts Ctrl+Cmd+Shift combos — hotkey last-keys are deliberately NOT rejected on the unlock path, so reserved-set drift between setup and runtime (e.g. tray ignoring env) can never make a captured passphrase un-typeable
-- **No plaintext**: only the SHA-256 hex hash is stored; Reset is an explicit user recovery action that clears lock state and restarts the backoff schedule (logged as `Reset: state cleared…`, distinct from passphrase auth), so no plaintext is ever retained
+- **No plaintext**: only the SHA-256 hex hash is stored; Reset is an explicit user recovery action that clears lock state and restarts the backoff schedule (logged as `Reenable: state cleared…`, distinct from passphrase auth), so no plaintext is ever retained
 
 ### Implementation Details
 
@@ -237,7 +237,7 @@ The auto-unlock feature is an **exponential backoff schedule**, not a single tim
 
 **Enabled by default** (V2). The first unlock window opens at the base interval (60 min) of **awake time** after lock, then the interval doubles each window: 60 min → 2 h → 4 h → 8 h … capped at 24 h. `Instant` clocks pause during sleep, so the schedule counts awake-time only (§2.4) — a locked-then-slept machine does not unlock on wall-clock.
 
-**Reset rule (§2.3, the linchpin):** the backoff counter advances across a locked stretch. Auto-lock re-engagements and fired windows do NOT reset it — **only a successful passphrase unlock resets the schedule to the base interval**. Without this rule, every 180 s auto-lock re-engagement would restart the schedule at 60 min and the doubling would never engage. The tray Reset menu additionally restarts the schedule by explicit user action (logged distinctly).
+**Reset rule (§2.3, the linchpin):** the backoff counter advances across a locked stretch. Auto-lock re-engagements and fired windows do NOT reset it — **only a successful passphrase unlock resets the schedule to the base interval**. Without this rule, every 180 s auto-lock re-engagement would restart the schedule at 60 min and the doubling would never engage. The tray Reenable menu additionally restarts the schedule by explicit user action (logged distinctly).
 
 **Window semantics (§2.2):** a window is `auto_lock_timeout` (default 180 s) of no input; any input resets the idle timer and extends it. The effective lifetime of the lock against stray input is the base interval.
 
