@@ -166,12 +166,18 @@ General → Login Items), the app starts automatically at login.
 **Tray App Features:**
 - Menu bar icon color showing lock status (locked: red, unlocked/disabled: white)
 - Desktop notifications for lock/unlock events
-- Menu items: Lock Input, Disable, Reset
+- Menu items: Lock Input, Disable, Reenable, Preferences…, Change Passphrase…, Reset…, Fix Accessibility Permission…, Check for Updates…, Help
 
 **Menu Items:**
 - **Lock Input**: Lock immediately (only functional when unlocked)
-- **Disable**: Temporarily disable HandsOff (stops event tap and hotkeys for minimal CPU usage)
-- **Reset**: Resets to Unlocked and restart everything
+- **Disable**: Temporarily disable HandsOff (stops event tap and hotkeys for minimal CPU usage). Use Reenable to resume.
+- **Reenable**: End a stuck Lock and restart input blocking; the unguarded escape hatch. Does NOT change your configuration.
+- **Preferences…**: Edit hotkeys, auto-lock timeout, and auto-unlock backoff without re-entering your passphrase.
+- **Change Passphrase…**: Capture a new passphrase via the same silent double-entry flow as setup.
+- **Reset…**: Wipe the configuration (double-confirmed) and restart the Setup Wizard. Recovery path for a forgotten passphrase — your current passphrase stops working.
+- **Fix Accessibility Permission…**: Clear a stale Accessibility grant and relaunch to re-request the permission (for when an app update invalidated the old grant).
+- **Check for Updates…**: Open the latest GitHub release page in your browser.
+- **Help**: Open an in-app window with status, menu guide, and troubleshooting.
 
 **Important:** When locked, ALL mouse clicks are blocked (including clicks on the tray menu). The menu becomes inaccessible and you must type your passphrase to unlock.
 

@@ -248,14 +248,14 @@ impl AppState {
         }
     }
 
-    /// User-initiated Reset: clears locked state and restarts the schedule
+    /// User-initiated Reenable (the old "Reset"): clears locked state and restarts the schedule
     /// from base. This is an intentional recovery action by the operator
     /// (menu access = past the guard), not a passphrase authentication event
     /// — logged as such.
     pub fn reset_all(&self) {
         let mut state = self.inner.lock();
 
-        log::info!("Reset: state cleared, backoff schedule restarted from base");
+        log::info!("Reenable: state cleared, backoff schedule restarted from base");
 
         state.last_input_time = Instant::now();
         state.is_locked = false;

@@ -779,7 +779,7 @@ impl HandsOffCore {
                     {
                         let _ = notify_rust::Notification::new()
                             .summary("HandsOff - Permissions Missing")
-                            .body("Accessibility permissions are missing.\nInput blocking stopped to restore normal keyboard and mouse.\n\nUse Reset menu to restart after granting permissions.")
+                            .body("Accessibility permissions are missing.\nInput blocking stopped to restore normal keyboard and mouse.\n\nUse Reenable menu to restart after granting permissions.")
                             .timeout(notify_rust::Timeout::Milliseconds(10000))
                             .show();
                     }
@@ -836,7 +836,7 @@ impl HandsOffCore {
                         {
                             let _ = notify_rust::Notification::new()
                                 .summary("HandsOff - Permissions Revoked")
-                                .body("Accessibility permissions were revoked.\nInput blocking stopped - your keyboard and mouse work normally now.\n\nRestore permissions and use Reset menu to restart.")
+                                .body("Accessibility permissions were revoked.\nInput blocking stopped - your keyboard and mouse work normally now.\n\nRestore permissions and use Reenable menu to restart.")
                                 .timeout(notify_rust::Timeout::Milliseconds(10000))
                                 .show();
                         }
