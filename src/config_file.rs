@@ -1102,4 +1102,54 @@ auto_unlock_mode = "backoff"
 
         let _ = fs::remove_file(&path);
     }
+
+    /// Real chmod-failure surface (issue #37 N7 Testing Decisions): on
+    /// macOS, `chflags uchg` sets UF_IMMUTABLE, which makes `chmod(2)`
+    /// return EPERM even for the file's owner — no root needed. A non-root
+    /// process can set and clear the flag, so this exercises the actual
+    /// hard-error branch of `load_from_path`'s repair (not just the
+    /// classifier's string match). Tests run on macos-latest CI.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn test_config_chmod_failure_real_eperm_is_hard_error() {
+        let path = temp_config_path();
+        let config = Config::new(&[0, 12, 15, 37], 120, false, 3600, None, None)
+            .expect("Failed to create config");
+        config.save_to_path(&path).expect("Failed to save");
+
+        // Loosen the mode so the repair branch is entered, then make the
+        // file immutable so the repair's chmod fails with EPERM.
+        let mut perms = fs::metadata(&path).unwrap().permissions();
+        perms.set_mode(0o644);
+        fs::set_permissions(&path, perms).unwrap();
+
+        let flags = std::process::Command::new("chflags")
+            .arg("uchg")
+            .arg(&path)
+            .status()
+            .expect("Failed to run chflags");
+        assert!(flags.success(), "chflags uchg must succeed as non-root");
+
+        let result = Config::load_from_path(&path);
+        assert!(result.is_err(), "chmod failure must be a hard error");
+        let err = result.unwrap_err();
+        let err_text = format!("{err:#}");
+        assert!(
+            err_text.contains("could not be repaired") && err_text.contains("chmod 600"),
+            "hard error must carry the chmod 600 instruction, got: {err_text}"
+        );
+        assert!(
+            Config::is_permission_repair_failure(&err),
+            "the REAL error must be classified as a permission-repair failure"
+        );
+
+        // Cleanup: clear the flag so remove_file works.
+        let cleared = std::process::Command::new("chflags")
+            .arg("nouchg")
+            .arg(&path)
+            .status()
+            .expect("Failed to run chflags");
+        assert!(cleared.success(), "chflags nouchg must succeed");
+        let _ = fs::remove_file(&path);
+    }
 }
