@@ -67,10 +67,7 @@ pub enum StartupFlow {
 /// Pure startup-routing decision (issue #29), unit-tested in
 /// `tests/wizard_tests.rs`. `config_valid` is `validate_config_strict()`'s
 /// result; `has_accessibility_permissions` the authoritative full check.
-pub fn startup_flow(
-    config_valid: bool,
-    has_accessibility_permissions: bool,
-) -> StartupFlow {
+pub fn startup_flow(config_valid: bool, has_accessibility_permissions: bool) -> StartupFlow {
     if !config_valid {
         StartupFlow::Wizard
     } else if !has_accessibility_permissions {
@@ -152,13 +149,42 @@ pub fn wizard_outcome_to_config(outcome: &WizardOutcome) -> Result<Config> {
     crate::setup::assemble_and_save_config(&outcome.setup)
 }
 
+// ---------------------------------------------------------------------------
+// Single-dialog invariant plumbing (issue #36).
+//
+// The tray's session loop does not drain the menu event channel while a
+// dialog owns the nested run_return. The dialog drains it instead: clicks on
+// window-flow items are consumed (the dialog re-fronts), clicks on
+// immediate-action items are deferred here and returned to the tray at the
+// next session start, so e.g. a Lock click during a dialog still lands.
+// ---------------------------------------------------------------------------
+
+/// Menu-item IDs that open window flows (Preferences, Change Passphrase,
+/// Reset, Re-grant). Registered once by the tray after building the menu;
+/// dialogs consult it to distinguish duplicate-dialog clicks (consumed)
+/// from immediate-action clicks (deferred).
+pub static WINDOW_FLOW_MENU_IDS: parking_lot::Mutex<Vec<tray_icon::menu::MenuId>> =
+    parking_lot::Mutex::new(Vec::new());
+
+/// Immediate-action menu clicks absorbed while a dialog was open. The tray
+/// drains this at each session start and dispatches the actions itself
+/// (dialogs have no access to the core).
+pub static DEFERRED_MENU_EVENTS: parking_lot::Mutex<Vec<tray_icon::menu::MenuId>> =
+    parking_lot::Mutex::new(Vec::new());
+
+/// Drain immediate-action menu clicks deferred during a dialog (tray calls
+/// this at session start).
+pub fn take_deferred_menu_events() -> Vec<tray_icon::menu::MenuId> {
+    std::mem::take(&mut *DEFERRED_MENU_EVENTS.lock())
+}
+
 #[cfg(target_os = "macos")]
 mod macos {
     use super::{LoginItemResult, WizardOutcome};
-    use crate::constants::{
-        AUTO_LOCK_MAX_SECONDS, AUTO_LOCK_MIN_SECONDS, AUTO_LOCK_DEFAULT_SECONDS,
-    };
     use crate::config_file::Config;
+    use crate::constants::{
+        AUTO_LOCK_DEFAULT_SECONDS, AUTO_LOCK_MAX_SECONDS, AUTO_LOCK_MIN_SECONDS,
+    };
     use crate::setup::{self, SetupOutcome};
     use anyhow::{anyhow, Result};
     use objc2::rc::Retained;
@@ -166,13 +192,14 @@ mod macos {
     use objc2::{declare_class, msg_send, msg_send_id, mutability, ClassType, DeclaredClass};
     use objc2_app_kit::{
         NSAlert, NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSButton,
-        NSControlStateValueOn, NSModalResponseOK, NSStackView, NSStackViewGravity, NSTextField,
-        NSUserInterfaceLayoutOrientation, NSView, NSWindow, NSWindowDelegate, NSWindowStyleMask,
+        NSControlStateValueOn, NSEvent, NSEventModifierFlags, NSEventType, NSModalResponseOK,
+        NSStackView, NSStackViewGravity, NSTextField, NSUserInterfaceLayoutOrientation, NSView,
+        NSWindow, NSWindowDelegate, NSWindowStyleMask,
     };
     use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
-    use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
     use std::cell::RefCell;
     use std::rc::Rc;
+    use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
     use std::sync::Arc;
 
     const WINDOW_W: f64 = 480.0;
@@ -186,6 +213,10 @@ mod macos {
     const TAG_RESET: isize = 4;
     /// Explicit "Capture Passphrase" button: capture starts only on click.
     const TAG_CAPTURE: isize = 5;
+    /// Dismiss button on the Change Passphrase success/failure state (#36).
+    const TAG_OK: isize = 6;
+    /// Cancel button on the Change Passphrase waiting state (#36).
+    const TAG_CANCEL: isize = 7;
 
     // Step numbers.
     const STEP_PERMISSION: u8 = 0;
@@ -206,8 +237,7 @@ mod macos {
     /// grant (checkbox ON, checks failing — TCC row pinned to an old
     /// CDHash) NEVER lands, so a sustained failure is the only
     /// detectable signature.
-    const STALE_GRANT_TIMEOUT: std::time::Duration =
-        std::time::Duration::from_secs(30);
+    const STALE_GRANT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
     const STALE_GRANT_TEXT: &str = "Still stuck? If the HandsOff checkbox in System Settings > \
          Privacy & Security > Accessibility is already ticked but this window keeps waiting, \
@@ -225,6 +255,16 @@ mod macos {
         /// user action — never automatically on permission grant (keyboard
         /// lockout incident 2026-10-01).
         capture_clicked: AtomicBool,
+        /// OK clicked on a terminal state (Change Passphrase success/failure).
+        ok_clicked: AtomicBool,
+        /// Cancel clicked (Change Passphrase waiting phase).
+        cancel_clicked: AtomicBool,
+        /// Window close requested (any flow). The dialogs are raw NSWindows,
+        /// so tao's CloseRequested never fires for them; the close arrives
+        /// via the window delegate's `windowShouldClose:`, which sets this
+        /// flag — polled in EVERY flow phase so closing a window always
+        /// terminates its flow (issue #36 phase-0 close wedge).
+        close_requested: AtomicBool,
         step: AtomicU8,
         /// Progress text for the status label (dots), set from the tap callback.
         status: parking_lot::Mutex<String>,
@@ -243,10 +283,32 @@ mod macos {
                 finish_clicked: AtomicBool::new(false),
                 reset_clicked: AtomicBool::new(false),
                 capture_clicked: AtomicBool::new(false),
+                ok_clicked: AtomicBool::new(false),
+                cancel_clicked: AtomicBool::new(false),
+                close_requested: AtomicBool::new(false),
                 step: AtomicU8::new(STEP_PERMISSION),
                 status: parking_lot::Mutex::new(String::new()),
                 waiting_since: parking_lot::Mutex::new(None),
             })
+        }
+
+        /// Clear every per-flow signal so a flow behaves identically whether
+        /// launched fresh or right after another flow (issue #36 story 16).
+        /// SIGNALS is process-global and shared across flows (wizard,
+        /// re-grant, preferences, change-passphrase): a click landing between
+        /// consumption and flow end would otherwise leak into the next flow
+        /// (e.g. a stale capture click auto-starting capture).
+        fn begin_flow(&self) {
+            self.grant_clicked.store(false, Ordering::SeqCst);
+            self.commit_clicked.store(false, Ordering::SeqCst);
+            self.finish_clicked.store(false, Ordering::SeqCst);
+            self.reset_clicked.store(false, Ordering::SeqCst);
+            self.capture_clicked.store(false, Ordering::SeqCst);
+            self.ok_clicked.store(false, Ordering::SeqCst);
+            self.cancel_clicked.store(false, Ordering::SeqCst);
+            self.close_requested.store(false, Ordering::SeqCst);
+            *self.status.lock() = String::new();
+            *self.waiting_since.lock() = None;
         }
     }
 
@@ -285,6 +347,8 @@ mod macos {
                     TAG_FINISH => SIGNALS.finish_clicked.store(true, Ordering::SeqCst),
                     TAG_RESET => SIGNALS.reset_clicked.store(true, Ordering::SeqCst),
                     TAG_CAPTURE => SIGNALS.capture_clicked.store(true, Ordering::SeqCst),
+                    TAG_OK => SIGNALS.ok_clicked.store(true, Ordering::SeqCst),
+                    TAG_CANCEL => SIGNALS.cancel_clicked.store(true, Ordering::SeqCst),
                     _ => {}
                 }
             }
@@ -295,9 +359,15 @@ mod macos {
             // pump, so CloseRequested cannot be processed until capture
             // ends — but AppKit dispatch (this delegate callback) still runs
             // during the pump, so the abort flag is seen within one 100 ms
-            // pump slice.
+            // pump slice. `close_requested` additionally lets the flow loops
+            // observe the close OUTSIDE capture (issue #36: closing the
+            // Change Passphrase dialog while it waits for the capture button
+            // previously wedged the app — the flag was only polled during
+            // capture, and the dead tao CloseRequested branch never fired
+            // for these raw NSWindows).
             #[method(windowShouldClose:)]
             fn window_should_close(&self, _sender: &NSWindow) -> bool {
+                SIGNALS.close_requested.store(true, Ordering::SeqCst);
                 setup::request_capture_abort();
                 true
             }
@@ -311,6 +381,75 @@ mod macos {
             .status();
     }
 
+    /// Stop the AppKit run loop NOW instead of on the next accidental wake.
+    ///
+    /// `-[NSApplication stop:]` only takes effect when the run loop next
+    /// processes an event; with tao's WaitUntil cadence the stop could lag
+    /// (the Change Passphrase dialog took seconds to appear after its menu
+    /// click — issue #36). Posting a dummy app-defined event forces an
+    /// immediate wake: the technique tao's own `stop_app_on_panic` uses
+    /// (see https://stackoverflow.com/questions/48041279).
+    fn stop_run_loop(app: &NSApplication) {
+        app.stop(None);
+        let dummy = unsafe {
+            NSEvent::otherEventWithType_location_modifierFlags_timestamp_windowNumber_context_subtype_data1_data2(
+                NSEventType::ApplicationDefined,
+                NSPoint::new(0.0, 0.0),
+                NSEventModifierFlags::empty(),
+                0.0,
+                0,
+                None,
+                0,
+                0,
+                0,
+            )
+        };
+        if let Some(event) = dummy {
+            app.postEvent_atStart(&event, true);
+        }
+    }
+
+    /// Single-dialog invariant (issue #36): while a dialog owns the nested
+    /// `run_return`, the tray's session loop is NOT draining the
+    /// process-global menu event channel, so clicks would pile up and each
+    /// window-flow click would spawn a duplicate dialog after this flow
+    /// ends. Drain them here instead:
+    ///
+    /// - Window-flow clicks (Preferences / Change Passphrase / Reset /
+    ///   Re-grant) are CONSUMED: the live dialog comes to front (the visible
+    ///   "a dialog is open" response, story 4) and the click is never queued
+    ///   into a later flow.
+    /// - Immediate-action clicks (Lock, Disable, Reenable, Check Updates)
+    ///   are DEFERRED to the tray's next session start (never swallowed —
+    ///   issue requirement 2), so e.g. a Lock click during the dialog still
+    ///   lands right after it closes.
+    fn absorb_menu_clicks(
+        window: &NSWindow,
+        app: &NSApplication,
+        window_flow_ids: &[tray_icon::menu::MenuId],
+    ) {
+        let mut absorbed = false;
+        while let Ok(event) = tray_icon::menu::MenuEvent::receiver().try_recv() {
+            if window_flow_ids.contains(&event.id) {
+                absorbed = true;
+                log::info!(
+                    "Window-flow menu click {:?} while a dialog is open — dialog brought to front",
+                    event.id
+                );
+            } else {
+                log::info!(
+                    "Menu click {:?} while a dialog is open — deferred to after the dialog closes",
+                    event.id
+                );
+                super::DEFERRED_MENU_EVENTS.lock().push(event.id);
+            }
+        }
+        if absorbed {
+            window.makeKeyAndOrderFront(None);
+            unsafe { app.activateIgnoringOtherApps(true) };
+        }
+    }
+
     /// Click the reset escape hatch: confirm, run `tccutil reset
     /// Accessibility <TCC_SERVICE>`, then relaunch the app. The reset is
     /// the same action the issue verified live as the remediation; the
@@ -319,13 +458,10 @@ mod macos {
     /// returns (relaunch exits the process); on cancel it falls through
     /// so the wizard keeps waiting.
     fn reset_permission_and_relaunch() {
-        let mtm = MainThreadMarker::new()
-            .expect("reset dialog must run on main thread");
+        let mtm = MainThreadMarker::new().expect("reset dialog must run on main thread");
         let alert = unsafe { NSAlert::new(mtm) };
         unsafe {
-            alert.setMessageText(&NSString::from_str(
-                "Reset Accessibility permission?",
-            ));
+            alert.setMessageText(&NSString::from_str("Reset Accessibility permission?"));
             alert.setInformativeText(&NSString::from_str(
                 "This removes HandsOff's (stale) Accessibility entry in System \
                  Settings, then relaunches HandsOff so it can request the \
@@ -408,7 +544,10 @@ mod macos {
                 std::process::exit(0);
             }
             Err(e) => {
-                log::error!("Relaunch failed ({}); exiting so the user can start HandsOff manually", e);
+                log::error!(
+                    "Relaunch failed ({}); exiting so the user can start HandsOff manually",
+                    e
+                );
                 std::process::exit(1);
             }
         }
@@ -428,9 +567,8 @@ mod macos {
         use objc2::{class, msg_send, msg_send_id};
 
         let some_class = class!(SMAppService);
-        let service: Retained<objc2::runtime::AnyObject> = unsafe {
-            msg_send_id![some_class, mainAppService]
-        };
+        let service: Retained<objc2::runtime::AnyObject> =
+            unsafe { msg_send_id![some_class, mainAppService] };
         // NSError** out-param: declare as AnyObject to stay in the runtime's
         // type world; nil on success.
         let mut error: *mut objc2::runtime::AnyObject = std::ptr::null_mut();
@@ -465,9 +603,8 @@ mod macos {
         let app = NSApplication::sharedApplication(mtm);
         app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
 
-        let style = NSWindowStyleMask::Titled
-            | NSWindowStyleMask::Closable
-            | NSWindowStyleMask::Resizable;
+        let style =
+            NSWindowStyleMask::Titled | NSWindowStyleMask::Closable | NSWindowStyleMask::Resizable;
         let frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(WINDOW_W, WINDOW_H));
         let window = unsafe {
             NSWindow::initWithContentRect_styleMask_backing_defer(
@@ -556,8 +693,7 @@ mod macos {
 
         // Close button aborts an in-flight capture (see windowShouldClose:).
         {
-            let delegate =
-                ProtocolObject::<dyn NSWindowDelegate>::from_retained(target.clone());
+            let delegate = ProtocolObject::<dyn NSWindowDelegate>::from_retained(target.clone());
             window.setDelegate(Some(&delegate));
         }
 
@@ -646,7 +782,6 @@ mod macos {
         unsafe { app.activateIgnoringOtherApps(true) };
 
         // ---- Drive the flow through the CALLER's tao event loop ----
-        use tao::event::Event;
         use tao::platform::run_return::EventLoopExtRunReturn;
 
         // Permission polling on a background thread: fast lightweight
@@ -661,10 +796,10 @@ mod macos {
         let perm_granted = Arc::new(AtomicBool::new(false));
         let perm_stale = Arc::new(AtomicBool::new(false));
         // SIGNALS is process-global and shared across flows (wizard,
-        // re-grant, preferences): clear the stale-detection clock so a
-        // previous flow's instant can't make this flow's reset button
-        // appear before the user even clicks Grant.
-        *SIGNALS.waiting_since.lock() = None;
+        // re-grant, preferences, change-passphrase): clear every per-flow
+        // signal so stale clicks/close flags from a previous flow cannot
+        // leak into this one (issue #36 story 16).
+        SIGNALS.begin_flow();
         std::thread::spawn({
             let perm_granted = perm_granted.clone();
             let perm_stale = perm_stale.clone();
@@ -692,9 +827,7 @@ mod macos {
             }
         });
 
-        let outcome_slot = std::rc::Rc::new(std::cell::RefCell::new(
-            None::<Result<WizardOutcome>>,
-        ));
+        let outcome_slot = std::rc::Rc::new(std::cell::RefCell::new(None::<Result<WizardOutcome>>));
         let outcome = outcome_slot.clone();
         let mut first_keys: Option<Vec<u32>> = None;
         let mut capture_offered = false;
@@ -713,13 +846,15 @@ mod macos {
                 std::time::Instant::now() + std::time::Duration::from_millis(100),
             );
 
-            if let Event::WindowEvent {
-                event: tao::event::WindowEvent::CloseRequested,
-                ..
-            } = &event
-            {
+            let _ = &event; // raw NSWindow: tao events carry no useful signal
+
+            // Closing the window ends the flow in EVERY phase (issue #36):
+            // the delegate's windowShouldClose: sets this flag (tao
+            // CloseRequested never fires for these raw NSWindows).
+            if SIGNALS.close_requested.load(Ordering::SeqCst) {
+                window.orderOut(None);
                 *outcome.borrow_mut() = Some(Err(anyhow!("Setup wizard closed before completing")));
-                app.stop(None);
+                stop_run_loop(&app);
                 return;
             }
 
@@ -769,8 +904,10 @@ mod macos {
             // failed capture can be retried from the button.
             if step == STEP_CAPTURE {
                 if perm_granted.load(Ordering::SeqCst) && SIGNALS.capture_clicked.swap(false, Ordering::SeqCst) {
-                    // UI out of the way for capture; dots go to the status label.
-                    instr_label.setHidden(true);
+                    // Capture UI: status label shows entry + dots + countdown;
+                    // the instruction label doubles as the feedback line
+                    // (named reserved keys, too-short warnings, entry
+                    // accepted) — issue #36 capture feedback.
                     set_status("");
                     capture_btn.setHidden(true);
 
@@ -780,34 +917,57 @@ mod macos {
                     // Cancel path: closing the window sets the abort flag
                     // via windowShouldClose:, ending the capture and
                     // restoring keyboard input.
-                    let first = match capture_with_status(&status_label) {
+                    let first = match capture_with_status("Entry 1 of 2", &status_label, &instr_label) {
                         Ok(k) => k,
                         Err(e) => {
-                            set_status(&format!(
-                                "Capture failed: {e} — click the button to retry."
-                            ));
+                            if SIGNALS.close_requested.load(Ordering::SeqCst) {
+                                window.orderOut(None);
+                                *outcome.borrow_mut() =
+                                    Some(Err(anyhow!("Setup wizard closed before completing")));
+                                stop_run_loop(&app);
+                                return;
+                            }
+                            unsafe {
+                                instr_label.setStringValue(&NSString::from_str(&format!(
+                                    "Capture failed: {e} — click the button to retry."
+                                )))
+                            };
                             capture_btn.setHidden(false);
                             return;
                         }
                     };
-                    set_status("Re-enter the same passphrase to confirm…");
+                    unsafe {
+                        instr_label.setStringValue(&NSString::from_str(
+                            "First entry accepted — re-enter the same Passphrase to confirm.",
+                        ))
+                    };
 
-                    let second = match capture_with_status(&status_label) {
+                    let second = match capture_with_status("Entry 2 of 2", &status_label, &instr_label) {
                         Ok(k) => k,
                         Err(e) => {
-                            set_status(&format!(
-                                "Capture failed: {e} — click the button to retry."
-                            ));
+                            if SIGNALS.close_requested.load(Ordering::SeqCst) {
+                                window.orderOut(None);
+                                *outcome.borrow_mut() =
+                                    Some(Err(anyhow!("Setup wizard closed before completing")));
+                                stop_run_loop(&app);
+                                return;
+                            }
+                            unsafe {
+                                instr_label.setStringValue(&NSString::from_str(&format!(
+                                    "Capture failed: {e} — click the button to retry."
+                                )))
+                            };
                             capture_btn.setHidden(false);
                             return;
                         }
                     };
 
                     if first != second {
+                        window.orderOut(None);
                         *outcome.borrow_mut() = Some(Err(anyhow!(
                             "Passphrases did not match — restart the wizard to try again"
                         )));
-                        app.stop(None);
+                        stop_run_loop(&app);
                         return;
                     }
                     SIGNALS.step.store(STEP_FORM, Ordering::SeqCst);
@@ -840,12 +1000,17 @@ mod macos {
                     capture_btn.setHidden(false);
                     unsafe {
                         instr_label.setHidden(false);
-                        instr_label.setStringValue(&NSString::from_str(
+                        instr_label.setStringValue(&NSString::from_str(&format!(
                             "Accessibility granted. Click “Capture Passphrase” when ready.\n\n\
-                             Your keyboard will be captured until you type a passphrase and press \
-                             Enter (max 2 min). Nothing you type reaches other apps during capture. \
-                             Close this window to cancel.",
-                        ))
+                             Your keyboard will be captured until you type a Passphrase and press \
+                             Enter (max {}s). Nothing you type reaches other apps during capture. \
+                             Close this window to cancel.\n\n{}",
+                            setup::CAPTURE_TIMEOUT_SECS,
+                            setup::capture_rules_text(
+                                crate::constants::DEFAULT_LOCK_KEYCODE,
+                                crate::constants::DEFAULT_TALK_KEYCODE,
+                            ),
+                        )))
                     };
                     set_status("");
                     return;
@@ -886,8 +1051,9 @@ mod macos {
                 let keys = match &first_keys {
                     Some(k) => k.clone(),
                     None => {
+                        window.orderOut(None);
                         *outcome.borrow_mut() = Some(Err(anyhow!("No passphrase captured")));
-                        app.stop(None);
+                        stop_run_loop(&app);
                         return;
                     }
                 };
@@ -901,8 +1067,10 @@ mod macos {
                 match build_outcome(keys, auto_lock_val, auto_unlock_val, lock, talk, login_item)
                 {
                     Ok(o) => {
+                        // Window leak fix (issue #36): hide on every exit.
+                        window.orderOut(None);
                         *outcome.borrow_mut() = Some(Ok(o));
-                        app.stop(None);
+                        stop_run_loop(&app);
                     }
                     Err(e) => {
                         window.setTitle(&NSString::from_str(&format!("HandsOff Setup — {}", e)));
@@ -982,6 +1150,13 @@ mod macos {
         unsafe { reset_btn.setTag(TAG_RESET) };
         reset_btn.setHidden(true);
 
+        // Close button must terminate the flow (issue #36): the delegate's
+        // windowShouldClose: sets close_requested, which the loop polls.
+        {
+            let delegate = ProtocolObject::<dyn NSWindowDelegate>::from_retained(target.clone());
+            window.setDelegate(Some(&delegate));
+        }
+
         let status_label: Retained<NSTextField> =
             unsafe { NSTextField::labelWithString(&NSString::from_str(""), mtm) };
         unsafe { status_label.setFrameSize(NSSize::new(WINDOW_W - 60.0, 20.0)) };
@@ -1029,7 +1204,6 @@ mod macos {
         // crash this path. activateIgnoringOtherApps exists since 10.0.
         unsafe { app.activateIgnoringOtherApps(true) };
 
-        use tao::event::Event;
         use tao::platform::run_return::EventLoopExtRunReturn;
 
         // Same poll primitive the wizard uses (see run_wizard_macos): fast
@@ -1040,10 +1214,10 @@ mod macos {
         // to an old CDHash; waiting longer can never succeed).
         let perm_granted = Arc::new(AtomicBool::new(false));
         let perm_stale = Arc::new(AtomicBool::new(false));
-        // SIGNALS is process-global and shared across flows: clear the
-        // stale-detection clock so a previous flow's instant can't make
-        // the reset button appear before Grant is clicked.
-        *SIGNALS.waiting_since.lock() = None;
+        // SIGNALS is process-global and shared across flows: clear every
+        // per-flow signal so a previous flow's state can't leak into this
+        // one (issue #36 story 16).
+        SIGNALS.begin_flow();
         std::thread::spawn({
             let perm_granted = perm_granted.clone();
             let perm_stale = perm_stale.clone();
@@ -1081,15 +1255,21 @@ mod macos {
                 std::time::Instant::now() + std::time::Duration::from_millis(100),
             );
 
-            if let Event::WindowEvent {
-                event: tao::event::WindowEvent::CloseRequested,
-                ..
-            } = &event
-            {
+            let _ = &event; // raw NSWindow: tao events carry no useful signal
+
+            // Single-dialog invariant (issue #36): menu clicks queued while
+            // this window owns the loop re-front it instead of stacking.
+            absorb_menu_clicks(&window, &app, &super::WINDOW_FLOW_MENU_IDS.lock());
+
+            // Close ends the flow in every phase (issue #36); the delegate's
+            // windowShouldClose: sets the flag (tao CloseRequested never
+            // fires for these raw NSWindows).
+            if SIGNALS.close_requested.load(Ordering::SeqCst) {
+                window.orderOut(None);
                 *outcome.borrow_mut() = Some(Err(anyhow!(
                     "Permission window closed before the Accessibility grant completed"
                 )));
-                app.stop(None);
+                stop_run_loop(&app);
                 return;
             }
 
@@ -1135,8 +1315,9 @@ mod macos {
             // Poll resolves → done. The tray re-runs its startup permission
             // check after this returns, so no further bookkeeping is needed.
             if perm_granted.load(Ordering::SeqCst) {
+                window.orderOut(None);
                 *outcome.borrow_mut() = Some(Ok(()));
-                app.stop(None);
+                stop_run_loop(&app);
                 return;
             }
 
@@ -1160,65 +1341,97 @@ mod macos {
     }
 
     /// Run one headless capture pass on the main thread, mirroring progress
-    /// into the status label (dots, countdown ticks).
+    /// into the status label (entry prefix, dots, countdown) and transient
+    /// messages into the feedback label (named reserved keys, too-short
+    /// warnings, restarts).
     ///
     /// Called from inside the tao loop callback: the nested CFRunLoop pump
     /// in `capture_passphrase_headless` yields in 100 ms slices so AppKit
     /// keeps servicing its events while the tap is live. The `on_event`
     /// closure therefore runs on the MAIN thread and may touch AppKit
-    /// directly — the label is the only progress surface (the loop callback
-    /// is blocked inside the nested pump and cannot repaint).
-    fn capture_with_status(status_label: &Retained<NSTextField>) -> Result<Vec<u32>> {
-        // Retained clone is refcounted — no lifetime tie to the caller.
-        let label: Retained<NSTextField> = status_label.clone();
+    /// directly (the loop callback is blocked inside the nested pump and
+    /// cannot repaint).
+    ///
+    /// Silent model (ADR 0002, issue #36): feedback is dot COUNTS and named
+    /// states only — never characters. Per-entry state is local (not the
+    /// process-global SIGNALS), so consecutive entries and consecutive flows
+    /// never leak dots into each other.
+    fn capture_with_status(
+        entry_label: &str,
+        status_label: &Retained<NSTextField>,
+        feedback_label: &Retained<NSTextField>,
+    ) -> Result<Vec<u32>> {
+        // Retained clones are refcounted — no lifetime tie to the caller.
+        let status: Retained<NSTextField> = status_label.clone();
+        let feedback: Retained<NSTextField> = feedback_label.clone();
+        let entry = entry_label.to_string();
+        let dots = Rc::new(RefCell::new(String::new()));
+        let remaining = Rc::new(std::cell::Cell::new(setup::CAPTURE_TIMEOUT_SECS));
+
+        let set_label = |label: &NSTextField, text: &str| unsafe {
+            label.setStringValue(&NSString::from_str(text));
+        };
+        let render_status = {
+            let dots = dots.clone();
+            let remaining = remaining.clone();
+            let entry = entry.clone();
+            move || {
+                let d = dots.borrow();
+                format!("{}: {}  ({}s left)", entry, d, remaining.get())
+            }
+        };
+
+        set_label(&status, &render_status());
+        // Feedback label intentionally NOT cleared here: the caller sets it
+        // (e.g. "First entry accepted" stays visible into the second entry).
+
         setup::capture_passphrase_headless(
             crate::constants::DEFAULT_LOCK_KEYCODE,
             crate::constants::DEFAULT_TALK_KEYCODE,
             Some(Box::new(move |ev| {
                 // Main-thread only (nested CFRunLoop slices): AppKit is safe.
-                let text = match &ev {
+                match ev {
                     setup::CaptureEvent::Key => {
-                        let mut s = SIGNALS.status.lock();
-                        s.push('•');
-                        s.clone()
+                        dots.borrow_mut().push('•');
+                        set_label(&status, &render_status());
                     }
-                    setup::CaptureEvent::Reserved => {
-                        let mut s = SIGNALS.status.lock();
-                        s.push_str(" [reserved] ");
-                        s.clone()
+                    setup::CaptureEvent::Reserved(keycode) => {
+                        // Name the rejected key (issue #36): a bare flash
+                        // forced users to discover the reserved set by
+                        // trial and error.
+                        let text = match setup::reserved_key(
+                            keycode,
+                            crate::constants::DEFAULT_LOCK_KEYCODE,
+                            crate::constants::DEFAULT_TALK_KEYCODE,
+                        ) {
+                            Some(k) => format!("{} is reserved ({}).", k.name, k.why),
+                            None => "That key is reserved.".to_string(),
+                        };
+                        set_label(&feedback, &text);
                     }
                     setup::CaptureEvent::Restart => {
-                        SIGNALS.status.lock().clear();
-                        String::new()
+                        dots.borrow_mut().clear();
+                        set_label(&status, &render_status());
+                        set_label(&feedback, "Entry restarted.");
                     }
                     setup::CaptureEvent::Backspace => {
-                        let mut s = SIGNALS.status.lock();
-                        s.pop();
-                        s.clone()
+                        dots.borrow_mut().pop();
+                        set_label(&status, &render_status());
                     }
-                    setup::CaptureEvent::Tick(remaining) => {
-                        // Countdown: prefix the in-progress dots so the user
-                        // sees both progress and the time bound.
-                        let dots = SIGNALS.status.lock().clone();
-                        let dots = match dots.find(" (") {
-                            Some(i) => dots[..i].to_string(),
-                            None => dots,
-                        };
-                        format!("{dots} ({remaining}s left)")
+                    setup::CaptureEvent::Tick(r) => {
+                        remaining.set(r);
+                        set_label(&status, &render_status());
                     }
                     setup::CaptureEvent::TooShort(len) => {
-                        let mut s = SIGNALS.status.lock();
-                        *s = format!(
-                            "{} so far — need at least {} keys",
-                            len,
-                            crate::utils::MIN_PASSPHRASE_KEYS
+                        set_label(
+                            &feedback,
+                            &format!(
+                                "{} keys so far — need at least {}.",
+                                len,
+                                crate::utils::MIN_PASSPHRASE_KEYS
+                            ),
                         );
-                        s.clone()
                     }
-                };
-                let ns = NSString::from_str(&text);
-                unsafe {
-                    label.setStringValue(&ns);
                 }
             })),
         )
@@ -1279,8 +1492,8 @@ mod macos {
     pub(super) fn run_preferences_macos(
         event_loop: &mut tao::event_loop::EventLoop<super::WizardEvent>,
     ) -> Result<super::PreferencesOutcome> {
-        let mtm =
-            MainThreadMarker::new().ok_or_else(|| anyhow!("preferences must run on main thread"))?;
+        let mtm = MainThreadMarker::new()
+            .ok_or_else(|| anyhow!("preferences must run on main thread"))?;
 
         let app = NSApplication::sharedApplication(mtm);
         app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
@@ -1314,6 +1527,14 @@ mod macos {
                 type Ivars = ();
             }
 
+            // Supertrait of NSWindowDelegate; conformance is required before
+            // NSWindowDelegate can be implemented.
+            unsafe impl NSObjectProtocol for PrefsTarget {}
+
+            unsafe impl NSWindowDelegate for PrefsTarget {
+                // Only the optional `windowShouldClose:` is implemented (below).
+            }
+
             unsafe impl PrefsTarget {
                 #[method(buttonClicked:)]
                 fn button_clicked(&self, sender: &AnyObject) {
@@ -1321,6 +1542,15 @@ mod macos {
                     if tag == TAG_SAVE {
                         SIGNALS.grant_clicked.store(true, Ordering::SeqCst);
                     }
+                }
+
+                // Close ends the flow (issue #36): without this the loop
+                // kept polling a window that no longer existed (same wedge
+                // class as the Change Passphrase phase-0 close).
+                #[method(windowShouldClose:)]
+                fn window_should_close(&self, _sender: &NSWindow) -> bool {
+                    SIGNALS.close_requested.store(true, Ordering::SeqCst);
+                    true
                 }
             }
         );
@@ -1331,6 +1561,15 @@ mod macos {
             let t = mtm.alloc().set_ivars(());
             msg_send_id![super(t), initWithFrame: frame]
         };
+        // Close button must terminate the flow (issue #36): the delegate's
+        // windowShouldClose: sets close_requested, which the loop polls.
+        {
+            let delegate = ProtocolObject::<dyn NSWindowDelegate>::from_retained(target.clone());
+            window.setDelegate(Some(&delegate));
+        }
+        // Clear shared per-flow signals so a previous flow's state can't
+        // leak into this one (issue #36 story 16).
+        SIGNALS.begin_flow();
 
         let make_label = |text: &str, width: f64, height: f64| -> Retained<NSTextField> {
             let l = unsafe { NSTextField::labelWithString(&NSString::from_str(text), mtm) };
@@ -1376,9 +1615,8 @@ mod macos {
         unsafe { save_btn.setTag(TAG_SAVE) };
 
         if let Ok(cfg) = &current {
-            let prefill = |f: &NSTextField, v: String| unsafe {
-                f.setStringValue(&NSString::from_str(&v))
-            };
+            let prefill =
+                |f: &NSTextField, v: String| unsafe { f.setStringValue(&NSString::from_str(&v)) };
             if let Some(k) = &cfg.lock_hotkey {
                 prefill(&lock_key, k.clone());
             }
@@ -1427,7 +1665,6 @@ mod macos {
         window.makeKeyAndOrderFront(None);
         unsafe { app.activateIgnoringOtherApps(true) };
 
-        use tao::event::Event;
         use tao::platform::run_return::EventLoopExtRunReturn;
 
         let outcome_slot = std::rc::Rc::new(std::cell::RefCell::new(
@@ -1440,14 +1677,19 @@ mod macos {
                 std::time::Instant::now() + std::time::Duration::from_millis(100),
             );
 
-            if let Event::WindowEvent {
-                event: tao::event::WindowEvent::CloseRequested,
-                ..
-            } = &event
-            {
-                *outcome.borrow_mut() =
-                    Some(Err(anyhow!("Preferences closed without saving")));
-                app.stop(None);
+            let _ = &event; // raw NSWindow: tao events carry no useful signal
+
+            // Single-dialog invariant (issue #36): menu clicks queued while
+            // this window owns the loop re-front it instead of stacking.
+            absorb_menu_clicks(&window, &app, &super::WINDOW_FLOW_MENU_IDS.lock());
+
+            // Close ends the flow (issue #36); the delegate's
+            // windowShouldClose: sets the flag (tao CloseRequested never
+            // fires for these raw NSWindows).
+            if SIGNALS.close_requested.load(Ordering::SeqCst) {
+                window.orderOut(None);
+                *outcome.borrow_mut() = Some(Err(anyhow!("Preferences closed without saving")));
+                stop_run_loop(&app);
                 return;
             }
 
@@ -1485,12 +1727,16 @@ mod macos {
                 // window stays open (title shows the reason).
                 match validate_preflight(&edit) {
                     Ok(()) => {
+                        // Window leak fix (issue #36): hide on every exit.
+                        window.orderOut(None);
                         *outcome.borrow_mut() = Some(Ok(super::PreferencesOutcome { edit }));
-                        app.stop(None);
+                        stop_run_loop(&app);
                     }
                     Err(e) => {
-                        window
-                            .setTitle(&NSString::from_str(&format!("HandsOff Preferences — {}", e)));
+                        window.setTitle(&NSString::from_str(&format!(
+                            "HandsOff Preferences — {}",
+                            e
+                        )));
                     }
                 }
             }
@@ -1526,6 +1772,27 @@ mod macos {
     // with only the hash changed.
     // ------------------------------------------------------------------
 
+    /// Swap a dialog to its terminal state: message + OK button, capture
+    /// widgets hidden (issue #36 — success and failure are shown IN the
+    /// dialog; the user dismisses deliberately).
+    #[allow(clippy::too_many_arguments)]
+    fn show_terminal_state(
+        instr_label: &NSTextField,
+        capture_btn: &NSButton,
+        cancel_btn: &NSButton,
+        ok_btn: &NSButton,
+        status_label: &NSTextField,
+        feedback_label: &NSTextField,
+        message: &str,
+    ) {
+        unsafe { instr_label.setStringValue(&NSString::from_str(message)) };
+        capture_btn.setHidden(true);
+        cancel_btn.setHidden(true);
+        status_label.setHidden(true);
+        feedback_label.setHidden(true);
+        ok_btn.setHidden(false);
+    }
+
     pub(super) fn run_change_passphrase_macos(
         event_loop: &mut tao::event_loop::EventLoop<super::WizardEvent>,
     ) -> Result<Config> {
@@ -1535,21 +1802,16 @@ mod macos {
         let app = NSApplication::sharedApplication(mtm);
         app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
 
-        // Permission gate BEFORE any window exists: the capture tap needs
-        // Accessibility granted to HandsOff itself. This path is reachable
-        // exactly when TCC revoked the grant (post-update CDHash change);
-        // erroring before window creation avoids orphaning a window the
-        // caller's error path never closes (setReleasedWhenClosed(false)).
-        if !crate::input_blocking::check_accessibility_permissions() {
-            return Err(anyhow!(
-                "Accessibility permission is required to capture the new passphrase. \
-                 Grant it to HandsOff in System Settings > Privacy & Security > Accessibility, \
-                 then try again."
-            ));
-        }
+        // Wide enough that the instructions (including the reserved-key
+        // list) fit without clipping — issue #36.
+        const CP_WINDOW_W: f64 = 560.0;
+        const CP_WINDOW_H: f64 = 300.0;
 
         let style = NSWindowStyleMask::Titled | NSWindowStyleMask::Closable;
-        let frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(WINDOW_W, 180.0));
+        let frame = NSRect::new(
+            NSPoint::new(0.0, 0.0),
+            NSSize::new(CP_WINDOW_W, CP_WINDOW_H),
+        );
         let window = unsafe {
             NSWindow::initWithContentRect_styleMask_backing_defer(
                 mtm.alloc(),
@@ -1566,44 +1828,97 @@ mod macos {
             let t = mtm.alloc().set_ivars(());
             msg_send_id![super(t), initWithFrame: frame]
         };
-        // Close button aborts an in-flight capture (see windowShouldClose:).
+        // Close must terminate the flow in EVERY phase (issue #36 wedge
+        // fix): the delegate sets close_requested (and aborts an in-flight
+        // capture); the loop polls the flag in phase 0 and the terminal
+        // phases, capture_with_status observes the abort mid-capture.
         {
-            let delegate =
-                ProtocolObject::<dyn NSWindowDelegate>::from_retained(target.clone());
+            let delegate = ProtocolObject::<dyn NSWindowDelegate>::from_retained(target.clone());
             window.setDelegate(Some(&delegate));
         }
+        // Clear shared per-flow signals so a previous flow's state can't
+        // leak into this one (issue #36 story 16).
+        SIGNALS.begin_flow();
 
-        let instr_label: Retained<NSTextField> = unsafe {
-            NSTextField::labelWithString(
-                &NSString::from_str(
-                    "Type your new passphrase (silent — nothing appears). \
-                     Press Enter to commit, Backspace to delete, Escape to start over. \
-                     You will type it twice to confirm.",
-                ),
-                mtm,
-            )
+        let make_label = |text: &str, height: f64| -> Retained<NSTextField> {
+            let l = unsafe { NSTextField::labelWithString(&NSString::from_str(text), mtm) };
+            unsafe { l.setFrameSize(NSSize::new(CP_WINDOW_W - 60.0, height)) };
+            l
         };
-        unsafe { instr_label.setFrameSize(NSSize::new(WINDOW_W - 60.0, 60.0)) };
-        let status_label: Retained<NSTextField> =
-            unsafe { NSTextField::labelWithString(&NSString::from_str(""), mtm) };
-        unsafe { status_label.setFrameSize(NSSize::new(WINDOW_W - 60.0, 20.0)) };
+        let make_button = |title: &str, tag: isize| -> Retained<NSButton> {
+            let b = unsafe {
+                NSButton::buttonWithTitle_target_action(
+                    &NSString::from_str(title),
+                    Some(&*target),
+                    Some(objc2::sel!(buttonClicked:)),
+                    mtm,
+                )
+            };
+            unsafe { b.setTag(tag) };
+            b
+        };
 
+        let instr_label = make_label("", 170.0);
         // Explicit capture start (keyboard-lockout fix): capture runs only
         // after this click, never automatically on window open.
-        let capture_btn = unsafe {
-            NSButton::buttonWithTitle_target_action(
-                &NSString::from_str("Capture New Passphrase"),
-                Some(&*target),
-                Some(objc2::sel!(buttonClicked:)),
-                mtm,
-            )
-        };
-        unsafe { capture_btn.setTag(TAG_CAPTURE) };
+        let capture_btn = make_button("Capture New Passphrase", TAG_CAPTURE);
+        let cancel_btn = make_button("Cancel", TAG_CANCEL);
+        let ok_btn = make_button("OK", TAG_OK);
+        ok_btn.setHidden(true);
+        let status_label = make_label("", 20.0);
+        status_label.setHidden(true);
+        let feedback_label = make_label("", 20.0);
+        feedback_label.setHidden(true);
+
+        // Permission gate as an in-dialog failure state (issue #36: every
+        // failure shows its reason the same way). Previously this returned
+        // Err before any window existed; with the leak fix (orderOut on
+        // every exit) the window is safe to use as the failure surface.
+        let permission_ok = crate::input_blocking::check_accessibility_permissions();
+        // phase: 0 = waiting for the capture click; 2 = success shown,
+        // waiting for OK; 3 = failure shown, waiting for OK.
+        let mut phase;
+        let mut failure_reason = String::new();
+        if permission_ok {
+            phase = 0u8;
+            unsafe {
+                instr_label.setStringValue(&NSString::from_str(&format!(
+                    "Choose a new Passphrase: a sequence of physical keys. Nothing you type \
+                     is ever shown — dots mark progress only. You will type it twice to confirm.\n\n\
+                     {}\n\n\
+                     Click “Capture New Passphrase” when ready. Your keyboard is captured until \
+                     you press Enter (max {}s); nothing you type reaches other apps.",
+                    setup::capture_rules_text(
+                        crate::constants::DEFAULT_LOCK_KEYCODE,
+                        crate::constants::DEFAULT_TALK_KEYCODE,
+                    ),
+                    setup::CAPTURE_TIMEOUT_SECS,
+                )))
+            };
+        } else {
+            phase = 3u8;
+            failure_reason = "Accessibility permission is required to capture the new \
+                 Passphrase.\nGrant it to HandsOff in System Settings > Privacy & Security > \
+                 Accessibility, then try again.\nYour existing Passphrase is unchanged."
+                .to_string();
+            show_terminal_state(
+                &instr_label,
+                &capture_btn,
+                &cancel_btn,
+                &ok_btn,
+                &status_label,
+                &feedback_label,
+                &failure_reason,
+            );
+        }
 
         let content = unsafe {
             NSStackView::initWithFrame(
                 mtm.alloc(),
-                NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(WINDOW_W, 180.0)),
+                NSRect::new(
+                    NSPoint::new(0.0, 0.0),
+                    NSSize::new(CP_WINDOW_W, CP_WINDOW_H),
+                ),
             )
         };
         unsafe {
@@ -1613,7 +1928,10 @@ mod macos {
             for v in [
                 &*instr_label as *const NSTextField as *const NSView,
                 &*capture_btn as *const NSButton as *const NSView,
+                &*cancel_btn as *const NSButton as *const NSView,
+                &*ok_btn as *const NSButton as *const NSView,
                 &*status_label as *const NSTextField as *const NSView,
+                &*feedback_label as *const NSTextField as *const NSView,
             ] {
                 content.addView_inGravity(&*v, GRAVITY);
             }
@@ -1624,53 +1942,169 @@ mod macos {
         window.makeKeyAndOrderFront(None);
         unsafe { app.activateIgnoringOtherApps(true) };
 
-        use tao::event::Event;
         use tao::platform::run_return::EventLoopExtRunReturn;
 
         let outcome_slot = std::rc::Rc::new(std::cell::RefCell::new(None::<Result<Config>>));
         let outcome = outcome_slot.clone();
-        let mut phase = 0u8; // 0 = waiting for capture click, 1 = capturing
+        let mut saved: Option<Config> = None;
+        // Retained clone for the post-loop hide (the closure owns the
+        // original `window` from here on).
+        let window_for_cleanup = window.clone();
 
         event_loop.run_return(move |event, _, control_flow| {
             *control_flow = tao::event_loop::ControlFlow::WaitUntil(
                 std::time::Instant::now() + std::time::Duration::from_millis(100),
             );
 
-            if let Event::WindowEvent {
-                event: tao::event::WindowEvent::CloseRequested,
-                ..
-            } = &event
-            {
-                *outcome.borrow_mut() =
-                    Some(Err(anyhow!("Change Passphrase cancelled — config unchanged")));
-                app.stop(None);
-                return;
-            }
+            let _ = &event; // raw NSWindow: tao events carry no useful signal
 
-            if phase == 0 && SIGNALS.capture_clicked.swap(false, Ordering::SeqCst) {
-                phase = 1;
-                status_label.setHidden(false);
-                capture_btn.setHidden(true);
-                let saved: Result<Config> = (|| {
-                    let first = capture_with_status(&status_label)?;
+            // Single-dialog invariant (issue #36): menu clicks queued while
+            // this dialog owns the loop re-front it instead of stacking
+            // duplicate dialogs after the flow ends.
+            absorb_menu_clicks(&window, &app, &super::WINDOW_FLOW_MENU_IDS.lock());
+
+            let closed = SIGNALS.close_requested.load(Ordering::SeqCst);
+
+            if phase == 0 {
+                // Phase-0 close/cancel: the 2026-10-02 wedge — previously
+                // only capture observed the abort, so closing here spun
+                // forever. Now every exit path terminates the flow.
+                if closed || SIGNALS.cancel_clicked.swap(false, Ordering::SeqCst) {
+                    window.orderOut(None);
+                    *outcome.borrow_mut() = Some(Err(anyhow!(
+                        "Change Passphrase cancelled — config unchanged"
+                    )));
+                    stop_run_loop(&app);
+                    return;
+                }
+
+                if SIGNALS.capture_clicked.swap(false, Ordering::SeqCst) {
+                    capture_btn.setHidden(true);
+                    cancel_btn.setHidden(true);
+                    status_label.setHidden(false);
+                    feedback_label.setHidden(false);
                     unsafe {
-                        status_label.setStringValue(&NSString::from_str(
-                            "Re-enter the same passphrase to confirm…",
+                        instr_label.setStringValue(&NSString::from_str(
+                            "Capturing — type your new Passphrase, then press Enter.",
                         ))
                     };
-                    let second = capture_with_status(&status_label)?;
-                    if first != second {
-                        return Err(anyhow!(
-                            "Passphrases did not match — nothing was changed. \
-                             Try Change Passphrase again."
-                        ));
+
+                    // Double capture on the main thread (same contract as the
+                    // wizard): the nested CFRunLoop pump keeps AppKit
+                    // servicing; closing the window mid-capture aborts the
+                    // tap via windowShouldClose:. Every error path routes to
+                    // the in-dialog terminal state (or clean cancel when the
+                    // window was closed) — issue #36.
+                    macro_rules! capture_entry {
+                        ($label:expr) => {
+                            match capture_with_status($label, &status_label, &feedback_label) {
+                                Ok(k) => k,
+                                Err(e) => {
+                                    if SIGNALS.close_requested.load(Ordering::SeqCst) {
+                                        window.orderOut(None);
+                                        *outcome.borrow_mut() = Some(Err(anyhow!(
+                                            "Change Passphrase cancelled — config unchanged"
+                                        )));
+                                        stop_run_loop(&app);
+                                        return;
+                                    }
+                                    phase = 3;
+                                    failure_reason = format!(
+                                        "Capture failed: {e}\nThe Passphrase was NOT changed — \
+                                         your existing Passphrase still works."
+                                    );
+                                    show_terminal_state(
+                                        &instr_label,
+                                        &capture_btn,
+                                        &cancel_btn,
+                                        &ok_btn,
+                                        &status_label,
+                                        &feedback_label,
+                                        &failure_reason,
+                                    );
+                                    return;
+                                }
+                            }
+                        };
                     }
-                    crate::preferences::change_passphrase(&first)
-                })();
-                *outcome.borrow_mut() = Some(saved);
-                app.stop(None);
+
+                    let first = capture_entry!("Entry 1 of 2");
+                    unsafe {
+                        feedback_label.setStringValue(&NSString::from_str(
+                            "First entry accepted — re-enter the same Passphrase to confirm.",
+                        ))
+                    };
+                    let second = capture_entry!("Entry 2 of 2");
+
+                    if first != second {
+                        phase = 3;
+                        failure_reason = "Entries did not match — the Passphrase was NOT \
+                             changed. Your existing Passphrase still works."
+                            .to_string();
+                        show_terminal_state(
+                            &instr_label,
+                            &capture_btn,
+                            &cancel_btn,
+                            &ok_btn,
+                            &status_label,
+                            &feedback_label,
+                            &failure_reason,
+                        );
+                        return;
+                    }
+
+                    match crate::preferences::change_passphrase(&first) {
+                        Ok(cfg) => {
+                            saved = Some(cfg);
+                            phase = 2;
+                            show_terminal_state(
+                                &instr_label,
+                                &capture_btn,
+                                &cancel_btn,
+                                &ok_btn,
+                                &status_label,
+                                &feedback_label,
+                                "Passphrase changed — use the new Passphrase to unlock.",
+                            );
+                        }
+                        Err(e) => {
+                            phase = 3;
+                            failure_reason = format!(
+                                "Could not save the new Passphrase: {e}\nYour existing \
+                                 Passphrase still works."
+                            );
+                            show_terminal_state(
+                                &instr_label,
+                                &capture_btn,
+                                &cancel_btn,
+                                &ok_btn,
+                                &status_label,
+                                &feedback_label,
+                                &failure_reason,
+                            );
+                        }
+                    }
+                    return;
+                }
+            } else {
+                // Terminal phases: OK (or the window close button) dismisses.
+                if SIGNALS.ok_clicked.swap(false, Ordering::SeqCst) || closed {
+                    window.orderOut(None);
+                    *outcome.borrow_mut() = Some(if phase == 2 {
+                        Ok(saved.take().expect("success state holds the saved config"))
+                    } else {
+                        Err(anyhow!("{}", failure_reason))
+                    });
+                    stop_run_loop(&app);
+                    return;
+                }
             }
         });
+
+        // Belt and braces for the window-leak fix: no exit path may leave
+        // the window visible. (Retained clone: the loop closure owns the
+        // original.)
+        window_for_cleanup.orderOut(None);
 
         let result = outcome_slot
             .borrow_mut()
