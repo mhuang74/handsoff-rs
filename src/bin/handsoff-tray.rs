@@ -1369,7 +1369,7 @@ fn build_tooltip(
         "Unmute: press Ctrl+Cmd+Shift+{} (passes Space to apps)\n",
         core.get_talk_key_display()
     ));
-    tooltip.push_str("\n");
+    tooltip.push('\n');
 
     // Pointer to the full guide (menu summaries, lock/unlock instructions,
     // hotkeys, troubleshooting live in the Help window)

@@ -627,12 +627,11 @@ impl HandsOffCore {
                 continue;
             }
 
-            if state.should_reset_buffer() {
-                if state.buffer_len() > 0 {
+            if state.should_reset_buffer()
+                && state.buffer_len() > 0 {
                     info!("Resetting input buffer after timeout");
                     state.clear_buffer();
                 }
-            }
         });
     }
 
@@ -652,7 +651,7 @@ impl HandsOffCore {
                 check_count += 1;
 
                 // Log remaining time every 30 seconds (6 checks of 5 seconds each)
-                if check_count.is_multiple_of(6) {
+                if check_count % 6 == 0 {
                     if let Some(remaining_secs) = state.get_auto_lock_remaining_secs() {
                         let minutes = remaining_secs / 60;
                         let seconds = remaining_secs % 60;

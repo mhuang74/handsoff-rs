@@ -196,7 +196,7 @@ impl AppState {
     /// re-engages between windows.
     pub fn auto_unlock_interval_secs(base_secs: u64, window_index: u32) -> u64 {
         let doubled =
-            base_secs.saturating_mul(1u64 << window_index.min(u32::from(u64::BITS - 1) as u32));
+            base_secs.saturating_mul(1u64 << window_index.min(u64::BITS - 1));
         doubled.min(AUTO_UNLOCK_CEILING_SECONDS)
     }
 

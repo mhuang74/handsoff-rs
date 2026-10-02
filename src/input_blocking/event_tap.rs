@@ -71,12 +71,12 @@ type CFIndex = i64;
 // CGEventTapProxy is the first parameter to the callback - it's a different type from CGEventTapRef!
 // CGEventTapProxy is `struct __CGEventTapProxy*`, while CGEventTapRef is `struct __CFMachPort*`
 // Passing CGEventTapProxy to CGEventTapEnable() causes PAC failures on ARM64e
-type CGEventTapProxy = *mut c_void;
+pub(crate) type CGEventTapProxy = *mut c_void;
 
 // Raw FFI bindings for private functions
 #[link(name = "CoreGraphics", kind = "framework")]
 extern "C" {
-    fn CGEventTapCreate(
+    pub(crate) fn CGEventTapCreate(
         tap: u32,     // CGEventTapLocation
         place: u32,   // CGEventTapPlacement
         options: u32, // CGEventTapOptions
@@ -90,8 +90,8 @@ extern "C" {
         user_info: *mut c_void,
     ) -> CGEventTapRef;
 
-    fn CGEventTapEnable(tap: CGEventTapRef, enable: bool);
-    fn CGEventTapIsEnabled(tap: CGEventTapRef) -> bool;
+    pub(crate) fn CGEventTapEnable(tap: CGEventTapRef, enable: bool);
+    pub(crate) fn CGEventTapIsEnabled(tap: CGEventTapRef) -> bool;
 }
 
 // Query the system-wide idle time since the last input event of any kind

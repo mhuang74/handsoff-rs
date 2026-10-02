@@ -163,28 +163,9 @@ pub fn check_accessibility_permissions_lightweight() -> bool {
 /// Check accessibility permissions (full check with test tap creation).
 /// Use only at startup or for one-time validation — NOT for periodic monitoring.
 pub fn check_accessibility_permissions() -> bool {
-    use core_graphics::sys::CGEventTapRef;
     use std::ffi::c_void;
 
-    // CGEventTapProxy is the callback's first parameter - different type from CGEventTapRef
-    type CGEventTapProxy = *mut c_void;
-
-    #[link(name = "CoreGraphics", kind = "framework")]
-    extern "C" {
-        fn CGEventTapCreate(
-            tap: u32,
-            place: u32,
-            options: u32,
-            events_of_interest: u64,
-            callback: unsafe extern "C" fn(
-                proxy: CGEventTapProxy, // Note: CGEventTapProxy, NOT CGEventTapRef
-                event_type: u32,
-                event: core_graphics::sys::CGEventRef,
-                user_info: *mut c_void,
-            ) -> core_graphics::sys::CGEventRef,
-            user_info: *mut c_void,
-        ) -> CGEventTapRef;
-    }
+    use crate::input_blocking::event_tap::CGEventTapCreate;
 
     #[link(name = "ApplicationServices", kind = "framework")]
     extern "C" {
@@ -197,7 +178,7 @@ pub fn check_accessibility_permissions() -> bool {
     }
 
     unsafe extern "C" fn test_callback(
-        _proxy: CGEventTapProxy,
+        _proxy: *mut c_void,
         _event_type: u32,
         event: core_graphics::sys::CGEventRef,
         _user_info: *mut c_void,
