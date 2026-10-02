@@ -44,6 +44,18 @@ pub struct WizardOutcome {
     pub login_item: LoginItemResult,
 }
 
+/// One styled section of the Help window: bold heading + plain body, plus
+/// an optional two-column table (item name + description) rendered as
+/// aligned rows.
+#[derive(Debug, Clone)]
+pub struct HelpSection {
+    pub heading: String,
+    pub body: String,
+    /// Optional table: each row is (left-column item, description).
+    /// Rendered left-aligned with a fixed item column so descriptions line up.
+    pub table: Vec<(String, String)>,
+}
+
 /// What the tray should do at startup (issue #29): run normally, re-grant
 /// the Accessibility permission, or run the full Setup Wizard.
 ///
@@ -160,7 +172,7 @@ pub fn wizard_outcome_to_config(outcome: &WizardOutcome) -> Result<Config> {
 // ---------------------------------------------------------------------------
 
 /// Menu-item IDs that open window flows (Preferences, Change Passphrase,
-/// Reset, Re-grant). Registered once by the tray after building the menu;
+/// Reset, Re-grant, Help). Registered once by the tray after building the menu;
 /// dialogs consult it to distinguish duplicate-dialog clicks (consumed)
 /// from immediate-action clicks (deferred).
 pub static WINDOW_FLOW_MENU_IDS: parking_lot::Mutex<Vec<tray_icon::menu::MenuId>> =
@@ -192,11 +204,14 @@ mod macos {
     use objc2::{declare_class, msg_send, msg_send_id, mutability, ClassType, DeclaredClass};
     use objc2_app_kit::{
         NSAlert, NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSButton,
-        NSControlStateValueOn, NSEvent, NSEventModifierFlags, NSEventType, NSModalResponseOK,
-        NSStackView, NSStackViewGravity, NSTextField, NSUserInterfaceLayoutOrientation, NSView,
-        NSWindow, NSWindowDelegate, NSWindowStyleMask,
+        NSControlStateValueOn, NSEvent, NSEventModifierFlags, NSEventType, NSFont,
+        NSGridView, NSLayoutAttribute, NSModalResponseOK, NSScrollView, NSStackView,
+        NSStackViewGravity, NSTextAlignment, NSTextField, NSUserInterfaceLayoutOrientation,
+        NSView, NSWindow, NSWindowDelegate, NSWindowStyleMask,
     };
-    use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
+    use objc2_foundation::{
+        NSArray, MainThreadMarker, NSEdgeInsets, NSPoint, NSRect, NSSize, NSString,
+    };
     use std::cell::RefCell;
     use std::rc::Rc;
     use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
@@ -239,11 +254,13 @@ mod macos {
     /// detectable signature.
     const STALE_GRANT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
-    const STALE_GRANT_TEXT: &str = "Still stuck? If the HandsOff checkbox in System Settings > \
-         Privacy & Security > Accessibility is already ticked but this window keeps waiting, \
-         the permission is bound to an old copy of the app (this happens after an update).\n\n\
-         Click “Reset Permission & Restart…” to clear it — HandsOff relaunches and asks for \
-         the permission fresh. Your passphrase and settings are NOT affected.";
+    const STALE_GRANT_TEXT: &str = "Still stuck? If the HandsOff checkbox in System Settings\n\
+         > Privacy & Security > Accessibility is already ticked but\n\
+         this window keeps waiting, the permission is bound to an\n\
+         old copy of the app (this happens after an update).\n\n\
+         Click “Reset Permission & Restart…” to clear it —\n\
+         HandsOff relaunches and asks for the permission fresh.\n\
+         Your passphrase and settings are NOT affected.";
 
     /// Click signals shared between AppKit button targets and the wizard driver.
     struct WizardSignals {
@@ -662,7 +679,17 @@ mod macos {
         unsafe { finish_btn.setTag(TAG_FINISH) };
 
         let status_label = make_label("", WINDOW_W - 60.0, 20.0);
-        let instr_label = make_label("", WINDOW_W - 60.0, 40.0);
+        // Wrapping label: instruction text word-wraps at the content width
+        // (plain labels bleed off-window) and Auto Layout grows the stack
+        // vertically for multi-paragraph step-0 text.
+        let instr_label = unsafe {
+            NSTextField::wrappingLabelWithString(&NSString::from_str(""), mtm)
+        };
+        unsafe {
+            instr_label.setFrameSize(NSSize::new(WINDOW_W - 60.0, 40.0));
+            instr_label.setPreferredMaxLayoutWidth(WINDOW_W - 60.0);
+            instr_label.setMaximumNumberOfLines(0);
+        }
 
         // Issue #34 escape hatch: hidden until the poll concludes the grant
         // is stale (waited STALE_GRANT_TIMEOUT with zero progress).
@@ -766,12 +793,16 @@ mod macos {
         finish_btn.setHidden(true);
         unsafe {
             instr_label.setStringValue(&NSString::from_str(
-                "HandsOff blocks all keyboard and mouse input until you type your secret passphrase. \
-                 For that it needs the macOS Accessibility permission — granted to HandsOff itself, \
-                 not a terminal.\n\nClick the button, then tick the box for HandsOff in System Settings.\
-                 \n\nNote: HandsOff is unsigned. If macOS blocks it from launching, right-click \
-                 (or Control-click) HandsOff.app and choose Open, then confirm Open in the dialog. \
-                 You only need to do this once.",
+                "HandsOff blocks all keyboard and mouse input until you\n\
+                 type your secret passphrase. For that it needs the macOS\n\
+                 Accessibility permission — granted to HandsOff itself,\n\
+                 not a terminal.\n\n\
+                 Click the button, then tick the box for HandsOff in\n\
+                 System Settings.\n\n\
+                 Note: HandsOff is unsigned. If macOS blocks it from\n\
+                 launching, right-click (or Control-click) HandsOff.app and\n\
+                 choose Open, then confirm Open in the dialog. You only\n\
+                 need to do this once.",
             ))
         };
 
@@ -1164,17 +1195,28 @@ mod macos {
         status_label.setHidden(true);
 
         let instr_label: Retained<NSTextField> = unsafe {
-            NSTextField::labelWithString(
+            NSTextField::wrappingLabelWithString(
                 &NSString::from_str(
-                    "HandsOff was updated, so macOS needs the Accessibility permission \
-                     granted again to HandsOff itself — your passphrase and settings are \
-                     NOT affected.\n\nClick the button, then tick the box for HandsOff in \
-                     System Settings > Privacy & Security > Accessibility.",
+                    "HandsOff was updated, so macOS needs the Accessibility \
+                     permission granted again to HandsOff itself — your \
+                     passphrase and settings are NOT affected.\n\nBecause \
+                     each release is signed differently, the OLD permission \
+                     entry no longer matches this build. In System Settings \
+                     > Privacy & Security > Accessibility, first REMOVE the \
+                     old HandsOff entry (select it, click the − button), \
+                     then click the button below and ADD HandsOff back \
+                     (click +, choose HandsOff).",
                 ),
                 mtm,
             )
         };
-        unsafe { instr_label.setFrameSize(NSSize::new(WINDOW_W - 60.0, 80.0)) };
+        unsafe {
+            // Word-wrapping label: long lines wrap at the content width
+            // instead of bleeding off-window (NSTextField labels never wrap).
+            instr_label.setFrameSize(NSSize::new(WINDOW_W - 60.0, 180.0));
+            instr_label.setPreferredMaxLayoutWidth(WINDOW_W - 60.0);
+            instr_label.setMaximumNumberOfLines(0);
+        };
 
         let content = unsafe {
             NSStackView::initWithFrame(
@@ -1307,7 +1349,7 @@ mod macos {
                 unsafe {
                     instr_label.setStringValue(&ns);
                     status_label.setStringValue(&NSString::from_str(
-                        "Permission appears granted but is stale (bound to an old copy of the app).",
+                        "Permission appears granted but is stale (old copy of the app).",
                     ));
                 }
                 return;
@@ -1338,6 +1380,276 @@ mod macos {
             .borrow_mut()
             .take()
             .unwrap_or_else(|| Err(anyhow!("Permission re-grant event loop ended unexpectedly")));
+        result
+    }
+
+    /// Help window: a plain read-only NSWindow showing static styled
+    /// sections (bold headings + plain body). Same
+    /// primitives as the re-grant window — MainThreadMarker, Accessory
+    /// activation, shared `WizardTarget` delegate for close handling, and
+    /// the caller's tao loop via `run_return` — minus every interactive
+    /// element: no buttons, no poll thread, no per-flow signals beyond
+    /// close_requested.
+    ///
+    /// Returns when the window closes (always `Ok(())` unless window
+    /// creation fails).
+    pub(super) fn run_help_macos(
+        event_loop: &mut tao::event_loop::EventLoop<super::WizardEvent>,
+        sections: &[super::HelpSection],
+    ) -> Result<()> {
+        let mtm =
+            MainThreadMarker::new().ok_or_else(|| anyhow!("Help must run on main thread"))?;
+
+        let app = NSApplication::sharedApplication(mtm);
+        app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
+
+        const HELP_WINDOW_H: f64 = 620.0;
+        // Vertical gap between the stack's own children (4pt) vs between
+        // whole sections (16pt), and the stack's edge insets (24pt, both
+        // top and bottom = 48pt total). The exact-height formula below
+        // depends on all three staying in sync.
+        const HELP_STACK_SPACING: f64 = 4.0;
+        const SECTION_GAP: f64 = 16.0;
+        const HELP_STACK_INSETS: f64 = 24.0;
+        let style = NSWindowStyleMask::Titled | NSWindowStyleMask::Closable;
+        let frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(WINDOW_W, HELP_WINDOW_H));
+        let window = unsafe {
+            NSWindow::initWithContentRect_styleMask_backing_defer(
+                mtm.alloc(),
+                frame,
+                style,
+                NSBackingStoreType::NSBackingStoreBuffered,
+                false,
+            )
+        };
+        window.setTitle(&NSString::from_str("HandsOff Help"));
+        unsafe { window.setReleasedWhenClosed(false) };
+
+        let target: Retained<WizardTarget> = unsafe {
+            let t = mtm.alloc().set_ivars(());
+            msg_send_id![super(t), initWithFrame: frame]
+        };
+
+        // Close button must terminate the flow (issue #36): the delegate's
+        // windowShouldClose: sets close_requested, which the loop polls.
+        {
+            let delegate = ProtocolObject::<dyn NSWindowDelegate>::from_retained(target.clone());
+            window.setDelegate(Some(&delegate));
+        }
+
+        // Styled sections: one bold heading + plain body per HelpSection,
+        // stacked vertically inside a scroll view (NSTextField labels do NOT
+        // word-wrap, so body strings carry their own manual line breaks).
+        let stack_view = unsafe {
+            NSStackView::initWithFrame(
+                mtm.alloc(),
+                NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(WINDOW_W, HELP_WINDOW_H)),
+            )
+        };
+        unsafe {
+            stack_view.setOrientation(NSUserInterfaceLayoutOrientation::Vertical);
+            stack_view.setSpacing(HELP_STACK_SPACING);
+            // Default vertical-stack alignment is centerX, which centers each
+            // fixed-width label in the 480pt stack — force leading so all
+            // content hugs the left edge.
+            stack_view.setAlignment(NSLayoutAttribute::Leading);
+            // HELP_STACK_INSETS padding all around; CONTENT_W already
+            // accounts for it.
+            stack_view.setEdgeInsets(NSEdgeInsets {
+                top: HELP_STACK_INSETS,
+                left: HELP_STACK_INSETS,
+                bottom: HELP_STACK_INSETS,
+                right: HELP_STACK_INSETS,
+            });
+        }
+        const GRAVITY: NSStackViewGravity = NSStackViewGravity::Leading;
+        const CONTENT_W: f64 = WINDOW_W - 60.0; // 480 - 24*2 insets - 12 slack
+        // Track measured layout math so the stack can be sized to its
+        // content after the loop (see stack_h below); otherwise the stack
+        // keeps its init frame and the height-flexible grid absorbs the
+        // leftover, rendering as a large empty block mid-table. Heights are
+        // MEASURED per child (fittingSize at CONTENT_W), not estimated from
+        // line counts: real line height at 13pt is ~16pt, not 18pt, and
+        // estimates a few pt over per child accumulate into exactly the
+        // leftover the grid then absorbs.
+        let mut content_h: f64 = 0.0; // sum of child view heights
+        let mut child_count: usize = 0;
+        let mut last_view: Option<Retained<NSView>> = None;
+
+        // Measure a label's natural height at the content width: set the
+        // width, then read fittingSize (single-line labels do not word-wrap,
+        // so this is exact for the manual-break strings help uses).
+        unsafe fn measured_height(label: &NSTextField, width: f64) -> f64 {
+            label.setFrameSize(NSSize::new(width, label.fittingSize().height.max(1.0)));
+            label.fittingSize().height.max(1.0)
+        }
+
+        for section in sections {
+            // Extra gap between sections, applied to the previous section's
+            // last view before this section's heading is added.
+            if let Some(prev) = &last_view {
+                unsafe { stack_view.setCustomSpacing_afterView(SECTION_GAP, prev) };
+            }
+
+            let heading = unsafe {
+                NSTextField::labelWithString(&NSString::from_str(&section.heading), mtm)
+            };
+            unsafe {
+                heading.setFont(Some(&NSFont::boldSystemFontOfSize(15.0)));
+                heading.setAlignment(NSTextAlignment::Left);
+                let h = measured_height(&heading, CONTENT_W);
+                heading.setFrameSize(NSSize::new(CONTENT_W, h));
+                let heading_view: Retained<NSView> = Retained::cast(heading);
+                stack_view.addView_inGravity(&heading_view, GRAVITY);
+                content_h += h;
+                child_count += 1;
+                last_view = Some(heading_view);
+            }
+
+            if !section.body.is_empty() {
+                let body =
+                    unsafe { NSTextField::labelWithString(&NSString::from_str(&section.body), mtm) };
+                unsafe {
+                    body.setFont(Some(&NSFont::systemFontOfSize(13.0)));
+                    body.setAlignment(NSTextAlignment::Left);
+                    let h = measured_height(&body, CONTENT_W);
+                    body.setFrameSize(NSSize::new(CONTENT_W, h));
+                    let body_view: Retained<NSView> = Retained::cast(body);
+                    stack_view.addView_inGravity(&body_view, GRAVITY);
+                    content_h += h;
+                    child_count += 1;
+                    last_view = Some(body_view);
+                }
+            }
+
+            // Optional table: NSGridView aligns the item column by
+            // construction (each row = [item label, description label]).
+            if !section.table.is_empty() {
+                let grid = unsafe {
+                    NSGridView::initWithFrame(
+                        mtm.alloc(),
+                        NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(CONTENT_W, 1.0)),
+                    )
+                };
+                unsafe {
+                    grid.setRowSpacing(2.0);
+                    grid.setColumnSpacing(8.0);
+                }
+                for (item, desc) in &section.table {
+                    let item_label = unsafe {
+                        NSTextField::labelWithString(&NSString::from_str(item), mtm)
+                    };
+                    let desc_label = unsafe {
+                        NSTextField::labelWithString(&NSString::from_str(desc), mtm)
+                    };
+                    unsafe {
+                        item_label.setFont(Some(&NSFont::systemFontOfSize(13.0)));
+                        desc_label.setFont(Some(&NSFont::systemFontOfSize(13.0)));
+                        // SAFETY: NSTextField is an NSView subclass; the cast
+                        // consumes the Retained and keeps the +1 alive in the
+                        // array the grid retains.
+                        let views = NSArray::from_vec(vec![
+                            Retained::cast::<NSView>(item_label),
+                            Retained::cast::<NSView>(desc_label),
+                        ]);
+                        grid.addRowWithViews(&views);
+                    }
+                }
+                // Size the grid to its own fittingSize BEFORE adding it to
+                // the stack: once in the stack it is the only
+                // height-flexible child and would absorb any leftover stack
+                // height (the empty-block bug). layoutSubtreeIfNeeded first:
+                // without a layout pass fittingSize under-measures the last
+                // row (verified: 368 vs 388 rendered).
+                let grid_view: Retained<NSView> =
+                    unsafe { Retained::cast(grid.clone()) };
+                let grid_h = unsafe {
+                    grid.layoutSubtreeIfNeeded();
+                    let fs = grid_view.fittingSize();
+                    grid_view.setFrameSize(NSSize::new(CONTENT_W, fs.height));
+                    fs.height
+                };
+                unsafe { stack_view.addView_inGravity(&grid_view, GRAVITY) };
+                content_h += grid_h;
+                child_count += 1;
+                last_view = Some(grid_view);
+            }
+        }
+
+        // Size the stack to its exact measured content: insets (top+bottom)
+        // + children + spacing between children + extra section gaps. Every
+        // child was pre-sized, so the sum leaves no leftover for the grid to
+        // absorb. setCustomSpacing_afterView REPLACES the default spacing
+        // after that view, so the section gap contributes only the DELTA
+        // (SECTION_GAP - HELP_STACK_SPACING) per section boundary — adding
+        // the full gap on top of the default double-counts and hands the
+        // excess to the grid (verified: 20pt excess for 5 boundaries).
+        // (The stack-level fittingSize is NOT used: it distributes extra
+        // height into the flexible grid — verified via probe.)
+        let stack_h = 2.0 * HELP_STACK_INSETS
+            + content_h
+            + HELP_STACK_SPACING * (child_count.saturating_sub(1)) as f64
+            + (SECTION_GAP - HELP_STACK_SPACING)
+                * (sections.len().saturating_sub(1)) as f64;
+        unsafe { stack_view.setFrameSize(NSSize::new(WINDOW_W, stack_h)) };
+
+        let scroll_view = unsafe {
+            NSScrollView::initWithFrame(
+                mtm.alloc(),
+                NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(WINDOW_W, HELP_WINDOW_H)),
+            )
+        };
+        unsafe {
+            scroll_view.setHasVerticalScroller(true);
+            scroll_view.setDocumentView(Some(&stack_view));
+            window.contentView().unwrap().addSubview(&scroll_view);
+        }
+
+        window.center();
+        window.makeKeyAndOrderFront(None);
+        // Same activation path as the wizard and re-grant windows:
+        // `-[NSApplication activate]` is macOS 14+ and the min version is
+        // 13.0 (Info.plist.template). activateIgnoringOtherApps exists
+        // since 10.0.
+        unsafe { app.activateIgnoringOtherApps(true) };
+
+        use tao::platform::run_return::EventLoopExtRunReturn;
+
+        // SIGNALS is process-global and shared across flows: clear every
+        // per-flow signal so a previous flow's state can't leak into this
+        // one (issue #36 story 16).
+        SIGNALS.begin_flow();
+
+        let outcome_slot: Rc<RefCell<Option<Result<()>>>> =
+            std::rc::Rc::new(std::cell::RefCell::new(None));
+        let outcome = outcome_slot.clone();
+
+        event_loop.run_return(move |event, _, control_flow| {
+            *control_flow = tao::event_loop::ControlFlow::WaitUntil(
+                std::time::Instant::now() + std::time::Duration::from_millis(100),
+            );
+
+            let _ = &event; // raw NSWindow: tao events carry no useful signal
+
+            // Single-dialog invariant (issue #36): menu clicks queued while
+            // this window owns the loop re-front it instead of stacking.
+            absorb_menu_clicks(&window, &app, &super::WINDOW_FLOW_MENU_IDS.lock());
+
+            // Close ends the flow; the delegate's windowShouldClose: sets
+            // the flag (tao CloseRequested never fires for these raw
+            // NSWindows). This is the only signal the Help window consumes.
+            if SIGNALS.close_requested.load(Ordering::SeqCst) {
+                window.orderOut(None);
+                *outcome.borrow_mut() = Some(Ok(()));
+                stop_run_loop(&app);
+                return;
+            }
+        });
+
+        let result = outcome_slot
+            .borrow_mut()
+            .take()
+            .unwrap_or_else(|| Ok(()));
         result
     }
 
@@ -2280,4 +2592,25 @@ pub fn run_change_passphrase(
     _event_loop: &mut tao::event_loop::EventLoop<WizardEvent>,
 ) -> Result<Config> {
     anyhow::bail!("Change Passphrase requires macOS")
+}
+
+/// Run the Help window on the caller's event loop: static styled sections
+/// (bold headings + plain body text).
+///
+/// Returns when the window closes (always `Ok(())` unless window creation
+/// fails); there are no buttons or other interactive elements.
+#[cfg(target_os = "macos")]
+pub fn run_help(
+    event_loop: &mut tao::event_loop::EventLoop<WizardEvent>,
+    sections: &[HelpSection],
+) -> Result<()> {
+    self::macos::run_help_macos(event_loop, sections)
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn run_help(
+    _event_loop: &mut tao::event_loop::EventLoop<WizardEvent>,
+    _sections: &[HelpSection],
+) -> Result<()> {
+    anyhow::bail!("Help requires macOS")
 }

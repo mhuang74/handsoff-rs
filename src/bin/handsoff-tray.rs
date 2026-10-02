@@ -303,6 +303,7 @@ fn main() -> Result<()> {
     let reset_item = MenuItem::new("Reset…", true, None);
     let regrant_item = MenuItem::new("Fix Accessibility Permission…", true, None);
     let check_updates_item = MenuItem::new(CHECK_UPDATES_LABEL, true, None);
+    let help_item = MenuItem::new("Help", true, None);
 
     let menu = Menu::new();
     menu.append(&lock_item)
@@ -324,6 +325,8 @@ fn main() -> Result<()> {
         .context("Failed to add re-grant menu item")?;
     menu.append(&check_updates_item)
         .context("Failed to add check updates menu item")?;
+    menu.append(&help_item)
+        .context("Failed to add help menu item")?;
 
     // Create tray icon
     let icon = create_icon_unlocked();
@@ -345,6 +348,7 @@ fn main() -> Result<()> {
     let reset_id = reset_item.id().clone();
     let regrant_id = regrant_item.id().clone();
     let check_updates_id = check_updates_item.id().clone();
+    let help_id = help_item.id().clone();
 
     // Single-dialog invariant (issue #36): while a dialog owns the nested
     // run_return, IT drains the menu channel — clicks on these window-flow
@@ -354,6 +358,7 @@ fn main() -> Result<()> {
         change_passphrase_id.clone(),
         reset_id.clone(),
         regrant_id.clone(),
+        help_id.clone(),
     ];
 
     // Track state for tooltip updates and permission state. Mutable because
@@ -391,6 +396,7 @@ fn main() -> Result<()> {
                 reset_id.clone(),
                 regrant_id.clone(),
                 check_updates_id.clone(),
+                help_id.clone(),
             ),
             (
                 lock_item.clone(),
@@ -401,6 +407,7 @@ fn main() -> Result<()> {
                 reset_item.clone(),
                 regrant_item.clone(),
                 check_updates_item.clone(),
+                help_item.clone(),
             ),
             &tray,
             tracked,
@@ -456,6 +463,7 @@ fn main() -> Result<()> {
                 handle_reset(&mut event_loop)
             }
             SessionAction::ReGrantPermission => handle_regrant_permission(&mut event_loop),
+            SessionAction::Help => handle_help(&mut event_loop),
         }
     }
 }
@@ -474,6 +482,7 @@ enum SessionAction {
     /// Issue #29 re-grant: config valid, Accessibility grant stale —
     /// permission-only wizard screen, no passphrase re-setup.
     ReGrantPermission,
+    Help,
 }
 
 /// End the tray session NOW: `-[NSApplication stop:]` alone only takes
@@ -534,8 +543,10 @@ fn run_session(
         tray_icon::menu::MenuId,
         tray_icon::menu::MenuId,
         tray_icon::menu::MenuId,
+        tray_icon::menu::MenuId,
     ),
     items: (
+        tray_icon::menu::MenuItem,
         tray_icon::menu::MenuItem,
         tray_icon::menu::MenuItem,
         tray_icon::menu::MenuItem,
@@ -558,6 +569,7 @@ fn run_session(
         reset_id,
         regrant_id,
         check_updates_id,
+        help_id,
     ) = ids;
     let (
         lock_item,
@@ -568,6 +580,7 @@ fn run_session(
         reset_item,
         _regrant_item,
         _check_updates_item,
+        _help_item,
     ) = items;
     let (was_locked, was_disabled, last_tooltip, last_tooltip_update, has_permissions) = tracked;
 
@@ -745,6 +758,18 @@ fn run_session(
                 // Fire-and-forget: opens the browser without ending the
                 // session or blocking the tray (no window flow involved).
                 handle_check_updates();
+            } else if event_id == help_id {
+                info!("Help menu item clicked");
+                *pending_in_callback.borrow_mut() = Some(SessionAction::Help);
+                #[cfg(target_os = "macos")]
+                {
+                    stop_session_now(mtm);
+                    return;
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    return;
+                }
             }
         }
 
@@ -934,7 +959,7 @@ fn handle_disable(core: Rc<RefCell<HandsOffCore>>) {
         {
             let _ = notify_rust::Notification::new()
                 .summary("HandsOff")
-                .body("Disabled - Low system resources mode\nInput blocking paused. Use Reset to re-enable")
+                .body("Disabled - Low system resources mode\nInput blocking paused. Use Reenable to re-enable")
                 .timeout(notify_rust::Timeout::Milliseconds(NOTIFICATION_TIMEOUT_MS))
                 .show();
         }
@@ -1008,6 +1033,19 @@ fn handle_reenable(core: Rc<RefCell<HandsOffCore>>) {
     }
 
     info!("Finished handling reenable");
+}
+
+/// Handle Help from menu: build the help text from the current core state
+/// and show it in a read-only native window on the shared event loop. The
+/// core borrow ends before the window opens; nothing mutates the core while
+/// the Help window is up.
+fn handle_help(
+    event_loop: &mut tao::event_loop::EventLoop<wizard::WizardEvent>,
+) {
+    let sections = build_help_text();
+    if let Err(e) = wizard::run_help(event_loop, &sections) {
+        error!("Help window failed: {}", e);
+    }
 }
 
 /// Handle Preferences from menu (#27): open the in-process Preferences window
@@ -1319,78 +1357,186 @@ fn build_tooltip(
     tooltip.push_str("A macOS utility to block unsolicited input\n\n");
 
     // Current status
+    push_status(&mut tooltip, core, is_locked, is_disabled, has_permissions);
+
+    // Configured hotkeys (user asked for these on hover; the Help
+    // window itself stays static and never shows concrete keys).
+    tooltip.push_str(&format!(
+        "Lock: Ctrl+Cmd+Shift+{}\n",
+        core.get_lock_key_display()
+    ));
+    tooltip.push_str(&format!(
+        "Unmute: press Ctrl+Cmd+Shift+{} (passes Space to apps)\n",
+        core.get_talk_key_display()
+    ));
+    tooltip.push_str("\n");
+
+    // Pointer to the full guide (menu summaries, lock/unlock instructions,
+    // hotkeys, troubleshooting live in the Help window)
+    tooltip.push_str("Open the Help menu item for the full guide\n");
+
+    tooltip
+}
+
+/// Append the contextual status block (DISABLED / NO PERMISSIONS / LOCKED /
+/// Unlocked, incl. countdowns) shown in the tray tooltip.
+fn push_status(
+    text: &mut String,
+    core: &HandsOffCore,
+    is_locked: bool,
+    is_disabled: bool,
+    has_permissions: bool,
+) {
     if is_disabled {
-        tooltip.push_str("STATUS: DISABLED\n");
-        tooltip.push_str("Low system resources mode - all features paused\n");
-        tooltip.push_str("Use Reset menu to re-enable HandsOff\n\n");
+        text.push_str("STATUS: DISABLED\n");
+        text.push_str("Low system resources mode - all features paused\n");
+        text.push_str("Use Reenable menu to re-enable HandsOff\n\n");
     } else if !has_permissions {
-        tooltip.push_str("STATUS: NO PERMISSIONS\n");
-        tooltip.push_str("Restore Accessibility Permissions in:\n");
-        tooltip.push_str("System Settings > Privacy & Security\n");
-        tooltip.push_str("Then use Reset menu to restart\n\n");
+        text.push_str("STATUS: NO PERMISSIONS\n");
+        text.push_str("Restore Accessibility Permissions in:\n");
+        text.push_str("System Settings > Privacy & Security\n");
+        text.push_str("Then use Reenable menu to restart\n\n");
     } else if is_locked {
         // Show lock duration
         if let Some(elapsed) = core.get_lock_elapsed_secs() {
-            tooltip.push_str(&format!("STATUS: LOCKED ({})\n", format_duration(elapsed)));
+            text.push_str(&format!("STATUS: LOCKED ({})\n", format_duration(elapsed)));
         } else {
-            tooltip.push_str("STATUS: LOCKED\n");
+            text.push_str("STATUS: LOCKED\n");
         }
 
         // V11: show the auto-unlock countdown ONLY when < 5 min away, so the
         // far-out backoff schedule is not broadcast by the menu bar.
         if let Some(remaining) = core.get_auto_unlock_remaining_secs() {
             if remaining > 0 && remaining < 300 {
-                tooltip.push_str(&format!("Auto-unlock in {}\n", format_duration(remaining)));
+                text.push_str(&format!("Auto-unlock in {}\n", format_duration(remaining)));
             }
         }
     } else {
-        tooltip.push_str("STATUS: Unlocked\n");
+        text.push_str("STATUS: Unlocked\n");
 
         // Show auto-lock countdown if enabled
         if let Some(remaining) = core.get_auto_lock_remaining_secs() {
             if remaining > 0 {
-                tooltip.push_str(&format!("Auto-lock in {}\n", format_duration(remaining)));
+                text.push_str(&format!("Auto-lock in {}\n", format_duration(remaining)));
             } else {
-                tooltip.push_str("Auto-locking...\n");
+                text.push_str("Auto-locking...\n");
             }
         }
     }
 
-    tooltip.push_str("\n\n");
+    text.push_str("\n\n");
+}
 
-    // Menu items
-    tooltip.push_str("MENU:\n");
-    tooltip.push_str("• Lock Input: Lock immediately\n");
-    tooltip.push_str("• Disable: Pause input blocking and reduce system resources\n");
-    tooltip.push_str("  (Use Reset to re-enable HandsOff)\n");
-    tooltip.push_str("• Reset: Clear all timers and restart input blocking\n\n");
+/// Build the static Help window content: plain-English sections with bold
+/// headings. Deliberately stateless — no live status and no configured
+/// hotkeys (those live in the tray tooltip only), so the window never goes
+/// stale.
+fn build_help_text() -> Vec<wizard::HelpSection> {
+    vec![
+        wizard::HelpSection {
+            heading: "What is HandsOff?".to_string(),
+            body: "\
+HandsOff locks your Mac's keyboard and mouse so stray
+bumps, pets, or curious hands can't mess with your work.
 
-    // Instructions
-    let lock_key = core.get_lock_key_display();
-    let talk_key = core.get_talk_key_display();
+Your screen stays on, and apps like Zoom keep running.
+HandsOff can also lock itself automatically after a while
+of no activity — you can change that in Preferences."
+                .to_string(),
+            table: Vec::new(),
+        },
+        wizard::HelpSection {
+            heading: "Locking and unlocking".to_string(),
+            body: "\
+Lock: pick \"Lock Input\" from the HandsOff menu in the
+menu bar, or use your lock shortcut (hover the menu bar
+icon to see it — it depends on your setup).
 
-    tooltip.push_str("TO LOCK:\n");
-    tooltip.push_str("• Click 'Lock Input' menu, OR\n");
-    tooltip.push_str(&format!("• Press Ctrl+Cmd+Shift+{}\n\n", lock_key));
+Unlock: type your passphrase. While locked, mouse clicks
+are blocked — even the menu can't be clicked — so typing
+is the only way back in.
 
-    tooltip.push_str("TO UNLOCK:\n");
-    tooltip.push_str("• Type your passphrase on keyboard\n");
-    tooltip.push_str("• Press Escape to clear buffer immediately if you mistype\n");
-    tooltip.push_str("• Or wait 3 seconds for auto-clear\n\n");
+Made a typo? Press Escape to start over."
+                .to_string(),
+            table: Vec::new(),
+        },
+        wizard::HelpSection {
+            heading: "Unmuting during video calls".to_string(),
+            body: "\
+Locked but need to speak? Press your \"talk\" shortcut
+(hover the menu bar icon to see it). HandsOff transforms
+it into a Space keypress and passes it through to your
+apps, so you can unmute in Zoom, Google Meet, and other
+call apps."
+                .to_string(),
+            table: Vec::new(),
+        },
+        wizard::HelpSection {
+            heading: "Menu items".to_string(),
+            body: String::new(),
+            table: vec![
+                ("Lock Input".to_string(), "Locks your Mac right away.".to_string()),
+                (
+                    "Disable".to_string(),
+                    "Pauses blocking to save\nbattery. Use Reenable to\nturn HandsOff back on."
+                        .to_string(),
+                ),
+                (
+                    "Reenable".to_string(),
+                    "Ends a stuck lock and\nrestarts blocking. Your\nsettings are not touched."
+                        .to_string(),
+                ),
+                (
+                    "Preferences…".to_string(),
+                    "Change hotkeys and timers.\nNo passphrase needed here.".to_string(),
+                ),
+                (
+                    "Change Passphrase…".to_string(),
+                    "Pick a new passphrase.".to_string(),
+                ),
+                (
+                    "Reset…".to_string(),
+                    "Wipes everything and runs\nSetup again. Use this if\nyou forgot your passphrase.\nWarning: your old\npassphrase stops working!"
+                        .to_string(),
+                ),
+                (
+                    "Fix Accessibility Permission…".to_string(),
+                    "Repairs the macOS\npermission HandsOff needs,\nin case an update\nbroke it.".to_string(),
+                ),
+                (
+                    "Check for Updates…".to_string(),
+                    "Opens the releases page\nin your browser.".to_string(),
+                ),
+                ("Help".to_string(), "Shows this window.".to_string()),
+            ],
+        },
+        wizard::HelpSection {
+            heading: "If something goes wrong".to_string(),
+            body: "\
+Not blocking input? HandsOff needs the Accessibility
+permission (System Settings > Privacy & Security). Then
+try \"Fix Accessibility Permission…\".
 
-    // Hotkeys
-    tooltip.push_str("HOTKEYS:\n");
-    tooltip.push_str(&format!("• Ctrl+Cmd+Shift+{}: Lock input\n", lock_key));
-    tooltip.push_str(&format!(
-        "• Ctrl+Cmd+Shift+{} (hold): Hotkey to Unmute (Spacebar)\n\n",
-        talk_key
-    ));
+Locked and nothing clicks? That's HandsOff working.
+Type your passphrase to unlock.
 
-    // Repository info
-    tooltip.push_str("Michael S. Huang\n");
-    tooltip.push_str("https://github.com/mhuang74/handsoff-rs");
+Forgot your passphrase? Use \"Reset…\" to start fresh."
+                .to_string(),
+            table: Vec::new(),
+        },
+        wizard::HelpSection {
+            heading: "About".to_string(),
+            body: "\
+Created by
+Michael S. Huang
+michael@michaelhuang.xyz
+www.michaelhuang.xyz
 
-    tooltip
+https://github.com/mhuang74/handsoff-rs"
+                .to_string(),
+            table: Vec::new(),
+        },
+    ]
 }
 
 /// Format duration in human-readable form (e.g., "2m 30s" or "45s")
