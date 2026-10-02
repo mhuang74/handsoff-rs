@@ -306,10 +306,9 @@ pub fn wipe_config_at(path: &std::path::Path) -> Result<bool> {
 }
 
 /// Persist a config to the STANDARD-LOCATION path with the same hardening as
-/// `Config::save`: creates the parent directory and enforces 0600 on unix
-/// (`save_to_path` alone does neither — its doc comment in config_file.rs).
-/// The path-taking test variants must NOT use this: tests write to temp dirs
-/// with plain `save_to_path` semantics.
+/// `Config::save`: creates the parent directory and enforces 0600 on unix.
+/// (`save_to_path` itself creates 0600 too — issue #37 N7 — but does not
+/// repair the mode of an already-existing looser file; the check below does.)
 #[cfg(unix)]
 fn persist_to(cfg: &Config, path: &std::path::Path) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;

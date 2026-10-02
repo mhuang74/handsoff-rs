@@ -1206,7 +1206,9 @@ fn relaunch_self() -> Result<()> {
                 .skip(1)
                 .filter(|a| a != "--setup")
                 // Designated successor: parent exits right after spawning,
-                // but still holds the flock — child must skip the guard.
+                // but still holds the flock — the child skips the fatal
+                // duplicate alert and re-acquires the lock during a short
+                // grace window (issue #37 N1).
                 .chain(["--skip-instance-lock".to_string()]),
         )
         .spawn();

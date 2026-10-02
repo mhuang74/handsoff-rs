@@ -533,8 +533,9 @@ mod macos {
                 std::env::args()
                     .skip(1)
                     // Designated successor: parent exits right after
-                    // spawning but still holds the flock — child must
-                    // skip the single-instance guard.
+                    // spawning but still holds the flock — the child skips
+                    // the fatal duplicate alert and re-acquires the lock
+                    // during a short grace window (issue #37 N1).
                     .chain(["--skip-instance-lock".to_string()]),
             )
             .spawn()
