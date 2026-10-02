@@ -66,6 +66,15 @@ struct Args {
     /// Run interactive setup to configure passphrase and timeouts
     #[arg(long)]
     setup: bool,
+
+    /// Internal: set by `relaunch_self`/`relaunch_after_reset` on the child
+    /// process. The parent still holds the single-instance flock when it
+    /// spawns the child and only exits afterwards, so the child must skip
+    /// the lock (it is the designated successor — the parent exits right
+    /// after spawning). Without this the child would see "already
+    /// running", exit, and leave NOTHING running after a relaunch.
+    #[arg(long, hide = true)]
+    skip_instance_lock: bool,
 }
 
 /// Run interactive setup: capture passphrase keycodes, prompt for options
@@ -110,12 +119,27 @@ fn main() -> Result<()> {
         return run_setup();
     }
 
-    // Initialize logger
+    // Initialize logger (BEFORE the single-instance guard: a duplicate
+    // must be able to log why it is exiting).
     env_logger::Builder::from_default_env()
         .filter_level(log::LevelFilter::Info)
         .init();
 
     info!("Starting HandsOff Tray App v{}", VERSION);
+
+    // Single-instance guard: exclusive flock on a lock file for the
+    // process lifetime. Without this, a login-item relaunch (or the user)
+    // can stack duplicate tray instances — observed as 16 launches in
+    // under 2 h during the 2026-10-01 keyboard-lockout incident, each
+    // entering the setup wizard. Must be taken BEFORE any AppKit/tray
+    // initialization so a duplicate exits before it can show UI.
+    // Skipped for the designated successor of a self-relaunch: the parent
+    // still holds the lock at spawn time and exits immediately after.
+    if !args.skip_instance_lock {
+        acquire_single_instance_lock()?;
+    } else {
+        info!("Skipping single-instance lock (relaunched by parent instance)");
+    }
 
     // Check accessibility permissions (but don't exit - let app run and show status in tooltip)
     let initial_permissions = handsoff::input_blocking::check_accessibility_permissions();
@@ -1022,7 +1046,14 @@ fn confirm_reset() -> bool {
 fn relaunch_self() -> Result<()> {
     let exe = std::env::current_exe().context("Failed to locate running binary")?;
     let err = std::process::Command::new(exe)
-        .args(std::env::args().skip(1).filter(|a| a != "--setup"))
+        .args(
+            std::env::args()
+                .skip(1)
+                .filter(|a| a != "--setup")
+                // Designated successor: parent exits right after spawning,
+                // but still holds the flock — child must skip the guard.
+                .chain(["--skip-instance-lock".to_string()]),
+        )
         .spawn();
     match err {
         Ok(_) => {
@@ -1034,6 +1065,66 @@ fn relaunch_self() -> Result<()> {
             std::process::exit(1);
         }
     }
+}
+
+/// Exclusive single-instance lock via `flock(2)` on
+/// `<config dir>/handsoff/handsoff.lock`. The file descriptor is leaked
+/// (never dropped) so the lock is held until process exit — the OS releases
+/// it automatically when the process dies, so a crash/power cycle cannot
+/// leave a stale lock. On lock failure (another instance running): log,
+/// alert, exit 0. No libc crate dependency: `flock` is declared directly
+/// (std already links libSystem on macOS).
+fn acquire_single_instance_lock() -> Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        use std::fs::OpenOptions;
+        use std::os::unix::io::AsRawFd;
+
+        #[link(name = "System")]
+        extern "C" {
+            fn flock(fd: i32, operation: i32) -> i32;
+        }
+        const LOCK_EX: i32 = 0x0002; // exclusive lock
+        const LOCK_NB: i32 = 0x0004; // don't block when locking
+
+        let path = Config::config_path()
+            .parent()
+            .expect("config path always has a parent")
+            .join("handsoff.lock");
+        std::fs::create_dir_all(path.parent().expect("parent exists"))?;
+
+        let file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(&path)
+            .with_context(|| format!("Failed to open lock file {}", path.display()))?;
+
+        if unsafe { flock(file.as_raw_fd(), LOCK_EX | LOCK_NB) } != 0 {
+            error!(
+                "Another HandsOff instance is running (lock held on {}); exiting",
+                path.display()
+            );
+            show_alert(
+                "HandsOff is already running",
+                "Another HandsOff instance is active — check the menu bar. \
+                 This duplicate will now exit.",
+            );
+            std::process::exit(0);
+        }
+
+        // Hold the lock for the process lifetime: leak the File so the fd
+        // (and with it the flock) is never released while running.
+        std::mem::forget(file);
+        info!("Single-instance lock acquired: {}", path.display());
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        // Tray app is macOS-only; nothing to guard elsewhere.
+        Ok(())
+    }
+    #[cfg(target_os = "macos")]
+    Ok(())
 }
 
 /// Show native macOS alert dialog

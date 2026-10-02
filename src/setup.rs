@@ -201,6 +201,7 @@ pub fn capture_passphrase(
                 CaptureEvent::Reserved => print!(" [reserved] "),
                 CaptureEvent::Restart => print!(" [restart] "),
                 CaptureEvent::Backspace => print!("\x08 \x08"),
+                CaptureEvent::Tick(_) => {} // countdown is GUI-only
                 CaptureEvent::TooShort(len) => println!(
                     "\nNeed at least {} keys — keep typing. ({} so far)",
                     MIN_PASSPHRASE_KEYS, len
@@ -229,6 +230,22 @@ pub enum CaptureEvent {
     Backspace,
     /// Enter pressed before the minimum length was reached (`usize` = current length).
     TooShort(usize),
+    /// Countdown tick with seconds remaining until the capture times out.
+    /// Emitted from the pump loop each 100 ms slice; ignored by the TUI.
+    Tick(u64),
+}
+
+/// Set by the GUI wizard when the user closes the capture window (the
+/// tao event loop is blocked inside the nested pump, so the abort must be
+/// signalled from AppKit's own dispatch, which keeps running). Checked in
+/// the pump loop like the Ctrl+C abort flag.
+#[cfg(target_os = "macos")]
+pub static CAPTURE_ABORT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Request the in-flight passphrase capture to abort (wizard window close).
+#[cfg(target_os = "macos")]
+pub fn request_capture_abort() {
+    CAPTURE_ABORT.store(true, std::sync::atomic::Ordering::SeqCst);
 }
 
 /// Install a session event tap that captures physical keycodes until Enter
@@ -248,7 +265,8 @@ pub enum CaptureEvent {
 /// # Errors
 /// - Accessibility permission missing
 /// - Tap creation failed
-/// - Capture timed out (300 s)
+/// - Capture timed out (120 s)
+/// - Capture aborted (`request_capture_abort` — wizard window closed)
 #[cfg(target_os = "macos")]
 pub fn capture_passphrase_headless(
     lock_hotkey_keycode: i64,
@@ -279,6 +297,9 @@ pub fn capture_passphrase_headless(
         aborted: false,
         on_event: on_event.map(|f| f as Box<dyn Fn(CaptureEvent) + 'static>),
     }));
+
+    // A fresh capture must not inherit a stale abort from a previous one.
+    CAPTURE_ABORT.store(false, std::sync::atomic::Ordering::SeqCst);
 
     // ---- throwaway tap (mirrors event_tap.rs FFI; see R-4 for consolidation) ----
     use core_foundation::base::TCFType;
@@ -457,8 +478,10 @@ pub fn capture_passphrase_headless(
     };
 
     // Pump the run loop until Enter commits the capture.
-    const CAPTURE_TIMEOUT_SECS: u64 = 300;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(CAPTURE_TIMEOUT_SECS);
+    const CAPTURE_TIMEOUT_SECS: u64 = 120;
+    let started = std::time::Instant::now();
+    let deadline = started + std::time::Duration::from_secs(CAPTURE_TIMEOUT_SECS);
+    let mut last_tick = u64::MAX;
     let result = loop {
         unsafe {
             CFRunLoop::run_in_mode(
@@ -474,6 +497,22 @@ pub fn capture_passphrase_headless(
             }
             if st.aborted {
                 break Err(anyhow!("Setup cancelled by user (Ctrl+C)."));
+            }
+        }
+        // Window close during capture (wizard only): the tao event loop is
+        // blocked inside this pump, so the close arrives via AppKit dispatch
+        // and sets CAPTURE_ABORT — end the capture so the tap is torn down
+        // and input is restored.
+        if CAPTURE_ABORT.load(std::sync::atomic::Ordering::SeqCst) {
+            break Err(anyhow!("Setup cancelled (capture window closed)."));
+        }
+        // Countdown tick (GUI surfaces remaining time; TUI ignores it).
+        let elapsed = started.elapsed().as_secs();
+        let remaining = CAPTURE_TIMEOUT_SECS.saturating_sub(elapsed);
+        if remaining != last_tick {
+            last_tick = remaining;
+            if let Some(f) = &state.lock().on_event {
+                f(CaptureEvent::Tick(remaining));
             }
         }
         if std::time::Instant::now() > deadline {
