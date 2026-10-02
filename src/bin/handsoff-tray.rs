@@ -7,6 +7,7 @@ use handsoff::constants::{
     NOTIFICATION_ERROR_TIMEOUT_MS, NOTIFICATION_TIMEOUT_MS, POLL_INTERVAL_DISABLED_SECS,
     POLL_INTERVAL_ENABLED_MS, TOOLTIP_UPDATE_INTERVAL_MS,
 };
+use handsoff::utils::lock_file;
 use handsoff::{config, config_file::Config, preferences::menu_state, setup, wizard, HandsOffCore};
 use log::{error, info, warn};
 use std::cell::RefCell;
@@ -68,10 +69,12 @@ struct Args {
 
     /// Internal: set by `relaunch_self`/`relaunch_after_reset` on the child
     /// process. The parent still holds the single-instance flock when it
-    /// spawns the child and only exits afterwards, so the child must skip
-    /// the lock (it is the designated successor — the parent exits right
-    /// after spawning). Without this the child would see "already
-    /// running", exit, and leave NOTHING running after a relaunch.
+    /// spawns the child and only exits afterwards, so without a bypass the
+    /// child would see "already running", exit, and leave NOTHING running
+    /// after a relaunch. The child therefore re-acquires the lock with a
+    /// short grace loop (issue #37 N1) — the flag only suppresses the fatal
+    /// duplicate alert during that overlap window; the successor always ends
+    /// up holding the lock, so a later launch still exits as a duplicate.
     #[arg(long, hide = true)]
     skip_instance_lock: bool,
 }
@@ -132,13 +135,11 @@ fn main() -> Result<()> {
     // under 2 h during the 2026-10-01 keyboard-lockout incident, each
     // entering the setup wizard. Must be taken BEFORE any AppKit/tray
     // initialization so a duplicate exits before it can show UI.
-    // Skipped for the designated successor of a self-relaunch: the parent
-    // still holds the lock at spawn time and exits immediately after.
-    if !args.skip_instance_lock {
-        acquire_single_instance_lock()?;
-    } else {
-        info!("Skipping single-instance lock (relaunched by parent instance)");
-    }
+    // The self-relaunch successor (`--skip-instance-lock`) STILL acquires
+    // the lock (issue #37 N1): the flag only bypasses the duplicate alert
+    // while the dying parent holds it — a grace loop retries until the
+    // parent's lock frees, so exactly one tray instance is ever running.
+    acquire_single_instance_lock(args.skip_instance_lock)?;
 
     // Check accessibility permissions (but don't exit - let app run and show status in tooltip)
     let initial_permissions = handsoff::input_blocking::check_accessibility_permissions();
@@ -391,9 +392,51 @@ fn main() -> Result<()> {
         match action {
             SessionAction::Preferences => handle_preferences(&mut event_loop, core.clone()),
             SessionAction::ChangePassphrase => {
+                // N5/N6 gate: refused while locked — a dead-tap window must
+                // not allow re-keying the Lock. Same menu_state authority as
+                // the click gating (issue #37).
+                {
+                    let core_borrow = core.borrow();
+                    let flags = menu_state(
+                        core_borrow.is_locked(),
+                        core_borrow.state.is_disabled(),
+                        core_borrow.has_accessibility_permissions(),
+                    );
+                    if !flags.change_passphrase_enabled {
+                        warn!("Change Passphrase requested while locked — refusing (N5 gate)");
+                        show_alert(
+                            "HandsOff - Locked",
+                            "Change Passphrase is not available while input is locked.\n\
+                             Unlock with your Passphrase first.",
+                        );
+                        continue;
+                    }
+                }
                 handle_change_passphrase(&mut event_loop, core.clone())
             }
-            SessionAction::Reset => handle_reset(&mut event_loop),
+            SessionAction::Reset => {
+                // N5 gate: refused while locked — a dead-tap window must not
+                // allow wiping the configuration. Same menu_state authority
+                // as the click gating (issue #37).
+                {
+                    let core_borrow = core.borrow();
+                    let flags = menu_state(
+                        core_borrow.is_locked(),
+                        core_borrow.state.is_disabled(),
+                        core_borrow.has_accessibility_permissions(),
+                    );
+                    if !flags.reset_enabled {
+                        warn!("Reset requested while locked — refusing (N5 gate)");
+                        show_alert(
+                            "HandsOff - Locked",
+                            "Reset is not available while input is locked.\n\
+                             Unlock with your Passphrase first.",
+                        );
+                        continue;
+                    }
+                }
+                handle_reset(&mut event_loop)
+            }
             SessionAction::ReGrantPermission => handle_regrant_permission(&mut event_loop),
         }
     }
@@ -514,7 +557,41 @@ fn run_session(
     // #36): dialogs consume window-flow clicks themselves (re-fronting the
     // live dialog), so only immediate-action clicks land here. Dispatched
     // before the session loop so the actions take effect immediately.
+    //
+    // Issue #37 N2: every deferred click is re-validated against the CURRENT
+    // menu state before executing — the state may have changed since the
+    // click was queued (e.g. a Disable-then-Lock sequence must not end in
+    // locked-without-tap). Stale clicks are dropped with a log line; the
+    // same gate the live-click path uses decides, so the paths cannot drift.
     for id in wizard::take_deferred_menu_events() {
+        let core_borrow = core.borrow();
+        let flags = menu_state(
+            core_borrow.is_locked(),
+            core_borrow.state.is_disabled(),
+            core_borrow.has_accessibility_permissions(),
+        );
+        drop(core_borrow);
+
+        let allowed = if id == lock_id {
+            flags.lock_enabled
+        } else if id == disable_id {
+            flags.disable_enabled
+        } else if id == reenable_id {
+            flags.reenable_enabled
+        } else if id == check_updates_id {
+            true // fire-and-forget; no protection state involved
+        } else {
+            false // window-flow IDs cannot appear here; unknown IDs ignored
+        };
+        if !allowed {
+            warn!(
+                "Dropping menu click deferred during a dialog — no longer allowed \
+                 by current state (stale click): {:?}",
+                id
+            );
+            continue;
+        }
+
         info!("Dispatching menu click deferred during a dialog: {:?}", id);
         if id == lock_id {
             handle_lock_toggle(core.clone());
@@ -528,8 +605,6 @@ fn run_session(
             info!("Check for Updates menu item clicked");
             handle_check_updates();
         }
-        // Window-flow IDs cannot appear here (the dialog consumed them);
-        // unknown IDs are ignored.
     }
 
     // Main-thread marker consumed by stop_session_now (see doc comment):
@@ -557,9 +632,36 @@ fn run_session(
             std::time::Instant::now() + poll_interval
         );
 
-        // Handle menu events
+        // Handle menu events — every immediate-action click passes the SAME
+        // menu-state gate as the deferred dispatch (issue #37 N2: one
+        // authority decides; the item's set_enabled alone is not a gate).
         if let Ok(event) = MenuEvent::receiver().try_recv() {
             let event_id = event.id;
+
+            if event_id == lock_id || event_id == disable_id || event_id == reenable_id {
+                let allowed = {
+                    let core_borrow = core.borrow();
+                    let flags = menu_state(
+                        core_borrow.is_locked(),
+                        core_borrow.state.is_disabled(),
+                        core_borrow.has_accessibility_permissions(),
+                    );
+                    if event_id == lock_id {
+                        flags.lock_enabled
+                    } else if event_id == disable_id {
+                        flags.disable_enabled
+                    } else {
+                        flags.reenable_enabled
+                    }
+                };
+                if !allowed {
+                    warn!(
+                        "Ignoring menu click not allowed by current state: {:?}",
+                        event_id
+                    );
+                    return;
+                }
+            }
 
             if event_id == lock_id {
                 handle_lock_toggle(core.clone());
@@ -628,65 +730,40 @@ fn run_session(
             }
         }
 
-        // Check if event tap should be stopped (due to permission loss)
+        // Service the shared tap-lifecycle flags (issue #37 N3) — the same
+        // block the CLI main loop runs, so both binaries recover from a
+        // macOS tap timeout identically. Tray-specific UX (notifications)
+        // layers on the returned event.
         {
             let mut core_borrow = core.borrow_mut();
-            if core_borrow.state.should_stop_event_tap_and_clear() {
-                warn!("Tray: Stopping input blocking due to permission loss");
-                core_borrow.stop_event_tap();
+            match core_borrow.service_tap_lifecycle() {
+            handsoff::TapLifecycleEvent::TapStopped => {
                 info!("Tray: Input blocking stopped - normal input restored");
             }
-        }
-
-        // Check if existing event tap should be re-enabled (post sleep/wake timeout recovery).
-        // This reuses the same CGEventTapRef — no new WindowServer connection is created,
-        // which prevents zombie Mach port accumulation across sleep/wake cycles.
-        {
-            let mut core_borrow = core.borrow_mut();
-            if core_borrow.state.should_reenable_event_tap_and_clear() {
-                info!("Tray: Re-enabling existing event tap after sleep/wake timeout");
-                if let Err(e) = core_borrow.reenable_event_tap() {
-                    warn!("Tray: Failed to re-enable event tap: {} — will attempt full restart", e);
-                    // reenable_event_tap already falls back to restart internally,
-                    // but log the failure so it's visible in telemetry
+            handsoff::TapLifecycleEvent::Restarted => {
+                #[cfg(target_os = "macos")]
+                {
+                    let _ = notify_rust::Notification::new()
+                        .summary("HandsOff - Input Blocking Restarted")
+                        .body("Input blocking restarted successfully.\nHandsOff is now active.")
+                        .timeout(notify_rust::Timeout::Milliseconds(NOTIFICATION_TIMEOUT_MS))
+                        .show();
                 }
             }
-        }
-
-        // Check if event tap should be started (permission restored)
-        {
-            let mut core_borrow = core.borrow_mut();
-            if core_borrow.state.should_start_event_tap_and_clear() {
-                info!("Tray: Restarting input blocking - permissions restored");
-                match core_borrow.restart_event_tap() {
-                    Ok(()) => {
-                        info!("Tray: Input blocking restarted successfully");
-
-                        #[cfg(target_os = "macos")]
-                        {
-                            let _ = notify_rust::Notification::new()
-                                .summary("HandsOff - Input Blocking Restarted")
-                                .body("Input blocking restarted successfully.\nHandsOff is now active.")
-                                .timeout(notify_rust::Timeout::Milliseconds(NOTIFICATION_TIMEOUT_MS))
-                                .show();
-                        }
-                    }
-                    Err(e) => {
-                        warn!("Tray: Failed to restart input blocking: {}", e);
-
-                        #[cfg(target_os = "macos")]
-                        {
-                            let _ = notify_rust::Notification::new()
-                                .summary("HandsOff - Restart Failed")
-                                .body(&format!(
-                                    "Failed to restart input blocking: {}\n\nUse Reenable menu to try again.",
-                                    e
-                                ))
-                                .timeout(notify_rust::Timeout::Milliseconds(NOTIFICATION_ERROR_TIMEOUT_MS))
-                                .show();
-                        }
-                    }
+            handsoff::TapLifecycleEvent::RestartFailed(e) => {
+                #[cfg(target_os = "macos")]
+                {
+                    let _ = notify_rust::Notification::new()
+                        .summary("HandsOff - Restart Failed")
+                        .body(&format!(
+                            "Failed to restart input blocking: {}\n\nUse Reenable menu to try again.",
+                            e
+                        ))
+                        .timeout(notify_rust::Timeout::Milliseconds(NOTIFICATION_ERROR_TIMEOUT_MS))
+                        .show();
                 }
+            }
+            handsoff::TapLifecycleEvent::Idle => {}
             }
         }
 
@@ -1128,58 +1205,64 @@ fn relaunch_self() -> Result<()> {
 }
 
 /// Exclusive single-instance lock via `flock(2)` on
-/// `<config dir>/handsoff/handsoff.lock`. The file descriptor is leaked
-/// (never dropped) so the lock is held until process exit — the OS releases
-/// it automatically when the process dies, so a crash/power cycle cannot
-/// leave a stale lock. On lock failure (another instance running): log,
-/// alert, exit 0. No libc crate dependency: `flock` is declared directly
-/// (std already links libSystem on macOS).
-fn acquire_single_instance_lock() -> Result<()> {
+/// `<config dir>/handsoff/handsoff.lock`, held for the process lifetime
+/// (the fd is leaked, so the OS releases the lock on exit — a crash or power
+/// cycle cannot leave a stale lock). The mechanics live in
+/// `utils::lock_file` so the acquire/grace semantics are unit-testable.
+///
+/// `skip_duplicate_alert` (the `--skip-instance-lock` successor, issue #37
+/// N1): still acquires the lock, retrying through a grace window while the
+/// dying parent releases it — the flag only suppresses the duplicate alert;
+/// the successor always ends up holding the lock. A plain launch makes a
+/// single attempt: a held lock means another instance is running (log,
+/// alert, exit 0).
+fn acquire_single_instance_lock(skip_duplicate_alert: bool) -> Result<()> {
     #[cfg(target_os = "macos")]
     {
-        use std::fs::OpenOptions;
-        use std::os::unix::io::AsRawFd;
-
-        #[link(name = "System")]
-        extern "C" {
-            fn flock(fd: i32, operation: i32) -> i32;
-        }
-        const LOCK_EX: i32 = 0x0002; // exclusive lock
-        const LOCK_NB: i32 = 0x0004; // don't block when locking
-
         let path = Config::config_path()
             .parent()
             .expect("config path always has a parent")
             .join("handsoff.lock");
-        std::fs::create_dir_all(path.parent().expect("parent exists"))?;
-
-        let file = OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(false)
-            .open(&path)
-            .with_context(|| format!("Failed to open lock file {}", path.display()))?;
-
-        if unsafe { flock(file.as_raw_fd(), LOCK_EX | LOCK_NB) } != 0 {
-            error!(
-                "Another HandsOff instance is running (lock held on {}); exiting",
-                path.display()
-            );
-            show_alert(
-                "HandsOff is already running",
-                "Another HandsOff instance is active — check the menu bar. \
-                 This duplicate will now exit.",
-            );
-            std::process::exit(0);
+        let grace = if skip_duplicate_alert {
+            Some(lock_file::ACQUIRE_GRACE)
+        } else {
+            None
+        };
+        match lock_file::try_acquire_flock(&path, grace)? {
+            lock_file::AcquireOutcome::Acquired(file) => {
+                // Hold the lock for the process lifetime: leak the File so
+                // the fd (and with it the flock) is never released.
+                std::mem::forget(file);
+                info!("Single-instance lock acquired: {}", path.display());
+            }
+            lock_file::AcquireOutcome::StillHeld => {
+                if skip_duplicate_alert {
+                    // Grace expired and the lock is STILL held: a full
+                    // instance is running after all — exit like a duplicate,
+                    // no alert (the flag suppressed it for the overlap only).
+                    warn!(
+                        "Single-instance lock still held after grace period ({}); \
+                         another instance is running; exiting",
+                        path.display()
+                    );
+                } else {
+                    error!(
+                        "Another HandsOff instance is running (lock held on {}); exiting",
+                        path.display()
+                    );
+                    show_alert(
+                        "HandsOff is already running",
+                        "Another HandsOff instance is active — check the menu bar. \
+                         This duplicate will now exit.",
+                    );
+                }
+                std::process::exit(0);
+            }
         }
-
-        // Hold the lock for the process lifetime: leak the File so the fd
-        // (and with it the flock) is never released while running.
-        std::mem::forget(file);
-        info!("Single-instance lock acquired: {}", path.display());
     }
     #[cfg(not(target_os = "macos"))]
     {
+        let _ = skip_duplicate_alert;
         // Tray app is macOS-only; nothing to guard elsewhere.
         Ok(())
     }

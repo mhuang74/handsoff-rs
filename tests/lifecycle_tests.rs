@@ -10,7 +10,10 @@
 
 use handsoff::config::AutoUnlockConfig;
 use handsoff::config_file::Config;
-use handsoff::preferences::{change_passphrase_available_seam, menu_state, wipe_config_at, PreferencesEdit};
+use handsoff::preferences::{
+    change_passphrase_available_seam, change_passphrase_verified_to_path, menu_state,
+    wipe_config_at, PreferencesEdit,
+};
 use handsoff::setup;
 use handsoff::utils::hash_keycodes;
 use std::num::NonZeroU64;
@@ -68,7 +71,9 @@ fn test_menu_state_locked() {
     assert!(!m.lock_enabled);
     assert!(!m.disable_enabled);
     assert!(m.reenable_enabled, "Reenable must be unguarded while locked");
-    assert!(m.reset_enabled, "Reset must stay reachable (recovery path)");
+    // N5: a dead-tap-while-locked window must not allow re-keying or wiping.
+    assert!(!m.change_passphrase_enabled);
+    assert!(!m.reset_enabled);
 }
 
 #[test]
@@ -335,6 +340,184 @@ fn test_post_reset_wizard_outcome_revalidates() {
         Config::load_from_path(&path).is_ok(),
         "post-Reset wizard config must load (tray relaunch gate)"
     );
+
+    let _ = std::fs::remove_file(&path);
+}
+
+// ---------------------------------------------------------------------------
+// Legacy config tolerance (issue #37 N8): backoff mode with no stored base
+// interval must not break Preferences or Change Passphrase.
+// ---------------------------------------------------------------------------
+
+/// Backoff-mode config with NO `auto_unlock_base_interval` (legacy shape).
+fn write_legacy_backoff_config(path: &std::path::Path) {
+    let toml_src = format!(
+        r#"
+passphrase_hash = "{}"
+passphrase_format = "keycode-v1"
+auto_lock_timeout = 120
+auto_unlock_mode = "backoff"
+"#,
+        hash_keycodes(&valid_keys())
+    );
+    std::fs::write(path, toml_src).expect("Failed to write legacy config");
+}
+
+#[test]
+fn test_legacy_backoff_config_change_passphrase_falls_back_to_default_base() {
+    let path = temp_config_path();
+    write_legacy_backoff_config(&path);
+
+    // Load succeeds (the stored hash is preserved through the merge).
+    let new_keys = vec![11u32, 7, 31, 45];
+    let updated = change_passphrase_available_seam(&path, &new_keys)
+        .expect("Change Passphrase must tolerate a legacy backoff config");
+
+    assert_eq!(updated.auto_unlock_mode, "backoff");
+    assert_eq!(
+        updated.auto_unlock_base_interval,
+        Some(handsoff::constants::AUTO_UNLOCK_BASE_SECONDS),
+        "missing base must fall back to the runtime default (3600 s)"
+    );
+    assert_eq!(
+        updated.passphrase_hash.as_deref(),
+        Some(hash_keycodes(&new_keys).as_str()),
+        "new hash must be saved"
+    );
+
+    // The reloaded config validates (no base=0 constructor failure).
+    let reloaded = Config::load_from_path(&path).expect("reloaded legacy-updated config");
+    assert_eq!(reloaded.auto_unlock_base_interval, Some(handsoff::constants::AUTO_UNLOCK_BASE_SECONDS));
+
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn test_legacy_backoff_config_preferences_falls_back_to_default_base() {
+    let path = temp_config_path();
+    write_legacy_backoff_config(&path);
+
+    let updated = handsoff::preferences::apply_preferences_to_path(
+        &path,
+        &PreferencesEdit {
+            lock_key: None,
+            talk_key: None,
+            auto_lock: Some(240),
+            auto_unlock_base: None,
+        },
+    )
+    .expect("Preferences must tolerate a legacy backoff config");
+
+    assert_eq!(updated.auto_lock_timeout, 240);
+    assert_eq!(updated.auto_unlock_mode, "backoff");
+    assert_eq!(
+        updated.auto_unlock_base_interval,
+        Some(handsoff::constants::AUTO_UNLOCK_BASE_SECONDS),
+        "missing base must fall back to the runtime default (3600 s)"
+    );
+    assert_eq!(
+        updated.passphrase_hash.as_deref(),
+        Some(hash_keycodes(&valid_keys()).as_str()),
+        "stored passphrase must be preserved"
+    );
+
+    let _ = std::fs::remove_file(&path);
+}
+
+// ---------------------------------------------------------------------------
+// Change Passphrase verification flow (issue #37 N6): verify-then-recapture.
+// The captured sequences stand in for the live capture tap (stubbed capture
+// closure at the dialog level); the assertions here check that authentication
+// of the CURRENT Passphrase is enforced and that failure never touches disk.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_change_passphrase_verified_correct_current_succeeds() {
+    let path = temp_config_path();
+    seeded_config().save_to_path(&path).unwrap();
+    let original_hash = hash_keycodes(&valid_keys());
+
+    let new_keys = vec![11u32, 7, 31, 45];
+    let updated = change_passphrase_verified_to_path(&path, &valid_keys(), &new_keys)
+        .expect("correct current Passphrase must allow the change");
+
+    assert_eq!(
+        updated.passphrase_hash.as_deref(),
+        Some(hash_keycodes(&new_keys).as_str()),
+        "new hash must be saved"
+    );
+    // Other fields preserved (backoff contract untouched — story 15).
+    assert_eq!(updated.auto_lock_timeout, 120);
+    assert_eq!(updated.auto_unlock_mode, original_mode_seeded());
+
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn test_change_passphrase_verified_wrong_current_refuses() {
+    let path = temp_config_path();
+    seeded_config().save_to_path(&path).unwrap();
+    let before = std::fs::read_to_string(&path).unwrap();
+
+    // Wrong "current" sequence: authentication must fail, file untouched.
+    let wrong_current = vec![11u32, 2, 8, 46];
+    let result = change_passphrase_verified_to_path(&path, &wrong_current, &valid_keys());
+    assert!(result.is_err(), "wrong current Passphrase must be refused");
+    assert!(
+        result.unwrap_err().to_string().contains("NOT changed"),
+        "error must state nothing was changed"
+    );
+
+    let after = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(before, after, "failed verification must not touch the config");
+
+    let _ = std::fs::remove_file(&path);
+}
+
+fn original_mode_seeded() -> String {
+    "backoff".to_string()
+}
+
+// ---------------------------------------------------------------------------
+// Config permissions (issue #37 N7): atomic 0600 creation, permissive-mode
+// auto-repair, hard failure only when the repair itself fails.
+// ---------------------------------------------------------------------------
+
+#[cfg(unix)]
+#[test]
+fn test_config_new_file_is_0600_from_creation() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let path = temp_config_path();
+    seeded_config().save_to_path(&path).unwrap();
+
+    let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600, "new config file must be 0600 from creation (no window)");
+
+    let _ = std::fs::remove_file(&path);
+}
+
+#[cfg(unix)]
+#[test]
+fn test_config_permissive_mode_repaired_on_load() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let path = temp_config_path();
+    seeded_config().save_to_path(&path).unwrap();
+    // Simulate a pre-existing world-readable config.
+    let mut perms = std::fs::metadata(&path).unwrap().permissions();
+    perms.set_mode(0o644);
+    std::fs::set_permissions(&path, perms).unwrap();
+
+    let loaded = Config::load_from_path(&path).expect("permissive-mode config must LOAD (repair, not wizard)");
+    assert_eq!(
+        loaded.passphrase_hash.as_deref(),
+        Some(hash_keycodes(&valid_keys()).as_str()),
+        "content must be untouched by the repair"
+    );
+
+    let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600, "load must chmod the config to 0600");
 
     let _ = std::fs::remove_file(&path);
 }

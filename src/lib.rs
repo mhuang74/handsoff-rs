@@ -15,9 +15,9 @@ pub mod wizard;
 use anyhow::{Context, Result};
 use app_state::AppState;
 use constants::{
-    AUTO_LOCK_CHECK_INTERVAL_SECS, AUTO_UNLOCK_CHECK_INTERVAL_SECS,
-    AUTO_UNLOCK_CEILING_SECONDS, BUFFER_RESET_CHECK_INTERVAL_MS,
-    CALLBACK_TELEMETRY_INTERVAL_SECS, CFRUNLOOP_POLL_INTERVAL_MS, PERMISSION_CHECK_INTERVAL_SECS,
+    AUTO_LOCK_CHECK_INTERVAL_SECS, AUTO_UNLOCK_CEILING_SECONDS, AUTO_UNLOCK_CHECK_INTERVAL_SECS,
+    BUFFER_RESET_CHECK_INTERVAL_MS, CALLBACK_TELEMETRY_INTERVAL_SECS, CFRUNLOOP_POLL_INTERVAL_MS,
+    PERMISSION_CHECK_INTERVAL_SECS,
 };
 use core_graphics::sys::CGEventTapRef;
 use input_blocking::event_tap;
@@ -44,6 +44,21 @@ fn wall_clock_now() -> String {
 
 // Type alias for CFRunLoopSourceRef (from event_tap.rs)
 type CFRunLoopSourceRef = *mut std::ffi::c_void;
+
+/// What [`HandsOffCore::service_tap_lifecycle`] did this pass (issue #37 N3).
+#[derive(Debug)]
+pub enum TapLifecycleEvent {
+    /// No lifecycle flag was set.
+    Idle,
+    /// The tap was stopped due to permission loss (CLI exits; tray keeps
+    /// running and shows status).
+    TapStopped,
+    /// The tap was restarted (permissions restored).
+    Restarted,
+    /// The tap restart was attempted but failed (permissions still missing
+    /// or tap creation failed).
+    RestartFailed(anyhow::Error),
+}
 
 /// Core HandsOff functionality shared between CLI and Tray App
 pub struct HandsOffCore {
@@ -97,20 +112,32 @@ impl HandsOffCore {
         match utils::keycode::code_to_keycode(lock_key) {
             Some(lock_keycode) => {
                 self.state.set_lock_keycode(lock_keycode);
-                info!("Lock hotkey configured: {:?} (macOS keycode: {})", lock_key, lock_keycode);
+                info!(
+                    "Lock hotkey configured: {:?} (macOS keycode: {})",
+                    lock_key, lock_keycode
+                );
             }
             None => {
-                error!("CRITICAL: Failed to convert lock hotkey {:?} to macOS keycode", lock_key);
+                error!(
+                    "CRITICAL: Failed to convert lock hotkey {:?} to macOS keycode",
+                    lock_key
+                );
                 error!("Lock hotkey will use default keycode (L). This is likely a bug.");
             }
         }
         match utils::keycode::code_to_keycode(talk_key) {
             Some(talk_keycode) => {
                 self.state.set_talk_keycode(talk_keycode);
-                info!("Talk hotkey configured: {:?} (macOS keycode: {})", talk_key, talk_keycode);
+                info!(
+                    "Talk hotkey configured: {:?} (macOS keycode: {})",
+                    talk_key, talk_keycode
+                );
             }
             None => {
-                error!("CRITICAL: Failed to convert talk hotkey {:?} to macOS keycode", talk_key);
+                error!(
+                    "CRITICAL: Failed to convert talk hotkey {:?} to macOS keycode",
+                    talk_key
+                );
                 error!("Talk hotkey will use default keycode (T). This is likely a bug.");
             }
         }
@@ -191,7 +218,10 @@ impl HandsOffCore {
         self.set_hotkey_config(lock_key, talk_key);
 
         if let Err(e) = self.start_hotkeys() {
-            error!("Hotkey re-registration failed; restoring previous hotkeys: {}", e);
+            error!(
+                "Hotkey re-registration failed; restoring previous hotkeys: {}",
+                e
+            );
             // Best-effort restore of whatever was registered before.
             if let Some(manager) = &mut self.hotkey_manager {
                 let _ = manager.unregister_all();
@@ -429,11 +459,23 @@ impl HandsOffCore {
     }
 
     /// Disable HandsOff (stops event tap and hotkeys for minimal CPU usage)
+    ///
+    /// Issue #37 N2: clearing `is_locked` here guarantees a Lock flag can
+    /// never outlive the tap that enforces it. A deferred Disable click (or
+    /// any disable path) previously left `is_locked=true` with no tap behind
+    /// it — a locked stretch the state machine believed was in progress and
+    /// that Reenable would later clear WITHOUT authentication.
     pub fn disable(&mut self) -> Result<()> {
         info!("Disabling HandsOff - entering minimal CPU mode");
 
         // Set disabled flag first (background threads will become inactive)
         self.state.set_disabled(true);
+
+        // A stopped tap enforces nothing: the Lock flag must go with it.
+        if self.state.is_locked() {
+            info!("Disable clears an active Lock (no enforcement behind a stopped tap)");
+        }
+        self.state.reset_all();
 
         // Stop event tap
         self.stop_event_tap();
@@ -472,6 +514,63 @@ impl HandsOffCore {
 
         info!("HandsOff enabled successfully");
         Ok(())
+    }
+
+    /// Service the tap-lifecycle flags — the ONE block both binary main
+    /// loops must run each poll (issue #37 N3).
+    ///
+    /// Consumes the AppState lifecycle flags and performs the corresponding
+    /// tap operation:
+    /// - `should_stop_event_tap` → `stop_event_tap` (permission loss)
+    /// - `should_reenable_event_tap` → `reenable_event_tap` (macOS disabled
+    ///   the tap on a sleep/wake timeout; falls back to a full restart)
+    /// - `should_start_event_tap` → `restart_event_tap` (permissions restored)
+    ///
+    /// The tray session loop and the CLI main loop both call this, so the
+    /// CLI recovers from a tap timeout exactly like the tray. Returns what
+    /// happened so each binary can layer its own UX (CLI exits on stop; the
+    /// tray notifies on restart success/failure).
+    pub fn service_tap_lifecycle(&mut self) -> TapLifecycleEvent {
+        // Permission loss: stop the tap.
+        if self.state.should_stop_event_tap_and_clear() {
+            warn!("Stopping input blocking due to permission loss");
+            self.stop_event_tap();
+            info!("Input blocking stopped - normal input restored");
+            return TapLifecycleEvent::TapStopped;
+        }
+
+        // Re-enable the existing tap (post sleep/wake timeout recovery).
+        // This reuses the same CGEventTapRef — no new WindowServer connection
+        // is created, which prevents zombie Mach port accumulation across
+        // sleep/wake cycles.
+        if self.state.should_reenable_event_tap_and_clear() {
+            info!("Re-enabling existing event tap after sleep/wake timeout");
+            if let Err(e) = self.reenable_event_tap() {
+                warn!(
+                    "Failed to re-enable event tap: {} — will attempt full restart",
+                    e
+                );
+                // reenable_event_tap already falls back to restart internally,
+                // but log the failure so it's visible in telemetry
+            }
+        }
+
+        // Permission restored: (re)start the tap.
+        if self.state.should_start_event_tap_and_clear() {
+            info!("Restarting input blocking - permissions restored");
+            return match self.restart_event_tap() {
+                Ok(()) => {
+                    info!("Input blocking restarted successfully");
+                    TapLifecycleEvent::Restarted
+                }
+                Err(e) => {
+                    warn!("Failed to restart input blocking: {}", e);
+                    TapLifecycleEvent::RestartFailed(e)
+                }
+            };
+        }
+
+        TapLifecycleEvent::Idle
     }
 
     /// Start the hotkey manager using configured keys

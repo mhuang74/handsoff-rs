@@ -237,7 +237,7 @@ fn main() -> Result<()> {
             );
         }
 
-        // Check if we should exit (permission loss detected by event tap callback)
+        // Exit requested by the tap callback (permission revoked mid-tap).
         if core.state.should_exit_and_clear() {
             warn!("Accessibility permissions lost - exiting");
             eprintln!("\nERROR: Accessibility permissions were revoked.");
@@ -253,12 +253,15 @@ fn main() -> Result<()> {
             break;
         }
 
-        // Check if event tap should be stopped (fallback for permission monitor detection)
-        if core.state.should_stop_event_tap_and_clear() {
-            warn!("Stopping event tap due to permission loss (detected by monitor)");
-            core.stop_event_tap();
-
-            // For CLI, if event tap stops, we should exit
+        // Service the shared tap-lifecycle flags (issue #37 N3): permission
+        // loss stops the tap (CLI then exits), a macOS sleep/wake timeout
+        // re-enables the existing tap — previously the CLI never consumed
+        // the re-enable flag and protection silently lapsed forever.
+        if matches!(
+            core.service_tap_lifecycle(),
+            handsoff::TapLifecycleEvent::TapStopped
+        ) {
+            // Tap stopped = permission loss. For CLI, exit.
             eprintln!("\nInput blocking stopped due to permission loss. Exiting...");
             break;
         }
