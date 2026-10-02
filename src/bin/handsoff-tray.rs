@@ -327,6 +327,12 @@ fn main() -> Result<()> {
         .context("Failed to add check updates menu item")?;
     menu.append(&help_item)
         .context("Failed to add help menu item")?;
+    let quit_separator = PredefinedMenuItem::separator();
+    let quit_item = MenuItem::new("Quit", true, None);
+    menu.append(&quit_separator)
+        .context("Failed to add quit separator")?;
+    menu.append(&quit_item)
+        .context("Failed to add quit menu item")?;
 
     // Create tray icon
     let icon = create_icon_unlocked();
@@ -349,6 +355,7 @@ fn main() -> Result<()> {
     let regrant_id = regrant_item.id().clone();
     let check_updates_id = check_updates_item.id().clone();
     let help_id = help_item.id().clone();
+    let quit_id = quit_item.id().clone();
 
     // Single-dialog invariant (issue #36): while a dialog owns the nested
     // run_return, IT drains the menu channel — clicks on these window-flow
@@ -397,6 +404,7 @@ fn main() -> Result<()> {
                 regrant_id.clone(),
                 check_updates_id.clone(),
                 help_id.clone(),
+                quit_id.clone(),
             ),
             (
                 lock_item.clone(),
@@ -408,6 +416,7 @@ fn main() -> Result<()> {
                 regrant_item.clone(),
                 check_updates_item.clone(),
                 help_item.clone(),
+                quit_item.clone(),
             ),
             &tray,
             tracked,
@@ -544,8 +553,10 @@ fn run_session(
         tray_icon::menu::MenuId,
         tray_icon::menu::MenuId,
         tray_icon::menu::MenuId,
+        tray_icon::menu::MenuId,
     ),
     items: (
+        tray_icon::menu::MenuItem,
         tray_icon::menu::MenuItem,
         tray_icon::menu::MenuItem,
         tray_icon::menu::MenuItem,
@@ -570,6 +581,7 @@ fn run_session(
         regrant_id,
         check_updates_id,
         help_id,
+        quit_id,
     ) = ids;
     let (
         lock_item,
@@ -581,6 +593,7 @@ fn run_session(
         _regrant_item,
         _check_updates_item,
         _help_item,
+        _quit_item,
     ) = items;
     let (was_locked, was_disabled, last_tooltip, last_tooltip_update, has_permissions) = tracked;
 
@@ -611,6 +624,8 @@ fn run_session(
             flags.reenable_enabled
         } else if id == check_updates_id {
             true // fire-and-forget; no protection state involved
+        } else if id == quit_id {
+            true // Quit is always allowed (user decision: no lock-state gating)
         } else {
             false // window-flow IDs cannot appear here; unknown IDs ignored
         };
@@ -635,6 +650,9 @@ fn run_session(
         } else if id == check_updates_id {
             info!("Check for Updates menu item clicked");
             handle_check_updates();
+        } else if id == quit_id {
+            info!("Quit menu item clicked (deferred)");
+            std::process::exit(0);
         }
     }
 
@@ -770,6 +788,13 @@ fn run_session(
                 {
                     return;
                 }
+            } else if event_id == quit_id {
+                info!("Quit menu item clicked");
+                // std::process::exit deliberately skips destructors: dropping
+                // the tao event loop's CFRunLoop observers panics (see the
+                // run_return comment above run_session). The OS reclaims the
+                // CGEventTap and hotkey registrations on process death.
+                std::process::exit(0);
             }
         }
 
