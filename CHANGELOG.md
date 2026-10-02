@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- feat: tray **Quit** menu item — final entry in the tray menu (after its own separator), always enabled with no lock-state gating (menu is unreachable while locked since clicks are blocked). Clicking it exits via `std::process::exit(0)` — deliberately skipping destructors, since dropping the tao event loop's CFRunLoop observers panics; the OS reclaims the CGEventTap and hotkey registrations on process death. Ends the process cleanly enough that the app bundle can be drag-replaced in `/Applications` while it was previously running; the single-instance `flock` is released by process exit. A Quit click queued while a dialog owned the loop (deferred dispatch) is always allowed and takes effect when the next session starts
+
 ## [0.8.5] - 2026-10-03
 
 - fix: Change Passphrase dialog instruction text wrapped with `wrappingLabelWithString` (same pattern as the setup wizard) instead of a plain non-wrapping label, so long instruction lines (verify-current and capture-new phases, incl. the new TIP paragraph) word-wrap inside the window instead of clipping at the right edge; window height 300→340 for the taller wrapped text
