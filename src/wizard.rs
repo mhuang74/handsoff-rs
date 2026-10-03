@@ -205,8 +205,8 @@ mod macos {
     use objc2_app_kit::{
         NSAlert, NSApplication, NSApplicationActivationPolicy,
         NSBackingStoreType, NSButton, NSControlStateValueOn, NSEvent, NSEventModifierFlags,
-        NSEventType, NSFont, NSModalResponseOK, NSGridView, NSLayoutAttribute, NSScrollView,
-        NSStackView, NSStackViewGravity, NSTextAlignment, NSTextField,
+        NSEventType, NSFont, NSAlertFirstButtonReturn, NSGridView, NSLayoutAttribute,
+        NSScrollView, NSStackView, NSStackViewGravity, NSTextAlignment, NSTextField,
         NSUserInterfaceLayoutOrientation, NSView, NSWindow, NSWindowDelegate, NSWindowStyleMask,
     };
     use objc2_foundation::{
@@ -496,7 +496,7 @@ mod macos {
             alert.addButtonWithTitle(&NSString::from_str("Reset & Restart"));
             alert.addButtonWithTitle(&NSString::from_str("Cancel"));
         }
-        if unsafe { alert.runModal() } != NSModalResponseOK {
+        if unsafe { alert.runModal() } != NSAlertFirstButtonReturn {
             log::info!("Stale-grant reset cancelled by user");
             return;
         }
