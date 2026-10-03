@@ -2,6 +2,23 @@
 
 ## [0.9.0] - 2026-10-03
 
+## 📦 Uncategorized
+
+- fix+feat: stale-TCC escape hatch (#34), wizard lockout/lifecycle (#36), protection-state consistency (#37), Help + Quit menu items (0.8.5)
+   - PR: #35
+- Remove handsoff CLI binary; bump 0.9.0
+   - PR: #38
+- UI consolidation fixes: wizard menu drain, native NSAlert, escape-hatch fix (#39)
+   - PR: #41
+- Flow-runner refactor: consolidate the five window-flow pump loops into src/window_flow.rs (#40)
+   - PR: #42
+- docs: UI stack assessment + UI consolidation plan (recovered from ui_consolidation)
+   - PR: #43
+
+
+
+## [0.9.0] - 2026-10-03
+
 - change: remove the `handsoff` CLI binary, its release tarballs, and the tray `--setup` terminal flow — the tray app with its in-app Setup Wizard is the only distribution and setup path (ADR 0004)
 
 - feat: tray **Quit** menu item — final entry in the tray menu (after its own separator), always enabled with no lock-state gating (menu is unreachable while locked since clicks are blocked). Clicking it exits via `std::process::exit(0)` — deliberately skipping destructors, since dropping the tao event loop's CFRunLoop observers panics; the OS reclaims the CGEventTap and hotkey registrations on process death. Ends the process cleanly enough that the app bundle can be drag-replaced in `/Applications` while it was previously running; the single-instance `flock` is released by process exit. A Quit click queued while a dialog owned the loop (deferred dispatch) is always allowed and takes effect when the next session starts
