@@ -359,6 +359,7 @@ mod macos {
             self.ok_clicked.store(false, Ordering::SeqCst);
             self.cancel_clicked.store(false, Ordering::SeqCst);
             self.close_requested.store(false, Ordering::SeqCst);
+            self.step.store(STEP_PERMISSION, Ordering::SeqCst);
             *self.status.lock() = String::new();
             *self.waiting_since.lock() = None;
         }
@@ -944,8 +945,15 @@ mod macos {
         activate_app(&app);
 
         // ---- Drive the flow through the CALLER's tao event loop ----
-        use tao::platform::run_return::EventLoopExtRunReturn;
-
+        //
+        // Flow-runner engine (issue #40): the hand-copied run_return loop
+        // (cadence, menu drain, close-poll, exit path — including PR 1's
+        // absorb_menu_clicks insertion, b636bde) is deleted; the engine
+        // owns that ceremony and the spec owns the three-step state
+        // machine. SIGNALS.step stays the shared step store (the
+        // begin_flow snapshot test reads it); poll_step keeps it in sync
+        // with the engine's current step on every transition.
+        //
         // Permission polling on a background thread: fast lightweight
         // AXIsProcessTrusted checks every 500 ms (safe for repeated calls;
         // the full test-tap check degrades WindowServer when hammered), then
@@ -957,299 +965,327 @@ mod macos {
         // longer can never succeed. Surface the reset escape hatch.
         let perm_granted = Arc::new(AtomicBool::new(false));
         let perm_stale = Arc::new(AtomicBool::new(false));
-        // SIGNALS is process-global and shared across flows (wizard,
-        // re-grant, preferences, change-passphrase): clear every per-flow
-        // signal so stale clicks/close flags from a previous flow cannot
-        // leak into this one (issue #36 story 16).
-        SIGNALS.begin_flow();
-        std::thread::spawn({
+        let poller = {
             let perm_granted = perm_granted.clone();
             let perm_stale = perm_stale.clone();
-            move || loop {
-                if crate::input_blocking::check_accessibility_permissions_lightweight()
-                    && crate::input_blocking::check_accessibility_permissions()
-                {
-                    perm_granted.store(true, Ordering::SeqCst);
-                    return;
-                }
-                {
-                    // Clock starts when the user clicks Grant (set by the
-                    // event loop), not at window open — reading the
-                    // instructions can legitimately take longer than
-                    // STALE_GRANT_TIMEOUT. No click yet → no timing.
-                    let started = SIGNALS.waiting_since.lock();
-                    if let Some(t0) = *started {
-                        if t0.elapsed() >= STALE_GRANT_TIMEOUT {
-                            drop(started);
-                            perm_stale.store(true, Ordering::SeqCst);
+            Box::new(move |handle: &crate::window_flow::PollerHandle| {
+                while !handle.cancelled() {
+                    if crate::input_blocking::check_accessibility_permissions_lightweight()
+                        && crate::input_blocking::check_accessibility_permissions()
+                    {
+                        perm_granted.store(true, Ordering::SeqCst);
+                        return;
+                    }
+                    {
+                        // Clock starts when the user clicks Grant (set by
+                        // poll_step), not at window open — reading the
+                        // instructions can legitimately take longer than
+                        // STALE_GRANT_TIMEOUT. No click yet → no timing.
+                        let started = SIGNALS.waiting_since.lock();
+                        if let Some(t0) = *started {
+                            if t0.elapsed() >= STALE_GRANT_TIMEOUT {
+                                drop(started);
+                                perm_stale.store(true, Ordering::SeqCst);
+                            }
                         }
                     }
+                    std::thread::sleep(std::time::Duration::from_millis(500));
                 }
-                std::thread::sleep(std::time::Duration::from_millis(500));
-            }
-        });
+            }) as Box<dyn FnOnce(&crate::window_flow::PollerHandle) + Send>
+        };
 
-        let outcome_slot = std::rc::Rc::new(std::cell::RefCell::new(None::<Result<WizardOutcome>>));
-        let outcome = outcome_slot.clone();
+        // Main-thread-only flow state (poll_step is FnMut — mutable
+        // captures, same locals the migrated loop owned).
         let mut first_keys: Option<Vec<u32>> = None;
         let mut capture_offered = false;
         let mut stale_shown = false;
 
-        let status_label_retained: Retained<NSTextField> = status_label.clone();
-        let set_status = move |text: &str| {
+        // Status text: SIGNALS.status (the tap callback's dot channel) plus
+        // the status label — the same dual write the migrated loop's
+        // set_status closure performed.
+        fn set_status(status_label: &NSTextField, text: &str) {
             *SIGNALS.status.lock() = text.to_string();
             let ns = NSString::from_str(text);
-            unsafe { status_label_retained.setStringValue(&ns) };
-        };
+            unsafe { status_label.setStringValue(&ns) };
+        }
 
-        event_loop.run_return(move |event, _, control_flow| {
-            // Drive step transitions on every wake; cadence via WaitUntil.
-            *control_flow = tao::event_loop::ControlFlow::WaitUntil(
-                std::time::Instant::now() + std::time::Duration::from_millis(100),
-            );
+        // The engine's build_window takes the window; poll_step re-titles
+        // it on an outcome-construction failure, so keep a Retained clone.
+        let window_for_title = window.clone();
 
-            let _ = &event; // raw NSWindow: tao events carry no useful signal
+        let spec = crate::window_flow::FlowSpec {
+            first_step: crate::window_flow::StepId(STEP_PERMISSION),
+            build_window: Box::new(move || Ok(crate::window_flow::FlowWindow { window, app })),
+            // The step-0 visibility and instruction text were set above,
+            // before the engine starts (same as the migrated loop's setup);
+            // steps render in place from poll_step, so the render hook has
+            // nothing to swap.
+            render_step: Box::new(|_| {}),
+            poll_step: Box::new(move |id| {
+                let step = id.0;
 
-            // Single-dialog invariant (issue #36): menu clicks queued while
-            // this window owns the loop re-front it instead of stacking.
-            absorb_menu_clicks(&window, &app, &super::WINDOW_FLOW_MENU_IDS.lock());
-
-            // Closing the window ends the flow in EVERY phase (issue #36):
-            // the delegate's windowShouldClose: sets this flag (tao
-            // CloseRequested never fires for these raw NSWindows).
-            if SIGNALS.close_requested.load(Ordering::SeqCst) {
-                window.orderOut(None);
-                *outcome.borrow_mut() = Some(Err(anyhow!("Setup wizard closed before completing")));
-                stop_run_loop(&app);
-                return;
-            }
-
-            let step = SIGNALS.step.load(Ordering::SeqCst);
-
-            // Issue #34: reset clicked → confirm, tccutil reset, relaunch
-            // (never returns on confirm).
-            if SIGNALS.reset_clicked.swap(false, Ordering::SeqCst) {
-                reset_permission_and_relaunch();
-                return;
-            }
-
-            // Issue #34: wait exceeded STALE_GRANT_TIMEOUT with no progress
-            // → the grant is stale; surface the escape hatch once.
-            if perm_stale.load(Ordering::SeqCst) && !stale_shown {
-                stale_shown = true;
-                reset_btn.setHidden(false);
-                // Long multi-line explanation → the multi-line instruction
-                // label (status label is a 20 pt one-liner; it would clip).
-                unsafe { instr_label.setStringValue(&NSString::from_str(STALE_GRANT_TEXT)) };
-                set_status("Permission appears stale (bound to an old copy of the app).");
-            }
-
-            // Step 0 → 1: Grant clicked.
-            if SIGNALS.grant_clicked.swap(false, Ordering::SeqCst) {
-                SIGNALS.step.store(STEP_CAPTURE, Ordering::SeqCst);
-                // Issue #34: start the stale-detection clock (see poll thread).
-                *SIGNALS.waiting_since.lock() = Some(std::time::Instant::now());
-                open_accessibility_settings();
-                unsafe {
-                    instr_label.setStringValue(&NSString::from_str(
-                        "Waiting for Accessibility permission…\n\
-                         Tick the box for HandsOff in System Settings > Privacy & Security > Accessibility.",
-                    ))
-                };
-                grant_btn.setHidden(true);
-                status_label.setHidden(false);
-                set_status("Waiting for permission…");
-                return;
-            }
-
-            // Step 1: poll permission; when granted, show the explicit
-            // capture button — the keyboard-capturing tap is installed ONLY
-            // on a click (keyboard-lockout fix: silent automatic capture
-            // locked the whole keyboard for up to 300 s per launch).
-            // `step` stays STEP_CAPTURE until both captures succeed, so a
-            // failed capture can be retried from the button.
-            if step == STEP_CAPTURE {
-                if perm_granted.load(Ordering::SeqCst) && SIGNALS.capture_clicked.swap(false, Ordering::SeqCst) {
-                    // Capture UI: status label shows entry + dots + countdown;
-                    // the instruction label doubles as the feedback line
-                    // (named reserved keys, too-short warnings, entry
-                    // accepted) — issue #36 capture feedback.
-                    set_status("");
-                    capture_btn.setHidden(true);
-
-                    // Double capture on the main thread. The headless pump
-                    // yields control in 100 ms slices, so the AppKit event
-                    // loop keeps servicing while the tap is installed.
-                    // Cancel path: closing the window sets the abort flag
-                    // via windowShouldClose:, ending the capture and
-                    // restoring keyboard input.
-                    let first = match capture_with_status("Entry 1 of 2", &status_label, &instr_label) {
-                        Ok(k) => k,
-                        Err(e) => {
-                            if SIGNALS.close_requested.load(Ordering::SeqCst) {
-                                window.orderOut(None);
-                                *outcome.borrow_mut() =
-                                    Some(Err(anyhow!("Setup wizard closed before completing")));
-                                stop_run_loop(&app);
-                                return;
-                            }
-                            unsafe {
-                                instr_label.setStringValue(&NSString::from_str(&format!(
-                                    "Capture failed: {e} — click the button to retry."
-                                )))
-                            };
-                            capture_btn.setHidden(false);
-                            return;
-                        }
-                    };
-                    unsafe {
-                        instr_label.setStringValue(&NSString::from_str(
-                            "First entry accepted — re-enter the same Passphrase to confirm.",
-                        ))
-                    };
-
-                    let second = match capture_with_status("Entry 2 of 2", &status_label, &instr_label) {
-                        Ok(k) => k,
-                        Err(e) => {
-                            if SIGNALS.close_requested.load(Ordering::SeqCst) {
-                                window.orderOut(None);
-                                *outcome.borrow_mut() =
-                                    Some(Err(anyhow!("Setup wizard closed before completing")));
-                                stop_run_loop(&app);
-                                return;
-                            }
-                            unsafe {
-                                instr_label.setStringValue(&NSString::from_str(&format!(
-                                    "Capture failed: {e} — click the button to retry."
-                                )))
-                            };
-                            capture_btn.setHidden(false);
-                            return;
-                        }
-                    };
-
-                    if first != second {
-                        window.orderOut(None);
-                        *outcome.borrow_mut() = Some(Err(anyhow!(
-                            "Passphrases did not match — restart the wizard to try again"
-                        )));
-                        stop_run_loop(&app);
-                        return;
-                    }
-                    SIGNALS.step.store(STEP_FORM, Ordering::SeqCst);
-                    first_keys = Some(first);
-                    // Reveal the form.
-                    status_label.setHidden(true);
-                    commit_btn.setHidden(true);
-                    lock_key.setHidden(false);
-                    talk_key.setHidden(false);
-                    auto_lock.setHidden(false);
-                    auto_unlock.setHidden(false);
-                    login_checkbox.setHidden(false);
-                    finish_btn.setHidden(false);
-                    instr_label.setHidden(false);
-                    unsafe {
-                        instr_label.setStringValue(&NSString::from_str(
-                            "Choose hotkeys and timeouts. Empty fields use the defaults.",
-                        ))
-                    };
-                    return;
+                // Issue #34: reset clicked → confirm, tccutil reset, relaunch
+                // (never returns on confirm).
+                if SIGNALS.reset_clicked.swap(false, Ordering::SeqCst) {
+                    reset_permission_and_relaunch();
+                    return crate::window_flow::StepPoll::Stay;
                 }
-                // Permission granted, capture not yet requested: show the
-                // explicit start button once (a local flag, not the step —
-                // the step must stay STEP_CAPTURE so the click above is
-                // still reachable).
-                if perm_granted.load(Ordering::SeqCst) && !capture_offered {
-                    capture_offered = true;
+
+                // Issue #34: wait exceeded STALE_GRANT_TIMEOUT with no
+                // progress → the grant is stale; surface the escape hatch
+                // once. (No return: the migrated loop fell through to the
+                // grant check in the same tick.)
+                if perm_stale.load(Ordering::SeqCst) && !stale_shown {
+                    stale_shown = true;
+                    reset_btn.setHidden(false);
+                    // Long multi-line explanation → the multi-line
+                    // instruction label (status label is a 20 pt one-liner;
+                    // it would clip).
+                    unsafe { instr_label.setStringValue(&NSString::from_str(STALE_GRANT_TEXT)) };
+                    set_status(&status_label, "Permission appears stale (bound to an old copy of the app).");
+                }
+
+                // Step 0 → 1: Grant clicked.
+                if SIGNALS.grant_clicked.swap(false, Ordering::SeqCst) {
+                    SIGNALS.step.store(STEP_CAPTURE, Ordering::SeqCst);
+                    // Issue #34: start the stale-detection clock (see poller).
+                    *SIGNALS.waiting_since.lock() = Some(std::time::Instant::now());
+                    open_accessibility_settings();
+                    unsafe {
+                        instr_label.setStringValue(&NSString::from_str(
+                            "Waiting for Accessibility permission…\n\
+                             Tick the box for HandsOff in System Settings > Privacy & Security > Accessibility.",
+                        ))
+                    };
                     grant_btn.setHidden(true);
                     status_label.setHidden(false);
-                    capture_btn.setHidden(false);
-                    unsafe {
+                    set_status(&status_label, "Waiting for permission…");
+                    return crate::window_flow::StepPoll::Advance(crate::window_flow::StepId(
+                        STEP_CAPTURE,
+                    ));
+                }
+
+                // Step 1: poll permission; when granted, show the explicit
+                // capture button — the keyboard-capturing tap is installed
+                // ONLY on a click (keyboard-lockout fix: silent automatic
+                // capture locked the whole keyboard for up to 300 s per
+                // launch). `step` stays STEP_CAPTURE until both captures
+                // succeed, so a failed capture can be retried from the
+                // button.
+                if step == STEP_CAPTURE {
+                    if perm_granted.load(Ordering::SeqCst)
+                        && SIGNALS.capture_clicked.swap(false, Ordering::SeqCst)
+                    {
+                        // Capture UI: status label shows entry + dots +
+                        // countdown; the instruction label doubles as the
+                        // feedback line (named reserved keys, too-short
+                        // warnings, entry accepted) — issue #36 capture
+                        // feedback.
+                        set_status(&status_label, "");
+                        capture_btn.setHidden(true);
+
+                        // Double capture on the main thread. The headless
+                        // pump yields control in 100 ms slices, so the
+                        // AppKit event loop keeps servicing while the tap is
+                        // installed. This is the sanctioned nested-pump
+                        // exception: the engine's close-poll does not fire
+                        // while the pump owns the thread (one long tick);
+                        // the close abort arrives via windowShouldClose →
+                        // close_requested + request_capture_abort, observed
+                        // by capture_with_status within one 100 ms slice.
+                        // Cancel path: closing the window ends the capture
+                        // and restores keyboard input.
+                        let first = match capture_with_status(
+                            "Entry 1 of 2",
+                            &status_label,
+                            &instr_label,
+                        ) {
+                            Ok(k) => k,
+                            Err(e) => {
+                                if SIGNALS.close_requested.load(Ordering::SeqCst) {
+                                    return crate::window_flow::StepPoll::Finish(
+                                        crate::window_flow::FlowOutcome(Err(anyhow!(
+                                            "Setup wizard closed before completing"
+                                        ))),
+                                    );
+                                }
+                                unsafe {
+                                    instr_label.setStringValue(&NSString::from_str(&format!(
+                                        "Capture failed: {e} — click the button to retry."
+                                    )))
+                                };
+                                capture_btn.setHidden(false);
+                                return crate::window_flow::StepPoll::Stay;
+                            }
+                        };
+                        unsafe {
+                            instr_label.setStringValue(&NSString::from_str(
+                                "First entry accepted — re-enter the same Passphrase to confirm.",
+                            ))
+                        };
+
+                        let second = match capture_with_status(
+                            "Entry 2 of 2",
+                            &status_label,
+                            &instr_label,
+                        ) {
+                            Ok(k) => k,
+                            Err(e) => {
+                                if SIGNALS.close_requested.load(Ordering::SeqCst) {
+                                    return crate::window_flow::StepPoll::Finish(
+                                        crate::window_flow::FlowOutcome(Err(anyhow!(
+                                            "Setup wizard closed before completing"
+                                        ))),
+                                    );
+                                }
+                                unsafe {
+                                    instr_label.setStringValue(&NSString::from_str(&format!(
+                                        "Capture failed: {e} — click the button to retry."
+                                    )))
+                                };
+                                capture_btn.setHidden(false);
+                                return crate::window_flow::StepPoll::Stay;
+                            }
+                        };
+
+                        if first != second {
+                            return crate::window_flow::StepPoll::Finish(
+                                crate::window_flow::FlowOutcome(Err(anyhow!(
+                                    "Passphrases did not match — restart the wizard to try again"
+                                ))),
+                            );
+                        }
+                        SIGNALS.step.store(STEP_FORM, Ordering::SeqCst);
+                        first_keys = Some(first);
+                        // Reveal the form.
+                        status_label.setHidden(true);
+                        commit_btn.setHidden(true);
+                        lock_key.setHidden(false);
+                        talk_key.setHidden(false);
+                        auto_lock.setHidden(false);
+                        auto_unlock.setHidden(false);
+                        login_checkbox.setHidden(false);
+                        finish_btn.setHidden(false);
                         instr_label.setHidden(false);
-                        instr_label.setStringValue(&NSString::from_str(&format!(
-                            "Accessibility granted. Click “Capture Passphrase” when ready.\n\n\
-                             Your keyboard will be captured until you type a Passphrase and press \
-                             Enter (max {}s). Nothing you type reaches other apps during capture. \
-                             Close this window to cancel.\n\n{}",
-                            setup::CAPTURE_TIMEOUT_SECS,
-                            setup::capture_rules_text(
-                                crate::constants::DEFAULT_LOCK_KEYCODE,
-                                crate::constants::DEFAULT_TALK_KEYCODE,
-                            ),
-                        )))
-                    };
-                    set_status("");
-                    return;
-                }
-                // Keep the waiting text fresh while permission is pending.
-                {
+                        unsafe {
+                            instr_label.setStringValue(&NSString::from_str(
+                                "Choose hotkeys and timeouts. Empty fields use the defaults.",
+                            ))
+                        };
+                        return crate::window_flow::StepPoll::Advance(crate::window_flow::StepId(
+                            STEP_FORM,
+                        ));
+                    }
+                    // Permission granted, capture not yet requested: show
+                    // the explicit start button once (a local flag, not the
+                    // step — the step must stay STEP_CAPTURE so the click
+                    // above is still reachable).
+                    if perm_granted.load(Ordering::SeqCst) && !capture_offered {
+                        capture_offered = true;
+                        grant_btn.setHidden(true);
+                        status_label.setHidden(false);
+                        capture_btn.setHidden(false);
+                        unsafe {
+                            instr_label.setHidden(false);
+                            instr_label.setStringValue(&NSString::from_str(&format!(
+                                "Accessibility granted. Click “Capture Passphrase” when ready.\n\n\
+                                 Your keyboard will be captured until you type a Passphrase and press \
+                                 Enter (max {}s). Nothing you type reaches other apps during capture. \
+                                 Close this window to cancel.\n\n{}",
+                                setup::CAPTURE_TIMEOUT_SECS,
+                                setup::capture_rules_text(
+                                    crate::constants::DEFAULT_LOCK_KEYCODE,
+                                    crate::constants::DEFAULT_TALK_KEYCODE,
+                                ),
+                            )))
+                        };
+                        set_status(&status_label, "");
+                        return crate::window_flow::StepPoll::Stay;
+                    }
+                    // Keep the waiting text fresh while permission is
+                    // pending.
                     if SIGNALS.status.lock().is_empty() {
-                        set_status("Waiting for Accessibility permission…");
+                        set_status(&status_label, "Waiting for Accessibility permission…");
                     }
+                    return crate::window_flow::StepPoll::Stay;
                 }
-            }
 
-            // Step 2 → done: Finish clicked.
-            if SIGNALS.finish_clicked.swap(false, Ordering::SeqCst)
-                && SIGNALS.step.load(Ordering::SeqCst) == STEP_FORM
-            {
-                let lock = unsafe { lock_key.stringValue() }.to_string();
-                let talk = unsafe { talk_key.stringValue() }.to_string();
-                let lock = if lock.is_empty() {
-                    None
-                } else {
-                    Some(lock.to_uppercase())
-                };
-                let talk = if talk.is_empty() {
-                    None
-                } else {
-                    Some(talk.to_uppercase())
-                };
-                let auto_lock_val: u64 = unsafe { auto_lock.stringValue() }
-                    .to_string()
-                    .parse()
-                    .unwrap_or(AUTO_LOCK_DEFAULT_SECONDS);
-                let auto_unlock_val: u64 = unsafe { auto_unlock.stringValue() }
-                    .to_string()
-                    .parse()
-                    .unwrap_or(crate::app_state::AUTO_UNLOCK_BASE_SECONDS);
-
-                let keys = match &first_keys {
-                    Some(k) => k.clone(),
-                    None => {
-                        window.orderOut(None);
-                        *outcome.borrow_mut() = Some(Err(anyhow!("No passphrase captured")));
-                        stop_run_loop(&app);
-                        return;
-                    }
-                };
-
-                let login_item = if unsafe { login_checkbox.state() } == NSControlStateValueOn {
-                    set_login_item(true)
-                } else {
-                    LoginItemResult::Disabled
-                };
-
-                match build_outcome(keys, auto_lock_val, auto_unlock_val, lock, talk, login_item)
+                // Step 2 → done: Finish clicked.
+                if SIGNALS.finish_clicked.swap(false, Ordering::SeqCst)
+                    && SIGNALS.step.load(Ordering::SeqCst) == STEP_FORM
                 {
-                    Ok(o) => {
-                        // Window leak fix (issue #36): hide on every exit.
-                        window.orderOut(None);
-                        *outcome.borrow_mut() = Some(Ok(o));
-                        stop_run_loop(&app);
-                    }
-                    Err(e) => {
-                        window.setTitle(&NSString::from_str(&format!("HandsOff Setup — {}", e)));
+                    let lock = unsafe { lock_key.stringValue() }.to_string();
+                    let talk = unsafe { talk_key.stringValue() }.to_string();
+                    let lock = if lock.is_empty() {
+                        None
+                    } else {
+                        Some(lock.to_uppercase())
+                    };
+                    let talk = if talk.is_empty() {
+                        None
+                    } else {
+                        Some(talk.to_uppercase())
+                    };
+                    let auto_lock_val: u64 = unsafe { auto_lock.stringValue() }
+                        .to_string()
+                        .parse()
+                        .unwrap_or(AUTO_LOCK_DEFAULT_SECONDS);
+                    let auto_unlock_val: u64 = unsafe { auto_unlock.stringValue() }
+                        .to_string()
+                        .parse()
+                        .unwrap_or(crate::app_state::AUTO_UNLOCK_BASE_SECONDS);
+
+                    let keys = match first_keys.take() {
+                        Some(k) => k,
+                        // Unreachable in practice (STEP_FORM is entered only
+                        // after a successful double capture); preserved from
+                        // the migrated loop's guard.
+                        None => {
+                            return crate::window_flow::StepPoll::Finish(
+                                crate::window_flow::FlowOutcome(Err(anyhow!(
+                                    "No passphrase captured"
+                                ))),
+                            );
+                        }
+                    };
+
+                    let login_item = if unsafe { login_checkbox.state() } == NSControlStateValueOn {
+                        set_login_item(true)
+                    } else {
+                        LoginItemResult::Disabled
+                    };
+
+                    match build_outcome(keys, auto_lock_val, auto_unlock_val, lock, talk, login_item)
+                    {
+                        Ok(o) => {
+                            return crate::window_flow::StepPoll::Finish(
+                                crate::window_flow::FlowOutcome(Ok(o)),
+                            );
+                        }
+                        Err(e) => {
+                            window_for_title.setTitle(&NSString::from_str(&format!(
+                                "HandsOff Setup — {}",
+                                e
+                            )));
+                            // Stay: the window stays open with the reason in
+                            // the title (same as the migrated loop).
+                        }
                     }
                 }
-            }
-        });
-
-        let result = outcome_slot
-            .borrow_mut()
-            .take()
-            .unwrap_or_else(|| Err(anyhow!("Setup wizard event loop ended unexpectedly")));
-        result
+                crate::window_flow::StepPoll::Stay
+            }),
+            poller: Some(poller),
+            // Close ends the flow in EVERY phase (issue #36); the engine's
+            // close-poll handles it. Preserve the migrated loop's close
+            // message verbatim.
+            close_outcome: Some(Box::new(|| {
+                Err(anyhow!("Setup wizard closed before completing"))
+            })),
+            // Anchor the WizardTarget NSView (close delegate — which also
+            // aborts an in-flight capture — and click routing).
+            keep_alive: vec![unsafe { Retained::cast::<NSView>(target) }],
+        };
+        crate::window_flow::run_flow(spec, event_loop)
     }
 
     /// Permission-only re-grant window (issue #29): the wizard's step-0
