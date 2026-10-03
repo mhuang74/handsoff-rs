@@ -2,7 +2,8 @@
 
 **Version:** 1.0
 **Date:** 2025-10-29
-**Status:** Design Phase
+**Status:** Historical — the CLI binary described here was removed (ADR 0004);
+the tray app is the sole binary. **Design Phase**
 
 ---
 

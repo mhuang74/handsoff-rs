@@ -14,48 +14,26 @@ This guide is for developers who want to build HandsOff from source, understand 
 
 ## Building from Source
 
-### Build Both Binaries
+### Build the Tray App
 
 ```bash
 # Clone the repository
 git clone https://github.com/your-repo/handsoff-rs.git
 cd handsoff-rs
 
-# Build both CLI and Tray App
+# Build the tray app
 cargo build --release
 
-# The binaries will be at:
-# - target/release/handsoff (CLI)
+# The binary will be at:
 # - target/release/handsoff-tray (Tray App)
 ```
 
 ### Build Individual Binaries
 
 ```bash
-# CLI only
-cargo build --release --bin handsoff
-
 # Tray App only
 cargo build --release --bin handsoff-tray
 ```
-
-### CLI Usage
-
-The CLI binary accepts three flags (see `src/bin/handsoff.rs`):
-
-```bash
-# Interactive setup: capture passphrase as a physical key sequence,
-# choose hotkeys and timeouts, write config.toml
-cargo run -- --setup
-
-# Start with input locked immediately (type passphrase to unlock)
-cargo run -- --locked
-
-# Override auto-lock timeout for this run (20-600 seconds; overrides config file)
-cargo run -- --auto-lock 60
-```
-
-Precedence for auto-lock: `--auto-lock` flag > `HANDS_OFF_AUTO_LOCK` env var > config file > default (180 s).
 
 ### Build for Specific Architecture
 
@@ -81,14 +59,14 @@ rustup target add x86_64-apple-darwin
 rustup target add aarch64-apple-darwin
 
 # Build for both architectures
-cargo build --release --target x86_64-apple-darwin --bin handsoff
-cargo build --release --target aarch64-apple-darwin --bin handsoff
+cargo build --release --target x86_64-apple-darwin --bin handsoff-tray
+cargo build --release --target aarch64-apple-darwin --bin handsoff-tray
 
 # Combine with lipo
 lipo -create \
-  target/x86_64-apple-darwin/release/handsoff \
-  target/aarch64-apple-darwin/release/handsoff \
-  -output target/release/handsoff-universal
+  target/x86_64-apple-darwin/release/handsoff-tray \
+  target/aarch64-apple-darwin/release/handsoff-tray \
+  -output target/release/handsoff-tray-universal
 ```
 
 **On a Mac**, the full native workflow (`make all` for the `.app` bundle,
@@ -129,16 +107,11 @@ HandsOff is built with Rust and leverages the following libraries:
 - **`notify-rust`**: Native macOS notifications
 - **`image`**: PNG decoder for app icons
 
-### CLI Dependencies
-
-- **`clap`**: Command-line argument parsing
-
 ### Configuration Dependencies
 
 - **`toml`**: TOML file parsing for config.toml
 - **`serde`**: Serialization/deserialization framework
 - **`dirs`**: Standard config directory paths
-- **`rpassword`**: Non-echoing text input for setup confirmations
 
 ### Input Handling
 
@@ -169,16 +142,14 @@ src/
 │   └── keycode.rs          # Hotkey Code→macOS keycode mapping
 ├── config.rs               # Environment variable parsing (optional overrides)
 ├── constants.rs            # Tunable constants (auto-lock/auto-unlock bounds, poll intervals, buffer timeout)
-├── setup.rs                # Keycode-sequence capture for --setup (event tap)
+├── setup.rs                # Keycode-sequence capture for the Setup Wizard (event tap)
 ├── config_file.rs          # Config file management (hashed passphrase)
 └── bin/                    # Binary entry points
-    ├── handsoff.rs         # CLI binary
     └── handsoff-tray.rs    # Tray App binary
 ```
 
 **Architecture:**
 - **Core Library** (`lib.rs`): Shared functionality (input blocking, state management, auth) and background threads: buffer-reset monitor (250 ms check, 3 s buffer timeout), auto-lock monitor (5 s check), auto-unlock backoff monitor (10 s check), permission monitor (15 s check, also reports callback telemetry)
-- **CLI Binary** (`bin/handsoff.rs`): Terminal-based interface with clap argument parsing
 - **Tray App Binary** (`bin/handsoff-tray.rs`): Native macOS menu bar app with tray-icon and notifications
 
 ---
@@ -203,7 +174,7 @@ The application stores a SHA-256 hash of the passphrase's **physical keycode seq
 
 **File:** `src/setup.rs`
 
-- `capture_passphrase()` installs a throwaway `CGEventTap` during `--setup`, runs a nested CFRunLoop, blocks captured keys from reaching apps, tears down the tap before returning. Enter commits, Backspace deletes, Escape restarts, Ctrl+C aborts
+- `capture_passphrase_headless()` installs a throwaway `CGEventTap` during wizard capture, runs a nested CFRunLoop, blocks captured keys from reaching apps, tears down the tap before returning. Enter commits, Backspace deletes, Escape restarts, Ctrl+C aborts
 - Setup captures the passphrase twice and compares silently (double-capture confirm) — the passphrase is never displayed in cleartext
 
 **File:** `src/config_file.rs`
@@ -252,13 +223,13 @@ Set the `HANDS_OFF_AUTO_UNLOCK` environment variable to override the **base inte
 HANDS_OFF_AUTO_UNLOCK=300 cargo run
 
 # Override base interval to 2 hours
-HANDS_OFF_AUTO_UNLOCK=7200 ./handsoff
+HANDS_OFF_AUTO_UNLOCK=7200 cargo run --bin handsoff-tray
 
 # Disable auto-unlock entirely
-HANDS_OFF_AUTO_UNLOCK=0 ./handsoff
+HANDS_OFF_AUTO_UNLOCK=0 cargo run --bin handsoff-tray
 
 # Unset (default): base interval from config schema (60 min), enabled
-./handsoff
+cargo run --bin handsoff-tray
 ```
 
 ### Valid Configuration Values
@@ -278,10 +249,6 @@ All optional; all override the corresponding `config.toml` value:
 |---|---|---|
 | `HANDS_OFF_AUTO_UNLOCK` | `0`, or `60`–`86400` | Override the auto-unlock **base interval** (seconds). `0` disables auto-unlock entirely. |
 | `HANDS_OFF_AUTO_LOCK` | `20`–`600` | Override the auto-lock timeout (seconds of contiguous inactivity). |
-| `HANDS_OFF_LOCK_HOTKEY` | `A`–`Z` | Override the lock hotkey's final letter key. |
-| `HANDS_OFF_TALK_HOTKEY` | `A`–`Z` | Override the talk hotkey's final letter key. |
-
-Hotkey precedence (R3): environment variable > hotkeys chosen during `--setup` (persisted in config.toml) > defaults (`L` / `T`).
 
 ### How It Works
 
@@ -305,7 +272,7 @@ HANDS_OFF_AUTO_UNLOCK=300 cargo run
 **Personal Use (Emergency Failsafe):**
 ```bash
 # First window at ~1 hour of awake time; doubling up to 24 h
-HANDS_OFF_AUTO_UNLOCK=3600 ./handsoff
+HANDS_OFF_AUTO_UNLOCK=3600 cargo run --bin handsoff-tray
 ```
 
 **Login Item (Permanent Configuration):**
@@ -355,7 +322,7 @@ WARN  AUTO-UNLOCK WINDOW FIRED after Ns awake-time
 echo $HANDS_OFF_AUTO_UNLOCK
 
 # Run with logging to see status
-RUST_LOG=info HANDS_OFF_AUTO_UNLOCK=300 ./handsoff
+RUST_LOG=info HANDS_OFF_AUTO_UNLOCK=300 cargo run --bin handsoff-tray
 ```
 
 **Common issues:**
@@ -395,7 +362,7 @@ This is **expected behavior**, not a bug:
 Contributions are welcome! Please ensure:
 - Code follows Rust best practices
 - All tests pass: `cargo test`
-- Build succeeds for both binaries: `cargo build --release`
+- Build succeeds for the tray binary: `cargo build --release`
 - No clippy warnings: `cargo clippy`
 
 ## License

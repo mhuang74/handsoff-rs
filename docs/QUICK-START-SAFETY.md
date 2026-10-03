@@ -17,7 +17,7 @@ hostname
 
 # Test from your phone or another computer:
 ssh youruser@your-mac.local
-pkill handsoff  # This will save you if locked out
+pkill handsoff-tray  # This will save you if locked out
 ```
 
 **Why?** If you get locked out, you can kill the app remotely.
@@ -27,20 +27,20 @@ pkill handsoff  # This will save you if locked out
 ### Step 2: First Run - Safe Mode
 ```bash
 # Copy this command exactly:
-HANDS_OFF_AUTO_UNLOCK=60 cargo run -- --locked
+HANDS_OFF_AUTO_UNLOCK=60 cargo run --bin handsoff-tray
 
 # What this does:
-# - Starts locked (no need to lock manually)
 # - Auto-unlock: the first window opens after 60 s of awake time
 #   (60 is the minimum base interval; the window stays open until you
 #   lock it again or touch input for auto-lock's grace period)
 ```
 
 **What to test:**
-1. Set a passphrase first (`cargo run -- --setup`) — remember it!
-2. The app starts locked — try typing: input is blocked
+1. Set a passphrase first (launch the tray app — the Setup Wizard opens
+   automatically) — remember it!
+2. Lock via the hotkey `Ctrl+Cmd+Shift+L` (or tray menu → Lock Input) — try typing: input is blocked
 3. Type your passphrase to unlock
-4. For the shortest auto-lock, also use `HANDS_OFF_AUTO_LOCK=20 cargo run -- --locked`
+4. For the shortest auto-lock, also use `HANDS_OFF_AUTO_LOCK=20 cargo run --bin handsoff-tray`
 
 ---
 
@@ -54,7 +54,7 @@ Once the basic cycle works, exercise the full lock → block → unlock path:
 # → Repeat: lock again, unlock again
 
 # With the shortest auto-lock (20 s):
-HANDS_OFF_AUTO_LOCK=20 cargo run -- --locked
+HANDS_OFF_AUTO_LOCK=20 cargo run --bin handsoff-tray
 # → Wait 20 s idle: it re-locks itself
 # → Type your passphrase to unlock
 ```
@@ -72,7 +72,7 @@ HANDS_OFF_AUTO_LOCK=20 cargo run -- --locked
 ```bash
 # From phone/another computer:
 ssh youruser@your-mac.local
-pkill handsoff
+pkill handsoff-tray
 ```
 
 **Method 3: Force Restart (LAST RESORT)**
@@ -126,7 +126,7 @@ Memorize these BEFORE testing:
 | Lock | `Ctrl+Cmd+Shift+L` | Enable input lock |
 | Talk | `Ctrl+Cmd+Shift+T` | Hold + Spacebar to unmute |
 
-Hotkeys are configurable via `config.toml` (set during `--setup`) or the `HANDS_OFF_LOCK_HOTKEY` / `HANDS_OFF_TALK_HOTKEY` environment variables.
+Hotkeys are configurable via the Setup Wizard / Preferences (stored in `config.toml`).
 
 ---
 
@@ -149,7 +149,7 @@ After running unit tests, manually test:
 5. Lock a third time, unlock again via passphrase
 
 ### Phase 3: Auto-Lock
-1. Set auto-lock to its minimum via `HANDS_OFF_AUTO_LOCK=20` (or `cargo run -- --auto-lock 20`); the default is 180 s
+1. Set auto-lock to its minimum via `HANDS_OFF_AUTO_LOCK=20` (or set a short timeout in the Setup Wizard / Preferences); the default is 180 s
 2. Wait 20 seconds idle
 3. Verify auto-lock triggers
 4. Move mouse - verify timer resets
@@ -184,17 +184,17 @@ After running unit tests, manually test:
 ### "I forgot my passphrase!"
 ```bash
 # From another terminal or SSH:
-pkill handsoff
+pkill handsoff-tray
 
-# Delete the config (clears the stored passphrase hash), then re-run setup:
+# Delete the config (clears the stored passphrase hash), then relaunch the
+# tray app — the Setup Wizard opens automatically.
 rm ~/Library/Application\ Support/handsoff/config.toml
-cargo run -- --setup
 ```
 
 ### "App won't quit"
 ```bash
 # Force quit:
-pkill -9 handsoff
+pkill -9 handsoff-tray
 ```
 
 ### "Locked out and can't SSH"
@@ -227,10 +227,10 @@ sudo systemsetup -setremotelogin on
 cargo test
 
 # 3. First safe run (auto-unlock window opens after 60 s awake-time)
-HANDS_OFF_AUTO_UNLOCK=60 cargo run -- --locked
+HANDS_OFF_AUTO_UNLOCK=60 cargo run --bin handsoff-tray
 
 # 4. If that worked, test the shortest auto-lock:
-HANDS_OFF_AUTO_LOCK=20 cargo run -- --locked
+HANDS_OFF_AUTO_LOCK=20 cargo run --bin handsoff-tray
 ```
 
 ---

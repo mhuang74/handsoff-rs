@@ -221,7 +221,7 @@ impl Config {
     pub fn load_from_path(path: &Path) -> Result<Self> {
         if !path.exists() {
             anyhow::bail!(
-                "Configuration file not found at: {}\n\nRun 'handsoff --setup' to create it.",
+                "Configuration file not found at: {}\n\nRelaunch the tray app to open the Setup Wizard.",
                 path.display()
             );
         }
@@ -273,7 +273,7 @@ impl Config {
         if config.passphrase_format != KEYCODE_SEQUENCE_FORMAT {
             anyhow::bail!(
                 "Unsupported passphrase format '{}' (expected '{}').\n\
-                 A one-time re-setup is required: run 'handsoff --setup'.\n\
+                 A one-time re-setup is required: Relaunch the tray app to open the Setup Wizard.\n\
                  (Existing passphrases cannot be migrated — they were stored in an \
                  unverifiable format.)",
                 config.passphrase_format,
@@ -292,7 +292,7 @@ impl Config {
             anyhow::bail!(
                 "No valid passphrase hash found in config file (it may be from an \
                  older version of HandsOff).\n\
-                 A one-time re-setup is required: run 'handsoff --setup'."
+                 A one-time re-setup is required: Relaunch the tray app to open the Setup Wizard."
             );
         }
 
@@ -311,7 +311,7 @@ impl Config {
             anyhow::bail!(
                 "Passphrase hash is the SHA-256 of an empty sequence — the config \
                  cannot contain a usable passphrase.\n\
-                 A one-time re-setup is required: run 'handsoff --setup'."
+                 A one-time re-setup is required: Relaunch the tray app to open the Setup Wizard."
             );
         }
 
@@ -321,7 +321,7 @@ impl Config {
         {
             anyhow::bail!(
                 "Invalid auto_unlock_mode '{}' (expected '{}' or '{}'). \
-                 Run 'handsoff --setup' to reconfigure.",
+                 Relaunch the tray app to open the Setup Wizard.",
                 config.auto_unlock_mode,
                 AUTO_UNLOCK_MODE_BACKOFF,
                 AUTO_UNLOCK_MODE_DISABLED
@@ -339,7 +339,7 @@ impl Config {
                 {
                     anyhow::bail!(
                         "Invalid auto_unlock_base_interval '{}' (must be {}-{}). \
-                         Run 'handsoff --setup' to reconfigure.",
+                         Relaunch the tray app to open the Setup Wizard.",
                         v,
                         crate::config::AUTO_UNLOCK_MIN_BASE_SECONDS,
                         crate::app_state::AUTO_UNLOCK_CEILING_SECONDS
@@ -362,7 +362,7 @@ impl Config {
         if let (Some(lock), Some(talk)) = (&config.lock_hotkey, &config.talk_hotkey) {
             if lock.to_uppercase() == talk.to_uppercase() {
                 anyhow::bail!(
-                    "Invalid config: Lock and Talk hotkeys must be different (both set to '{}'). Please run 'handsoff --setup' to reconfigure.",
+                    "Invalid config: Lock and Talk hotkeys must be different (both set to '{}'). Please relaunch the tray app to open the Setup Wizard.",
                     lock
                 );
             }
@@ -374,7 +374,7 @@ impl Config {
         if !(AUTO_LOCK_MIN_SECONDS..=AUTO_LOCK_MAX_SECONDS).contains(&config.auto_lock_timeout) {
             anyhow::bail!(
                 "Invalid auto_lock_timeout '{}' (must be {}-{}). \
-                 Run 'handsoff --setup' to reconfigure.",
+                 Relaunch the tray app to open the Setup Wizard.",
                 config.auto_lock_timeout,
                 AUTO_LOCK_MIN_SECONDS,
                 AUTO_LOCK_MAX_SECONDS
@@ -685,8 +685,8 @@ mod tests {
         assert!(result.is_err());
         let err = format!("{}", result.unwrap_err());
         assert!(
-            err.contains("--setup"),
-            "Error should direct to setup: {}",
+            err.contains("Setup Wizard"),
+            "Error should direct to the Setup Wizard: {}",
             err
         );
     }
@@ -712,8 +712,8 @@ auto_unlock_base_interval = 36
         );
         let err = format!("{}", result.unwrap_err());
         assert!(
-            err.contains("auto_unlock_base_interval") && err.contains("--setup"),
-            "Error must name the field and direct to setup: {}",
+            err.contains("auto_unlock_base_interval") && err.contains("Setup Wizard"),
+            "Error must name the field and direct to the Setup Wizard: {}",
             err
         );
 
@@ -819,8 +819,8 @@ auto_unlock_mode = "backoff"
         assert!(result.is_err(), "Empty-sequence hash must be rejected");
         let err = format!("{}", result.unwrap_err());
         assert!(
-            err.contains("empty sequence") && err.contains("--setup"),
-            "Error must explain the problem and direct to setup: {}",
+            err.contains("empty sequence") && err.contains("Setup Wizard"),
+            "Error must explain the problem and direct to the Setup Wizard: {}",
             err
         );
 

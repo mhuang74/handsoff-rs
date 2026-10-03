@@ -25,7 +25,7 @@ If you prefer to debug manually:
 #### Step 1: Run App from Terminal to See Logs
 
 ```bash
-/Users/mhuang/Projects/Development/handsoff-rs/target/release/bundle/osx/HandsOff.app/Contents/MacOS/handsoff
+/Users/mhuang/Projects/Development/handsoff-rs/target/release/bundle/osx/HandsOff.app/Contents/MacOS/handsoff-tray
 ```
 
 This will show all log output, including:
@@ -35,18 +35,18 @@ This will show all log output, including:
 
 #### Step 2: Check macOS System Logs
 
-Open Console.app and filter for "handsoff":
+Open Console.app and filter for "handsoff-tray":
 
 ```bash
 # Option 1: Use Console.app GUI
 open -a Console
-# Then enter "handsoff" in the search box
+# Then enter "handsoff-tray" in the search box
 
 # Option 2: Stream logs in terminal
-log stream --predicate 'process == "handsoff"' --level debug
+log stream --predicate 'process == "handsoff-tray"' --level debug
 
 # Option 3: Search recent logs
-log show --predicate 'process == "handsoff"' --last 5m
+log show --predicate 'process == "handsoff-tray"' --last 5m
 ```
 
 #### Step 3: Reset Permissions
@@ -83,7 +83,6 @@ codesign -dv /Users/mhuang/Projects/Development/handsoff-rs/target/release/bundl
 ### Issue 1: "Accessibility permissions not granted" but I already granted them
 
 **Cause**: You may have granted permissions to:
-- The command-line binary (`target/release/handsoff`)
 - An older version of the app bundle
 - The app with a different bundle identifier
 
@@ -112,15 +111,15 @@ tccutil reset Accessibility handsoff-tray.handsoff
 
 **Solution**: Run from terminal to see all output:
 ```bash
-/Users/mhuang/Projects/Development/handsoff-rs/target/release/bundle/osx/HandsOff.app/Contents/MacOS/handsoff
+/Users/mhuang/Projects/Development/handsoff-rs/target/release/bundle/osx/HandsOff.app/Contents/MacOS/handsoff-tray
 ```
 
-### Issue 4: Different behavior between command-line and app bundle
+### Issue 4: Granted the binary directly instead of the app bundle
 
-**Cause**: macOS treats these as separate applications with separate permission grants
+**Cause**: macOS treats the bare binary and the app bundle as separate applications with separate permission grants
 
 **Solution**: Always use the app bundle. Grant permissions specifically to:
-`HandsOff.app` (`handsoff-tray.handsoff` as built by `cargo bundle --bin handsoff-tray`), not the CLI binary.
+`HandsOff.app` (`handsoff-tray.handsoff` as built by `cargo bundle --bin handsoff-tray`).
 
 ## Understanding the Permission Checks
 

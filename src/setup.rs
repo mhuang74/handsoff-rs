@@ -1,10 +1,12 @@
 //! Passphrase setup capture via a throwaway event tap.
 //!
 //! specs/deep-design-review-v2-2026-09.md §3 / V6:
-//! - `--setup` captures the physical key-code sequence with a CGEventTap active
-//!   only during setup (no new TCC permission — reuses Accessibility).
-//! - Interactive only: over SSH/headless there is no physical keyboard in the
-//!   session the tap would capture, so setup is refused.
+//! - The Setup Wizard captures the physical key-code sequence with a
+//!   CGEventTap active only during setup (no new TCC permission — reuses
+//!   Accessibility).
+//! - Requires a GUI console session: over SSH/headless there is no physical
+//!   keyboard in the session the tap would capture, and the wizard is the
+//!   sole setup path (ADR 0004).
 //! - Rejects Escape, Backspace, and the configured lock/talk hotkey combos as
 //!   passphrase members. Minimum 4 keys.
 
@@ -163,11 +165,11 @@ pub fn validate_config_strict() -> Result<()> {
 
 /// Assemble a `Config` from collected setup inputs (seam 1, pure).
 ///
-/// Shared by the TUI flow (`run_interactive_setup` → `SetupOutcome`) and the
-/// GUI wizard: both reduce to a keycode sequence + timeouts + hotkeys. The
-/// config constructor validates everything (≥4 keys, hotkey A-Z, distinct,
-/// timeout bounds). No I/O — call `Config::save()` (or `save_to_path` in
-/// tests) to persist.
+/// Shared by the Setup Wizard (`SetupOutcome` construction in `wizard.rs`
+/// and `preferences.rs`): reduces to a keycode sequence + timeouts +
+/// hotkeys. The config constructor validates everything (≥4 keys, hotkey
+/// A-Z, distinct, timeout bounds). No I/O — call `Config::save()` (or
+/// `save_to_path` in tests) to persist.
 pub fn assemble_config(outcome: &SetupOutcome) -> Result<crate::config_file::Config> {
     let (auto_unlock_backoff, auto_unlock_base) = match outcome.auto_unlock {
         crate::config::AutoUnlockConfig::Disabled => (false, 0),
@@ -194,114 +196,13 @@ pub fn assemble_and_save_config(outcome: &SetupOutcome) -> Result<crate::config_
     Ok(cfg)
 }
 
-/// Detect whether we can capture physical key events at all.
-///
-/// Returns Err when running non-interactively (SSH/headless): a session tap in
-/// an SSH login session has no WindowServer console access and no physical
-/// keyboard events to capture, so setup cannot proceed (§3, interactive-only).
-pub fn check_interactive_session() -> Result<()> {
-    let is_ssh = std::env::var("SSH_CONNECTION").is_ok() || std::env::var("SSH_TTY").is_ok();
-    if is_ssh {
-        return Err(anyhow!(
-            "Passphrase setup requires an interactive console session.\n\
-             Keycode capture needs a physical keyboard attached to the GUI login session;\n\
-             it cannot run over SSH or a headless connection.\n\
-             Run setup locally on the Mac: handsoff --setup"
-        ));
-    }
-    Ok(())
-}
-
-/// Capture a passphrase keycode sequence using a temporary event tap.
-///
-/// TUI wrapper around `capture_passphrase_headless`: same semantics (nested
-/// CFRunLoop on the calling main thread, Enter commits at the minimum length,
-/// Backspace deletes, Escape restarts, all captured keys blocked), plus the
-/// terminal UX (masked progress dots, instructions, Ctrl+C abort).
-///
-/// `prompt` describes this pass (e.g. first capture vs confirm re-entry).
-///
-/// # Errors
-/// - Non-interactive session
-/// - Accessibility permission missing
-/// - Tap creation failed
-/// - Capture abandoned (timeout)
-/// - Setup cancelled by the user (Ctrl+C)
-#[cfg(target_os = "macos")]
-pub fn capture_passphrase(
-    lock_hotkey_keycode: i64,
-    talk_hotkey_keycode: i64,
-    prompt: &str,
-) -> Result<Vec<u32>> {
-    check_interactive_session()?;
-
-    if !crate::input_blocking::check_accessibility_permissions() {
-        return Err(anyhow!(
-            "Accessibility permissions are required to capture keycodes.\n\
-             Note: if you launched setup from a terminal app (Terminal, iTerm, VS Code), \
-             macOS checks THAT app's permission, not HandsOff's - even with HandsOff granted. \
-             Add the terminal app itself in System Settings > Privacy & Security > Accessibility, \
-             then re-run setup."
-        ));
-    }
-
-    println!("\nPassphrase capture");
-    println!("------------------");
-    println!("{}", prompt);
-    println!(
-        "Type your passphrase using PHYSICAL keys (at least {} keys).",
-        MIN_PASSPHRASE_KEYS
-    );
-    println!("Layout-independent: what matters is which keys you press, not the characters.");
-    println!(
-        "  Enter        commit (at least {} keys)",
-        MIN_PASSPHRASE_KEYS
-    );
-    println!("  Backspace    delete last key");
-    println!("  Escape       restart capture from empty");
-    println!("  Ctrl+C       abort setup");
-    println!(
-        "Reserved keys (Escape, Backspace, Enter, and the hotkey keys you chose) cannot be passphrase members.\n"
-    );
-    print!("Passphrase: ");
-    use std::io::Write as _;
-    let _ = std::io::stdout().flush();
-
-    // Progress dots and control-key annotations, printed from the tap
-    // callback exactly as the TUI always did.
-    let result = capture_passphrase_headless(
-        lock_hotkey_keycode,
-        talk_hotkey_keycode,
-        Some(Box::new(|event: CaptureEvent| {
-            match event {
-                CaptureEvent::Key => print!("•"),
-                CaptureEvent::Reserved(_) => print!(" [reserved] "),
-                CaptureEvent::Restart => print!(" [restart] "),
-                CaptureEvent::Backspace => print!("\x08 \x08"),
-                CaptureEvent::Tick(_) => {} // countdown is GUI-only
-                CaptureEvent::TooShort(len) => println!(
-                    "\nNeed at least {} keys — keep typing. ({} so far)",
-                    MIN_PASSPHRASE_KEYS, len
-                ),
-            }
-            use std::io::Write as _;
-            let _ = std::io::stdout().flush();
-        })),
-    );
-    if result.is_ok() {
-        println!();
-    }
-    result
-}
-
 /// Events emitted by the capture callback for UI feedback.
 #[cfg(target_os = "macos")]
 pub enum CaptureEvent {
     /// A key was recorded.
     Key,
     /// A reserved key was swallowed; payload is the rejected keycode so the
-    /// GUI can NAME the key in its status line (issue #36; the TUI prints a
-    /// generic flash).
+    /// GUI can NAME the key in its status line (issue #36).
     Reserved(i64),
     /// Escape cleared the sequence.
     Restart,
@@ -310,7 +211,7 @@ pub enum CaptureEvent {
     /// Enter pressed before the minimum length was reached (`usize` = current length).
     TooShort(usize),
     /// Countdown tick with seconds remaining until the capture times out.
-    /// Emitted from the pump loop each 100 ms slice; ignored by the TUI.
+    /// Emitted from the pump loop each 100 ms slice.
     Tick(u64),
 }
 
@@ -330,7 +231,7 @@ pub fn request_capture_abort() {
 /// Install a session event tap that captures physical keycodes until Enter
 /// commits (≥ `MIN_PASSPHRASE_KEYS` keys) and return the raw sequence.
 ///
-/// GUI-usable core of `capture_passphrase` (no terminal I/O, no SSH gate —
+/// GUI capture core (no terminal I/O, no SSH gate —
 /// a Finder-launched app has no TTY but a perfectly valid WindowServer
 /// session, spec #24 "no stdin/TCC context" note). Runs a nested CFRunLoop
 /// pump on the calling (main) thread; on macOS the wizard calls this from
@@ -454,9 +355,9 @@ pub fn capture_passphrase_headless(
         }
 
         // Abort chord: Ctrl+C (Control only, no Cmd/Shift/Option). The tap
-        // swallows all keys, so terminal SIGINT never fires — the abort must
-        // be recognized here. TUI only: the GUI wizard has no terminal and
-        // closes its window to cancel.
+        // swallows all keys, so an external SIGINT could never reach this
+        // process cleanly — the chord is recognized here as a safety hatch
+        // even though the GUI wizard normally cancels by closing its window.
         if keycode == 8
             && flags.contains(CGEventFlags::CGEventFlagControl)
             && !flags.contains(CGEventFlags::CGEventFlagCommand)
@@ -567,7 +468,7 @@ pub fn capture_passphrase_headless(
         if CAPTURE_ABORT.load(std::sync::atomic::Ordering::SeqCst) {
             break Err(anyhow!("Setup cancelled (capture window closed)."));
         }
-        // Countdown tick (GUI surfaces remaining time; TUI ignores it).
+        // Countdown tick (the GUI surfaces remaining time from the event).
         let elapsed = started.elapsed().as_secs();
         let remaining = CAPTURE_TIMEOUT_SECS.saturating_sub(elapsed);
         if remaining != last_tick {
@@ -599,27 +500,15 @@ pub fn capture_passphrase_headless(
     Ok(keys)
 }
 
-#[cfg(not(target_os = "macos"))]
-pub fn capture_passphrase(
-    _lock_hotkey_keycode: i64,
-    _talk_hotkey_keycode: i64,
-    _prompt: &str,
-) -> Result<Vec<u32>> {
-    check_interactive_session()?;
-    Err(anyhow!("Keycode capture is only supported on macOS"))
-}
-
 /// Poll for Accessibility permission after the user clicks Grant.
 ///
-/// Shared by the TUI and the GUI wizard: the caller's Grant button opens
-/// System Settings once, then this checks every `poll_interval` until
-/// granted or `timeout` elapses. TCC applies the change live, so no app
-/// restart is needed.
+/// The caller's Grant button opens System Settings once, then this checks
+/// every `poll_interval` until granted or `timeout` elapses. TCC applies the
+/// change live, so no app restart is needed.
 ///
-/// Blocking variant: the TUI calls this directly on its main thread. The GUI
-/// wizard must NOT call this on the main thread (it would freeze the window
-/// and the run loop); it polls on a background thread and hops back via a
-/// event-loop proxy instead.
+/// The GUI wizard must NOT call this on the main thread (it would freeze the
+/// window and the run loop); it polls on a background thread and hops back
+/// via a event-loop proxy instead.
 ///
 /// Returns `Ok(())` when `check_accessibility_permissions()` turns true
 /// within the deadline; `Err` with guidance otherwise.
@@ -665,207 +554,6 @@ pub struct SetupOutcome {
     pub lock_key: Option<String>,
     /// Talk hotkey last key (None = default T)
     pub talk_key: Option<String>,
-}
-
-/// Prompt for a number with a default value (empty input → default).
-/// I/O errors propagate; unparseable input returns `Ok(None)` so callers can
-/// decide whether a typo aborts the flow or re-prompts (parse failures must
-/// never destroy a completed passphrase capture).
-fn prompt_number(
-    print: &mut dyn FnMut(&str),
-    prompt: &str,
-    default: u64,
-) -> std::io::Result<Option<u64>> {
-    print(prompt);
-    use std::io::Write as _;
-    let _ = std::io::stdout().flush();
-
-    let mut input = String::new();
-    std::io::stdin().read_line(&mut input)?;
-    let input = input.trim();
-
-    if input.is_empty() {
-        Ok(Some(default))
-    } else {
-        Ok(input.parse::<u64>().ok())
-    }
-}
-
-/// Prompt for a number within `min..=max` (empty input → default).
-/// `allow_zero` admits 0 as a valid answer (auto-unlock's "disabled").
-/// Parse and range failures re-prompt, counting toward a 3-strike bail
-/// — a single typo must never discard a completed passphrase capture.
-fn prompt_bounded_number(
-    print: &mut dyn FnMut(&str),
-    prompt: &str,
-    default: u64,
-    min: u64,
-    max: u64,
-    allow_zero: bool,
-) -> Result<u64> {
-    let range_msg = if allow_zero {
-        format!(
-            "Error: value must be {}-{} seconds (or 0 to disable)",
-            min, max
-        )
-    } else {
-        format!("Error: Auto-lock timeout must be {}-{} seconds", min, max)
-    };
-
-    let mut invalid_attempts = 0u32;
-    loop {
-        match prompt_number(print, prompt, default)? {
-            None => print("Error: not a number — enter a number or press Enter for the default."),
-            Some(0) if allow_zero => return Ok(0),
-            Some(v) if (min..=max).contains(&v) => return Ok(v),
-            _ => print(&range_msg),
-        }
-        invalid_attempts += 1;
-        if invalid_attempts >= 3 {
-            anyhow::bail!("Too many invalid entries. Re-run setup to try again.");
-        }
-    }
-}
-
-/// Prompt for a hotkey (single letter A-Z); empty input → None (default).
-fn prompt_hotkey(print: &mut dyn FnMut(&str), prompt: &str) -> Result<Option<String>> {
-    print(prompt);
-    use std::io::Write as _;
-    let _ = std::io::stdout().flush();
-
-    let mut input = String::new();
-    std::io::stdin().read_line(&mut input)?;
-    let input = input.trim();
-
-    if input.is_empty() {
-        Ok(None) // Use default
-    } else {
-        crate::config_file::Config::validate_hotkey(input)?;
-        Ok(Some(input.to_uppercase()))
-    }
-}
-
-/// Run the full interactive setup flow (R8: shared by CLI and tray binaries).
-///
-/// Output goes through `print` (CLI/tray pass their own printers); input is
-/// read from stdin (both binaries share the terminal). Flow: banner → hotkey
-/// prompts (lock ≠ talk distinctness check) → double passphrase capture
-/// (silent confirm, never displayed; Ctrl+C aborts) with the effective
-/// reserved set (env override > chosen hotkeys > defaults, R3) → auto-lock →
-/// auto-unlock
-/// (0 = disabled, else bounded to
-/// `AUTO_UNLOCK_MIN_BASE_SECONDS..=AUTO_UNLOCK_CEILING_SECONDS`; both timeout
-/// prompts re-prompt on parse and range errors, bailing after 3 consecutive
-/// invalid attempts so a single typo never discards a completed capture).
-pub fn run_interactive_setup(print: &mut dyn FnMut(&str)) -> Result<SetupOutcome> {
-    print("HandsOff Setup");
-    print("==============");
-    print("");
-
-    // Hotkeys come FIRST (Finding 3): the reserved set is fixed before the
-    // passphrase is captured, so a passphrase can never contain a key the
-    // runtime would later reserve for a hotkey.
-    print("Hotkey Configuration");
-    print("--------------------");
-    print(
-        "Configure the hotkeys (modifiers Cmd+Ctrl+Shift are mandatory, but choose the last key).",
-    );
-    print("Enter a single letter A-Z, or press Enter to use the default.");
-    print("");
-
-    let lock_key = prompt_hotkey(print, "Lock hotkey (default: L): ")?;
-    let talk_key = prompt_hotkey(print, "Talk hotkey (Hotkey to Unmute, default: T): ")?;
-
-    // Validate that lock and talk keys are different
-    if let (Some(lock), Some(talk)) = (&lock_key, &talk_key) {
-        if lock == talk {
-            anyhow::bail!("Error: Lock and Talk hotkeys must be different");
-        }
-    }
-
-    // Resolve keycodes for the reserved set with the runtime's precedence
-    // (R3): env override > chosen hotkeys > L/T defaults. Env wins so the
-    // reserved set always matches what the runtime will register.
-    let (lock_keycode, talk_keycode) = crate::config::chosen_hotkey_keycodes(
-        crate::config::parse_lock_hotkey(),
-        crate::config::parse_talk_hotkey(),
-        lock_key.as_deref(),
-        talk_key.as_deref(),
-    )?;
-
-    // Capture the passphrase as a physical keycode sequence via a temporary
-    // event tap (interactive console sessions only — refused over SSH).
-    // Double-capture confirm (user decision): capture twice and compare
-    // silently — the passphrase is never displayed in cleartext. No retry
-    // limit; the user can abort with Ctrl+C or hit the 300 s timeout.
-    let keycodes = loop {
-        let first = capture_passphrase(lock_keycode, talk_keycode, "Enter your passphrase:")
-            .map_err(|e| anyhow!("Passphrase capture failed: {}", e))?;
-        let second = capture_passphrase(
-            lock_keycode,
-            talk_keycode,
-            "Re-enter the same passphrase to confirm:",
-        )
-        .map_err(|e| anyhow!("Passphrase capture failed: {}", e))?;
-        if first == second {
-            break first;
-        }
-        print("Passphrases do not match — starting over.");
-    };
-
-    // Prompt for timeouts
-    print("");
-    print("Timeout Configuration");
-    print("---------------------");
-    print("");
-    let auto_lock = prompt_bounded_number(
-        print,
-        &format!(
-            "Auto-lock timeout in seconds (default: {}): ",
-            crate::constants::AUTO_LOCK_DEFAULT_SECONDS
-        ),
-        crate::constants::AUTO_LOCK_DEFAULT_SECONDS,
-        crate::constants::AUTO_LOCK_MIN_SECONDS,
-        crate::constants::AUTO_LOCK_MAX_SECONDS,
-        false,
-    )?;
-
-    print("Auto-unlock backoff is enabled by default:");
-    print(&format!(
-        "  first unlock window at {} min of awake time after lock,",
-        crate::app_state::AUTO_UNLOCK_BASE_SECONDS / 60
-    ));
-    print("  then doubling (2 h, 4 h, 8 h…) capped at 24 h.");
-    print("  Only a successful passphrase unlock resets the schedule.");
-
-    let base_interval = prompt_bounded_number(
-        print,
-        &format!(
-            "Auto-unlock base interval in seconds (0=disabled, default: {}): ",
-            crate::app_state::AUTO_UNLOCK_BASE_SECONDS
-        ),
-        crate::app_state::AUTO_UNLOCK_BASE_SECONDS,
-        crate::config::AUTO_UNLOCK_MIN_BASE_SECONDS,
-        crate::app_state::AUTO_UNLOCK_CEILING_SECONDS,
-        true,
-    )?;
-    let auto_unlock = if base_interval == 0 {
-        print("Auto-unlock disabled.");
-        crate::config::AutoUnlockConfig::Disabled
-    } else {
-        crate::config::AutoUnlockConfig::Backoff {
-            base_interval_secs: std::num::NonZeroU64::new(base_interval)
-                .expect("interval validated above minimum"),
-        }
-    };
-
-    Ok(SetupOutcome {
-        keycodes,
-        auto_lock,
-        auto_unlock,
-        lock_key,
-        talk_key,
-    })
 }
 
 #[cfg(test)]

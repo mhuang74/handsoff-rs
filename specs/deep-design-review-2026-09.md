@@ -1,6 +1,8 @@
 # HandsOff Deep Design Review & Remediation Plan
 
-**Status:** Approved for planning (decisions confirmed with owner 2026-09-27)
+**Status:** Historical (see `deep-design-review-v2-2026-09.md` for the
+authoritative follow-up; the `handsoff` CLI binary reviewed here was removed
+per ADR 0004)
 **Author:** Senior Rust/macOS tech-lead review
 **Scope:** Full source review of `src/` (lib, event tap, app state, config, crypto, hotkeys, both binaries), `README.md`, `constants.rs`, existing specs.
 **Review focus:** power inefficiency, user-lockout risk, wasted CPU, UX, system-crash risk (+ security-adjacent findings, per owner request).

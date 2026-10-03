@@ -1,5 +1,12 @@
 # Potential Bugs with User-Configurable Hotkeys
 
+> **Historical analysis** (pre-CLI-removal, see ADR 0004): some findings cite
+> the removed `handsoff` CLI binary and the `HANDS_OFF_LOCK_HOTKEY` /
+> `HANDS_OFF_TALK_HOTKEY` env-var overrides, which no longer exist — the tray
+> app ignores hotkey env vars by design. Retained for design history; the
+> duplicate-hotkey validation now lives in `Config` construction and
+> `setup::validate_config_strict`.
+
 ## 1. **CRITICAL: Duplicate Hotkeys via Manual Config Edit**
 
 **Issue**: Users can manually edit `config.toml` and set both hotkeys to the same letter, bypassing setup validation.

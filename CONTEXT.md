@@ -13,8 +13,8 @@ A sequence of at least four physical key presses used to unlock. Layout-independ
 _Avoid_: password, PIN, key
 
 **Setup Wizard**:
-The in-app, first-run window that grants Accessibility permission and captures the Passphrase. Replaces the old terminal-based `--setup` flow for average users.
-_Avoid_: installer, setup CLI
+The in-app, first-run window that grants Accessibility permission and captures the Passphrase. The sole setup path (ADR 0004 removed the terminal `--setup` flow with the CLI binary).
+_Avoid_: installer, setup CLI, terminal setup
 
 **Disable**:
 Manual suspension of protection from the tray menu. Input is not blocked and the Passphrase is not required.

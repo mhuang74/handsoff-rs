@@ -8,15 +8,11 @@
 //! - HANDS_OFF_AUTO_LOCK: Override auto-lock timeout from config file
 //! - HANDS_OFF_AUTO_UNLOCK: Override the auto-unlock backoff base interval
 //!   (60-86400 seconds; 0 disables auto-unlock entirely)
-//! - HANDS_OFF_LOCK_HOTKEY: Override lock hotkey last key (A-Z)
-//! - HANDS_OFF_TALK_HOTKEY: Override talk hotkey last key (A-Z)
 
 use crate::app_state::{
     AUTO_LOCK_MAX_SECONDS, AUTO_LOCK_MIN_SECONDS, AUTO_UNLOCK_BASE_SECONDS,
     AUTO_UNLOCK_CEILING_SECONDS,
 };
-use crate::config_file::Config;
-use anyhow::{Context, Result};
 use log::{debug, info, warn};
 use std::env;
 use std::num::NonZeroU64;
@@ -121,52 +117,6 @@ pub fn parse_auto_lock_timeout() -> Option<u64> {
     }
 }
 
-/// Parse the HANDS_OFF_LOCK_HOTKEY environment variable
-///
-/// Returns Some(key) if a valid letter A-Z is specified
-/// Returns None if not set or invalid
-pub fn parse_lock_hotkey() -> Option<String> {
-    match env::var("HANDS_OFF_LOCK_HOTKEY") {
-        Ok(val) => match Config::validate_hotkey(&val) {
-            Ok(()) => {
-                info!("Lock hotkey set via environment variable: {}", val);
-                Some(val.to_uppercase())
-            }
-            Err(err) => {
-                warn!("Invalid lock hotkey '{}': {}. Using default.", val, err);
-                None
-            }
-        },
-        Err(_) => {
-            debug!("HANDS_OFF_LOCK_HOTKEY not set.");
-            None
-        }
-    }
-}
-
-/// Parse the HANDS_OFF_TALK_HOTKEY environment variable
-///
-/// Returns Some(key) if a valid letter A-Z is specified
-/// Returns None if not set or invalid
-pub fn parse_talk_hotkey() -> Option<String> {
-    match env::var("HANDS_OFF_TALK_HOTKEY") {
-        Ok(val) => match Config::validate_hotkey(&val) {
-            Ok(()) => {
-                info!("Talk hotkey set via environment variable: {}", val);
-                Some(val.to_uppercase())
-            }
-            Err(err) => {
-                warn!("Invalid talk hotkey '{}': {}. Using default.", val, err);
-                None
-            }
-        },
-        Err(_) => {
-            debug!("HANDS_OFF_TALK_HOTKEY not set.");
-            None
-        }
-    }
-}
-
 /// Resolve the auto-unlock backoff configuration (internal, testable version).
 ///
 /// Precedence order:
@@ -225,37 +175,6 @@ pub fn resolve_auto_unlock(
         config_backoff_enabled,
         config_base_interval,
     )
-}
-
-/// Resolve keycodes for the setup reserved-key set.
-///
-/// The passphrase is captured against the keys the runtime will actually
-/// register, so the precedence here MUST match the runtime's (R3):
-/// env var (`HANDS_OFF_LOCK_HOTKEY` / `HANDS_OFF_TALK_HOTKEY`, honored by the
-/// CLI runtime at launch) > the keys chosen during this setup run > defaults
-/// (`L` / `T`). An env override deliberately wins over the just-chosen key:
-/// if the operator runs the runtime with `HANDS_OFF_LOCK_HOTKEY=Q`, Q is
-/// reserved there even when setup saved L, so capture must reject Q too.
-pub fn chosen_hotkey_keycodes(
-    env_lock: Option<String>,
-    env_talk: Option<String>,
-    chosen_lock: Option<&str>,
-    chosen_talk: Option<&str>,
-) -> Result<(i64, i64)> {
-    let lock = env_lock
-        .and_then(|k| Config::parse_key_string(&k).ok())
-        .or_else(|| chosen_lock.and_then(|k| Config::parse_key_string(k).ok()))
-        .unwrap_or(global_hotkey::hotkey::Code::KeyL);
-    let talk = env_talk
-        .and_then(|k| Config::parse_key_string(&k).ok())
-        .or_else(|| chosen_talk.and_then(|k| Config::parse_key_string(k).ok()))
-        .unwrap_or(global_hotkey::hotkey::Code::KeyT);
-
-    let lock_keycode = crate::utils::keycode::code_to_keycode(lock)
-        .context("Failed to resolve lock hotkey keycode")?;
-    let talk_keycode = crate::utils::keycode::code_to_keycode(talk)
-        .context("Failed to resolve talk hotkey keycode")?;
-    Ok((lock_keycode, talk_keycode))
 }
 
 #[cfg(test)]
@@ -477,42 +396,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_chosen_hotkey_keycodes_explicit_choice() {
-        // Explicitly chosen letters map to their macOS keycodes (Q=12), not
-        // the defaults (L=37 / T=17).
-        let (lock, _talk) =
-            chosen_hotkey_keycodes(None, None, Some("Q"), None).expect("Q is a valid hotkey");
-        assert_eq!(
-            lock, 12,
-            "Q must map to macOS keycode 12, not default L (37)"
-        );
-        let (_lock, talk) =
-            chosen_hotkey_keycodes(None, None, None, Some("P")).expect("P is a valid hotkey");
-        assert_eq!(
-            talk, 35,
-            "P must map to macOS keycode 35, not default T (17)"
-        );
-    }
-
-    #[test]
-    fn test_chosen_hotkey_keycodes_env_wins_over_chosen() {
-        // Env override beats the just-chosen key (R3 precedence match): the
-        // runtime honors HANDS_OFF_LOCK_HOTKEY at launch, so capture must
-        // reserve the env key even when setup saved something else.
-        let (lock, talk) =
-            chosen_hotkey_keycodes(Some("Q".to_string()), None, Some("L"), Some("R"))
-                .expect("valid hotkeys");
-        assert_eq!(lock, 12, "env Q must win over chosen L");
-        assert_eq!(talk, 15, "chosen R must map to macOS keycode 15");
-    }
-
-    #[test]
-    fn test_chosen_hotkey_keycodes_defaults() {
-        // No env, no chosen keys → defaults L(37) / T(17).
-        let (lock, talk) =
-            chosen_hotkey_keycodes(None, None, None, None).expect("defaults resolve");
-        assert_eq!(lock, 37);
-        assert_eq!(talk, 17);
-    }
 }

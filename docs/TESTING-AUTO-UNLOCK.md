@@ -14,7 +14,7 @@ This document provides comprehensive manual testing procedures for the auto-unlo
 - HandsOff application built and ready to run
 - macOS system with accessibility permissions granted
 - Terminal access to run the application with environment variables
-- Passphrase already configured (`cargo run -- --setup` — the app refuses to run without a config)
+- Passphrase already configured (launch the tray app — the Setup Wizard opens automatically; the app refuses to run without a config)
 
 ## Test Environment Setup
 
@@ -60,7 +60,7 @@ All intervals count **awake time** (`Instant` pauses during sleep).
 **Steps:**
 1. Start the application without setting `HANDS_OFF_AUTO_UNLOCK`:
    ```bash
-   cargo run
+   cargo run --bin handsoff-tray
    ```
 2. Check the log output for auto-unlock messages
 3. Lock the device using the hotkey (Ctrl+Cmd+Shift+L)
@@ -82,11 +82,11 @@ All intervals count **awake time** (`Instant` pauses during sleep).
 **Steps:**
 1. Start with the minimum base interval:
    ```bash
-   HANDS_OFF_AUTO_UNLOCK=60 cargo run -- --locked
+   HANDS_OFF_AUTO_UNLOCK=60 cargo run --bin handsoff-tray
    ```
 2. Verify the log shows: `Auto-unlock backoff enabled: first window at 60s, doubling up to 86400s`
 3. Verify the log shows: `Auto-unlock backoff monitoring thread started`
-4. Verify input is blocked immediately (started locked)
+4. Lock input via the hotkey `Ctrl+Cmd+Shift+L`
 5. Wait ~60–70 seconds without touching input
 6. Observe logs and input state
 
@@ -111,7 +111,7 @@ All intervals count **awake time** (`Instant` pauses during sleep).
 **Steps:**
 1. Start with the minimum base interval:
    ```bash
-   HANDS_OFF_AUTO_UNLOCK=60 cargo run -- --locked
+   HANDS_OFF_AUTO_UNLOCK=60 cargo run --bin handsoff-tray
    ```
 2. Wait 30 seconds (locked)
 3. Unlock using the passphrase
@@ -137,7 +137,7 @@ All intervals count **awake time** (`Instant` pauses during sleep).
 **Steps:**
 1. Start with the minimum base interval and the shortest auto-lock:
    ```bash
-   HANDS_OFF_AUTO_UNLOCK=60 HANDS_OFF_AUTO_LOCK=20 cargo run -- --locked
+   HANDS_OFF_AUTO_UNLOCK=60 HANDS_OFF_AUTO_LOCK=20 cargo run --bin handsoff-tray
    ```
 2. When the first window opens (~60 s), do NOT unlock — leave the machine idle
 3. Wait for auto-lock to re-engage (after 20 s of idle in the open window)
@@ -158,7 +158,7 @@ All intervals count **awake time** (`Instant` pauses during sleep).
 **Objective:** Verify the minimum accepted base interval works (covered in Test 2; repeat standalone).
 
 **Steps:**
-1. `HANDS_OFF_AUTO_UNLOCK=60 cargo run -- --locked`
+1. `HANDS_OFF_AUTO_UNLOCK=60 cargo run --bin handsoff-tray`
 2. Check the startup log
 
 **Expected Results:**
@@ -174,7 +174,7 @@ All intervals count **awake time** (`Instant` pauses during sleep).
 **Objective:** Verify the maximum base interval value is accepted (24 h — the window ceiling; not practical to wait).
 
 **Steps:**
-1. `HANDS_OFF_AUTO_UNLOCK=86400 cargo run`
+1. `HANDS_OFF_AUTO_UNLOCK=86400 cargo run --bin handsoff-tray`
 2. Check the log output
 
 **Expected Results:**
@@ -193,7 +193,7 @@ All intervals count **awake time** (`Instant` pauses during sleep).
 **Steps:**
 1. Start with a value below the minimum:
    ```bash
-   HANDS_OFF_AUTO_UNLOCK=5 cargo run
+   HANDS_OFF_AUTO_UNLOCK=5 cargo run --bin handsoff-tray
    ```
 2. Check log output
 3. Verify the effective base interval from the log line
@@ -212,7 +212,7 @@ All intervals count **awake time** (`Instant` pauses during sleep).
 **Objective:** Verify that values above 86400 seconds are rejected.
 
 **Steps:**
-1. `HANDS_OFF_AUTO_UNLOCK=90000 cargo run`
+1. `HANDS_OFF_AUTO_UNLOCK=90000 cargo run --bin handsoff-tray`
 2. Check log output
 
 **Expected Results:**
@@ -228,7 +228,7 @@ All intervals count **awake time** (`Instant` pauses during sleep).
 **Objective:** Verify that non-numeric values are rejected gracefully.
 
 **Steps:**
-1. `HANDS_OFF_AUTO_UNLOCK=invalid cargo run`
+1. `HANDS_OFF_AUTO_UNLOCK=invalid cargo run --bin handsoff-tray`
 2. Check log output
 
 **Expected Results:**
@@ -244,7 +244,7 @@ All intervals count **awake time** (`Instant` pauses during sleep).
 **Objective:** Verify that setting the value to 0 explicitly disables the feature.
 
 **Steps:**
-1. `HANDS_OFF_AUTO_UNLOCK=0 cargo run`
+1. `HANDS_OFF_AUTO_UNLOCK=0 cargo run --bin handsoff-tray`
 2. Check log output
 3. Lock the device and wait past any plausible interval
 
@@ -262,7 +262,7 @@ All intervals count **awake time** (`Instant` pauses during sleep).
 **Objective:** Verify that partial passphrase input is cleared when a window fires.
 
 **Steps:**
-1. `HANDS_OFF_AUTO_UNLOCK=60 cargo run -- --locked`
+1. `HANDS_OFF_AUTO_UNLOCK=60 cargo run --bin handsoff-tray`
 2. Lock is active from start; type a partial passphrase (a few keys)
 3. Stop typing and wait for the window to fire
 4. When auto-lock re-engages, type the same partial sequence again
@@ -281,7 +281,7 @@ All intervals count **awake time** (`Instant` pauses during sleep).
 **Objective:** Verify that the window firing produces NO notification (V10).
 
 **Steps:**
-1. `HANDS_OFF_AUTO_UNLOCK=60 cargo run -- --locked`
+1. `HANDS_OFF_AUTO_UNLOCK=60 cargo run --bin handsoff-tray`
 2. Wait for the window to fire
 3. Observe Notification Center and the menu bar
 
@@ -299,7 +299,7 @@ All intervals count **awake time** (`Instant` pauses during sleep).
 **Objective:** Verify the menu bar icon tracks the actual lock state.
 
 **Steps:**
-1. `HANDS_OFF_AUTO_UNLOCK=60 cargo run -- --locked`
+1. `HANDS_OFF_AUTO_UNLOCK=60 cargo run --bin handsoff-tray`
 2. Observe the menu bar icon (locked state at start)
 3. Wait for the window to fire
 4. Observe the icon
@@ -318,7 +318,7 @@ All intervals count **awake time** (`Instant` pauses during sleep).
 **Objective:** Verify all expected log messages appear.
 
 **Steps:**
-1. `RUST_LOG=debug HANDS_OFF_AUTO_UNLOCK=60 cargo run -- --locked`
+1. `RUST_LOG=debug HANDS_OFF_AUTO_UNLOCK=60 cargo run --bin handsoff-tray`
 2. Wait for the window to fire
 3. Review all log output
 
@@ -340,7 +340,7 @@ All intervals count **awake time** (`Instant` pauses during sleep).
 **Objective:** Verify the feature handles rapid lock/unlock cycles without crashes.
 
 **Steps:**
-1. `HANDS_OFF_AUTO_UNLOCK=60 HANDS_OFF_AUTO_LOCK=20 cargo run -- --locked`
+1. `HANDS_OFF_AUTO_UNLOCK=60 HANDS_OFF_AUTO_LOCK=20 cargo run --bin handsoff-tray`
 2. Perform 10 rapid lock/unlock cycles:
    - Unlock with the passphrase
    - Wait for auto-lock (20 s idle) to re-lock
@@ -365,7 +365,7 @@ All intervals count **awake time** (`Instant` pauses during sleep).
 **Objective:** Verify awake-time semantics (§2.4).
 
 **Steps:**
-1. `HANDS_OFF_AUTO_UNLOCK=60 cargo run -- --locked`
+1. `HANDS_OFF_AUTO_UNLOCK=60 cargo run --bin handsoff-tray`
 2. Lock the device
 3. Put the system to sleep for several hours
 4. Wake the system and observe
@@ -383,7 +383,7 @@ All intervals count **awake time** (`Instant` pauses during sleep).
 **Objective:** Verify the auto-unlock thread continues working under high system load.
 
 **Steps:**
-1. `HANDS_OFF_AUTO_UNLOCK=60 cargo run -- --locked`
+1. `HANDS_OFF_AUTO_UNLOCK=60 cargo run --bin handsoff-tray`
 2. Lock the device
 3. Start a CPU-intensive task (e.g., compile a large project)
 4. Wait for the window
@@ -433,16 +433,16 @@ _________________________________
 
 ```bash
 # Normal startup (auto-unlock enabled by default, base 3600 s)
-cargo run
+cargo run --bin handsoff-tray
 
 # Shortest useful base interval for testing (60 s)
-HANDS_OFF_AUTO_UNLOCK=60 cargo run -- --locked
+HANDS_OFF_AUTO_UNLOCK=60 cargo run --bin handsoff-tray
 
 # With debug logging
-RUST_LOG=debug HANDS_OFF_AUTO_UNLOCK=60 cargo run -- --locked
+RUST_LOG=debug HANDS_OFF_AUTO_UNLOCK=60 cargo run --bin handsoff-tray
 
 # Explicitly disabled
-HANDS_OFF_AUTO_UNLOCK=0 cargo run
+HANDS_OFF_AUTO_UNLOCK=0 cargo run --bin handsoff-tray
 
 # Run tests
 cargo test auto_unlock

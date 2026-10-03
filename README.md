@@ -8,9 +8,7 @@
 
 A macOS utility that prevents accidental or unsolicited input from keyboard, trackpad, and mouse devices during video conferencing, presentations, or when leaving your laptop unattended.
 
-**Available in two modes:**
-- **CLI**: Command-line interface with terminal output
-- **Tray App**: Native macOS menu bar application with notifications
+**Available as a native macOS menu bar application (Tray App).**
 
 ## Features
 
@@ -33,9 +31,9 @@ A macOS utility that prevents accidental or unsolicited input from keyboard, tra
 
 ## Installation
 
-HandsOff is available in two forms: **Tray App** (recommended for most users) and **CLI** (for advanced users).
+HandsOff is available as a **Tray App** (macOS menu bar application).
 
-### Option 1: Tray App (Recommended)
+### Tray App
 
 **Download the DMG from [GitHub Releases](https://github.com/mhuang74/handsoff-rs/releases):**
 
@@ -73,40 +71,6 @@ HandsOff is available in two forms: **Tray App** (recommended for most users) an
 > app and grant the permission again (or use the in-app
 > **Fix Accessibility Permission…** menu item).
 
-### Option 2: CLI (Advanced Users)
-
-**Download the CLI tarball from [GitHub Releases](https://github.com/mhuang74/handsoff-rs/releases):**
-
-1. Download the CLI tarball for your Mac's architecture from the latest release:
-   - Apple Silicon: `handsoff-cli-v{VERSION}-arm64.tar.gz`
-   - Intel: `handsoff-cli-v{VERSION}-x86_64.tar.gz`
-2. Extract and install:
-   ```bash
-   tar -xzf handsoff-cli-v{VERSION}-<arch>.tar.gz
-   sudo mv handsoff-cli/handsoff /usr/local/bin/
-   ```
-3. Grant Accessibility permissions:
-   - Go to System Settings > Privacy & Security > Accessibility
-   - Add the `handsoff` binary to the list of allowed apps
-4. Run the setup command to configure your passphrase:
-   ```bash
-   handsoff --setup
-   ```
-   This will prompt you for:
-   - Secret passphrase (captured as physical key presses — layout-independent)
-   - Auto-lock timeout (default: 180 seconds)
-   - Auto-unlock (default: enabled — 60-minute base, doubling up to 24 h)
-5. Run the CLI:
-   ```bash
-   handsoff
-   ```
-
-**Key advantages:**
-- ✅ Terminal-based interface with log output
-- ✅ More control over configuration via flags
-- ✅ Suitable for remote/headless usage (via SSH)
-- ✅ Lightweight (no GUI dependencies)
-
 **Building from Source:**
 
 For developers who want to build from source, see [DEVELOPER.md](DEVELOPER.md).
@@ -117,18 +81,13 @@ For developers who want to build from source, see [DEVELOPER.md](DEVELOPER.md).
 
 ### Configuration
 
-**Configuration depends on which version you're using:**
-
-#### Shared Configuration (Both CLI and Tray App)
-
-Both CLI and Tray App use the same encrypted configuration file:
+HandsOff uses a single encrypted configuration file:
 
 **Configuration file location:** `~/Library/Application Support/handsoff/config.toml`
 
 **Initial setup:**
 - **Tray App**: launch HandsOff.app — the Setup Wizard opens automatically
   when no valid config exists (reconfigure later via tray menu → Preferences)
-- **CLI**: `handsoff --setup`
 
 The setup wizard will prompt you for:
 - Secret passphrase (stored as a SHA-256 hash of your physical key sequence)
@@ -136,7 +95,7 @@ The setup wizard will prompt you for:
 - Auto-unlock (default: enabled — 60-minute base, doubling up to 24 h)
 
 **Changing configuration:**
-Run the setup command again to reconfigure.
+Use the tray menu (Preferences…, Change Passphrase…, Reset…) to reconfigure.
 
 #### Optional Environment Variable Overrides
 
@@ -148,12 +107,6 @@ export HANDS_OFF_AUTO_LOCK=60
 
 # Optional: Override auto-unlock base interval (seconds, 0=disabled)
 export HANDS_OFF_AUTO_UNLOCK=3600
-
-# Optional: Override lock hotkey last key (A-Z)
-export HANDS_OFF_LOCK_HOTKEY=L
-
-# Optional: Override talk hotkey last key (A-Z)
-export HANDS_OFF_TALK_HOTKEY=T
 ```
 
 For permanent overrides, add these to your `~/.zshrc` or `~/.bash_profile`.
@@ -181,50 +134,22 @@ General → Login Items), the app starts automatically at login.
 
 **Important:** When locked, ALL mouse clicks are blocked (including clicks on the tray menu). The menu becomes inaccessible and you must type your passphrase to unlock.
 
-### Using the CLI
-
-After setting environment variables (see Configuration section above):
-
-```bash
-# Start the CLI
-handsoff
-
-# With options
-handsoff --locked        # Start locked
-handsoff --auto-lock 60  # Auto-lock after 60s
-
-# View help
-handsoff --help
-```
-
-**CLI Output:**
-```
-INFO  Starting HandsOff Input Lock
-INFO  Configuration loaded from: /Users/username/Library/Application Support/handsoff/config.toml
-INFO  HandsOff is running - press Ctrl+C to quit
-INFO  STATUS: INPUT IS UNLOCKED
-INFO  - Press Ctrl+Cmd+Shift+L to lock input
-```
-
 ### Locking Input
 
 **Tray App:**
 1. Click the menu bar icon and select "Lock Input"
 2. Press `Ctrl+Cmd+Shift+L` (global hotkey)
 
-**CLI:**
-1. Press `Ctrl+Cmd+Shift+L` (global hotkey)
-
 When locked, all keyboard/mouse/trackpad input is blocked (except for Talk/Unmute hotkey and passphrase entry).
 
 ### Unlocking Input
 
-**Both CLI and Tray App use the same unlock method:**
+**Unlock method:**
 
 1. Type your passphrase on the keyboard (even though you can't see the input)
 2. If you mistype, press **Escape** to clear the buffer immediately, or wait 3 seconds for it to reset automatically
 
-**Important for Tray App users:** You CANNOT unlock via the menu! When locked, mouse clicks are blocked by the event tap, making the tray menu inaccessible. You must type your passphrase just like CLI users.
+**Important:** You CANNOT unlock via the menu! When locked, mouse clicks are blocked by the event tap, making the tray menu inaccessible. You must type your passphrase to unlock.
 
 **Note:** The input buffer clears automatically after 3 seconds of inactivity to prevent multiple failed attempts from interfering with each other. You can also press **Escape** at any time to clear the buffer instantly and retry.
 
@@ -235,7 +160,6 @@ The app automatically locks after 180 seconds of no input activity. You can conf
 ### Talk Hotkey
 
 When locked, press `Ctrl+Cmd+Shift+T` to temporarily pass through a spacebar keypress, allowing you to unmute in video conferencing apps like Zoom or Google Meet.
-
 
 ## Security
 
@@ -265,12 +189,9 @@ When locked, press `Ctrl+Cmd+Shift+T` to temporarily pass through a spacebar key
 - Restart the app after granting permissions
 
 ### Forgot passphrase
-- **Both CLI and Tray App**: reconfigure by running the setup flow again:
-  - Tray App: delete the config file, relaunch the app — the Setup Wizard
-    opens automatically (or use tray menu → Change Passphrase)
-  - CLI: `handsoff --setup`
+- Reconfigure via the Setup Wizard: delete the config file, relaunch the app —
+  the Setup Wizard opens automatically (or use tray menu → Change Passphrase)
 - If locked and can't unlock: Restart in Safe Mode to avoid launching HandsOff, then run setup again
-- If remote access is enabled: ssh into host and `killall handsoff-tray` or `killall handsoff`
 
 ---
 
@@ -296,7 +217,6 @@ Built with:
 - `notify-rust`: Native macOS notifications (Tray App)
 - `global-hotkey`: Global hotkey registration
 - `ring`: Cryptographic hashing (SHA-256 over keycode sequences)
-- `clap`: Command-line argument parsing (CLI)
 - `parking_lot`: Fast mutex implementation
 
 

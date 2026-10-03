@@ -50,8 +50,8 @@ type CFRunLoopSourceRef = *mut std::ffi::c_void;
 pub enum TapLifecycleEvent {
     /// No lifecycle flag was set.
     Idle,
-    /// The tap was stopped due to permission loss (CLI exits; tray keeps
-    /// running and shows status).
+    /// The tap was stopped due to permission loss (the tray keeps running
+    /// and shows status).
     TapStopped,
     /// The tap was restarted (permissions restored).
     Restarted,
@@ -60,7 +60,7 @@ pub enum TapLifecycleEvent {
     RestartFailed(anyhow::Error),
 }
 
-/// Core HandsOff functionality shared between CLI and Tray App
+/// Core HandsOff functionality shared by the Tray App binary
 pub struct HandsOffCore {
     pub state: Arc<AppState>,
     event_tap: Option<CGEventTapRef>,
@@ -527,10 +527,9 @@ impl HandsOffCore {
     ///   the tap on a sleep/wake timeout; falls back to a full restart)
     /// - `should_start_event_tap` → `restart_event_tap` (permissions restored)
     ///
-    /// The tray session loop and the CLI main loop both call this, so the
-    /// CLI recovers from a tap timeout exactly like the tray. Returns what
-    /// happened so each binary can layer its own UX (CLI exits on stop; the
-    /// tray notifies on restart success/failure).
+    /// The tray session loop calls this. Returns what happened so the
+    /// caller can layer its own UX (the tray notifies on restart
+    /// success/failure).
     pub fn service_tap_lifecycle(&mut self) -> TapLifecycleEvent {
         // Permission loss: stop the tap.
         if self.state.should_stop_event_tap_and_clear() {
@@ -893,7 +892,7 @@ mod tests {
     #[test]
     fn test_service_tap_lifecycle_consumes_stop_flag() {
         // Issue #37 N3: the shared servicing method must consume the stop
-        // flag and report TapStopped (CLI exits on this event).
+        // flag and report TapStopped.
         let mut core = HandsOffCore::new(crate::utils::hash_keycodes(&[0, 12, 15, 37]));
         core.state.request_stop_event_tap();
 
@@ -911,10 +910,9 @@ mod tests {
     #[test]
     fn test_service_tap_lifecycle_consumes_reenable_flag() {
         // Issue #37 N3: the re-enable flag (set on macOS tap timeout) must
-        // be consumed by the shared servicing block — this is the parity the
-        // CLI previously lacked. reenable_event_tap falls back to a full
-        // restart when no tap is held, so this exercises the full fallback
-        // path and must NOT return TapStopped.
+        // be consumed by the shared servicing block. reenable_event_tap
+        // falls back to a full restart when no tap is held, so this
+        // exercises the full fallback path and must NOT return TapStopped.
         let mut core = HandsOffCore::new(crate::utils::hash_keycodes(&[0, 12, 15, 37]));
         core.state.request_reenable_event_tap();
 

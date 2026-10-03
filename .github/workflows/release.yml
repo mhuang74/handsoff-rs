@@ -85,32 +85,6 @@ jobs:
         echo "Added LSUIElement to Info.plist"
         plutil -p "$FINAL_BUNDLE_PATH/Contents/Info.plist" | grep -E "(LSUIElement|CFBundleDisplayName)"
 
-    - name: Package CLI binary
-      run: |
-        VERSION="${{ steps.version.outputs.version }}"
-        DIST_DIR="dist"
-        CLI_DIR="handsoff-cli"
-        CLI_BINARY="target/aarch64-apple-darwin/release/handsoff"
-        TARBALL="${DIST_DIR}/handsoff-cli-v${VERSION}-arm64.tar.gz"
-
-        echo "Packaging CLI binary..."
-
-        # Create staging directory
-        mkdir -p "${CLI_DIR}"
-
-        # Copy CLI binary
-        cp "${CLI_BINARY}" "${CLI_DIR}/"
-
-        # Create tarball
-        mkdir -p "${DIST_DIR}"
-        tar -czf "${TARBALL}" "${CLI_DIR}"
-
-        # Clean up staging directory
-        rm -rf "${CLI_DIR}"
-
-        echo "CLI tarball created at: ${TARBALL}"
-        ls -lh "${TARBALL}"
-
     - name: Create DMG
       run: |
         VERSION="${{ steps.version.outputs.version }}"
@@ -142,13 +116,6 @@ jobs:
       with:
         name: handsoff-dmg-macos-arm64
         path: dist/${{ env.APP_NAME }}-v${{ steps.version.outputs.version }}-arm64.dmg
-        retention-days: 30
-
-    - name: Upload CLI tarball as artifact
-      uses: actions/upload-artifact@v5
-      with:
-        name: handsoff-cli-macos-arm64
-        path: dist/handsoff-cli-v${{ steps.version.outputs.version }}-arm64.tar.gz
         retention-days: 30
 
   build-macos-dmg-x86_64:
@@ -219,32 +186,6 @@ jobs:
         echo "Added LSUIElement to Info.plist"
         plutil -p "$FINAL_BUNDLE_PATH/Contents/Info.plist" | grep -E "(LSUIElement|CFBundleDisplayName)"
 
-    - name: Package CLI binary
-      run: |
-        VERSION="${{ steps.version.outputs.version }}"
-        DIST_DIR="dist"
-        CLI_DIR="handsoff-cli"
-        CLI_BINARY="target/x86_64-apple-darwin/release/handsoff"
-        TARBALL="${DIST_DIR}/handsoff-cli-v${VERSION}-x86_64.tar.gz"
-
-        echo "Packaging CLI binary..."
-
-        # Create staging directory
-        mkdir -p "${CLI_DIR}"
-
-        # Copy CLI binary
-        cp "${CLI_BINARY}" "${CLI_DIR}/"
-
-        # Create tarball
-        mkdir -p "${DIST_DIR}"
-        tar -czf "${TARBALL}" "${CLI_DIR}"
-
-        # Clean up staging directory
-        rm -rf "${CLI_DIR}"
-
-        echo "CLI tarball created at: ${TARBALL}"
-        ls -lh "${TARBALL}"
-
     - name: Create DMG
       run: |
         VERSION="${{ steps.version.outputs.version }}"
@@ -276,13 +217,6 @@ jobs:
       with:
         name: handsoff-dmg-macos-x86_64
         path: dist/${{ env.APP_NAME }}-v${{ steps.version.outputs.version }}-x86_64.dmg
-        retention-days: 30
-
-    - name: Upload CLI tarball as artifact
-      uses: actions/upload-artifact@v5
-      with:
-        name: handsoff-cli-macos-x86_64
-        path: dist/handsoff-cli-v${{ steps.version.outputs.version }}-x86_64.tar.gz
         retention-days: 30
 
   changelog:
@@ -423,8 +357,6 @@ jobs:
         files: |
           dist/${{ env.APP_NAME }}-v${{ needs.changelog.outputs.version }}-arm64.dmg
           dist/${{ env.APP_NAME }}-v${{ needs.changelog.outputs.version }}-x86_64.dmg
-          dist/handsoff-cli-v${{ needs.changelog.outputs.version }}-arm64.tar.gz
-          dist/handsoff-cli-v${{ needs.changelog.outputs.version }}-x86_64.tar.gz
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -435,6 +367,4 @@ jobs:
         path: |
           dist/${{ env.APP_NAME }}-v${{ needs.changelog.outputs.version }}-arm64.dmg
           dist/${{ env.APP_NAME }}-v${{ needs.changelog.outputs.version }}-x86_64.dmg
-          dist/handsoff-cli-v${{ needs.changelog.outputs.version }}-arm64.tar.gz
-          dist/handsoff-cli-v${{ needs.changelog.outputs.version }}-x86_64.tar.gz
         retention-days: 30
