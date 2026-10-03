@@ -56,7 +56,7 @@ cargo build --release
 cargo test
 ```
 
-Binaries land at `target/release/handsoff` and `target/release/handsoff-tray`.
+The tray binary lands at `target/release/handsoff-tray`.
 For per-architecture and universal (`lipo`) builds, see the "Build Architecture"
 section below. For the distributable `.app` bundle and DMG, use the
 Makefile workflow that follows (`make all`, `make dmg`) — bundling uses
@@ -226,17 +226,6 @@ zip -r HandsOff-v0.1.0.zip HandsOff.app
 Users can extract and drag to `/Applications`. Gatekeeper handling and
 the Setup Wizard work identically to the DMG flow.
 
-### Option 3: CLI Binary Distribution
-
-The CLI binary (`target/release/handsoff`) is built from the same crate
-as the tray app and distributed separately, e.g.:
-
-```bash
-mkdir handsoff-cli
-cp target/release/handsoff handsoff-cli/
-tar -czf handsoff-cli-v{VERSION}-<arch>.tar.gz handsoff-cli/
-```
-
 ### Option 4: Install Locally for Testing
 
 To test the installed version on your local machine:
@@ -405,8 +394,8 @@ cargo zigbuild --target x86_64-apple-darwin  --tests
 `x86_64 executable`):
 
 ```bash
-file target/aarch64-apple-darwin/release/handsoff
-file target/x86_64-apple-darwin/release/handsoff
+file target/aarch64-apple-darwin/release/handsoff-tray
+file target/x86_64-apple-darwin/release/handsoff-tray
 ```
 
 Notes:
@@ -425,7 +414,7 @@ Notes:
 
 | Step | Coverage |
 |---|---|
-| `cargo zigbuild --release` | Full compile + link of both binaries against real SDK — catches macOS-only compile errors (`src/setup.rs`, `event_tap.rs`) locally |
+| `cargo zigbuild --release` | Full compile + link of the tray binary against real SDK — catches macOS-only compile errors (`src/setup.rs`, `event_tap.rs`) locally |
 | `cargo zigbuild --tests` | Compiles unit + integration test harnesses (same coverage as above) |
 | Executing tests / running the app | **Not possible on Linux** — macOS machine or CI required |
 

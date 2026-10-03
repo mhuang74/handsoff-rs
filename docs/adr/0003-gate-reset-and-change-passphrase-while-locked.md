@@ -31,7 +31,7 @@ would later clear without authentication.
    the glossary's description of Reset ("the recovery path for a forgotten
    Passphrase"): a user who is Locked with a dead tap AND has forgotten
    their Passphrase must now wait for the tap to recover (tray: ~10 s
-   debounce) or use the CLI/relaunch. We accept this because the deadlock
+   debounce) or relaunch. We accept this because the deadlock
    scenario requires two simultaneous failures, while the unauthenticated
    re-key/wipe scenario required only one.
 

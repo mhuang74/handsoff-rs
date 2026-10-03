@@ -68,17 +68,17 @@ See `docs/SAFE-DEVELOPMENT.md` for complete safety guide. Key strategies:
 
    # Test from phone/another computer
    ssh you@your-mac.local
-   pkill handsoff  # This can save you if locked out
+   pkill handsoff-tray  # This can save you if locked out
    ```
 
 2. **Use a Short Auto-Unlock Window** (first window opens after 60 s awake-time)
    ```bash
-   HANDS_OFF_AUTO_UNLOCK=60 cargo run -- --locked
+   HANDS_OFF_AUTO_UNLOCK=60 cargo run --bin handsoff-tray
    ```
 
 3. **Use the Shortest Auto-Lock** (20 s of inactivity re-locks)
    ```bash
-   HANDS_OFF_AUTO_LOCK=20 cargo run -- --locked
+   HANDS_OFF_AUTO_LOCK=20 cargo run --bin handsoff-tray
    ```
 
 4. **Test Incrementally**
@@ -95,7 +95,7 @@ See `docs/SAFE-DEVELOPMENT.md` for complete safety guide. Key strategies:
 **Option 2**: SSH from another device and kill the process
 ```bash
 ssh you@your-mac.local
-pkill handsoff
+pkill handsoff-tray
 ```
 
 **Option 3**: Force restart Mac (hold power button - LAST RESORT)
@@ -183,7 +183,7 @@ See `specs/phase-2.md` for the original manual-testing plan (historical). Key ar
 ### Critical Manual Tests (Before Each Release)
 
 #### Lock/Unlock Flow
-- [ ] Set passphrase via `cargo run -- --setup`
+- [ ] Set passphrase via the Setup Wizard (opens on first launch)
 - [ ] Enable lock via hotkey (Ctrl+Cmd+Shift+L)
 - [ ] Verify keyboard is blocked
 - [ ] Verify mouse is blocked
@@ -200,7 +200,7 @@ See `specs/phase-2.md` for the original manual-testing plan (historical). Key ar
 - [ ] Test Talk hotkey (Ctrl+Cmd+Shift+T + Spacebar)
 
 #### Auto-Lock
-- [ ] Set short timeout (`HANDS_OFF_AUTO_LOCK=20` or `--auto-lock 20`)
+- [ ] Set short timeout (`HANDS_OFF_AUTO_LOCK=20` or via Preferences)
 - [ ] Idle for timeout period
 - [ ] Verify lock engages automatically
 - [ ] Move mouse - verify timer resets

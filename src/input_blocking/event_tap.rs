@@ -241,8 +241,7 @@ unsafe extern "C" fn event_tap_callback(
         if event_type == K_CGEVENT_TAP_DISABLED_BY_USER_INPUT {
             // Permissions revoked - request full stop (tap must be recreated after permissions restored)
             state.request_stop_event_tap();
-            state.request_exit(); // Request CLI to exit (ignored by tray app)
-            log::warn!("Requested event tap stop and CLI exit due to permission loss");
+            log::warn!("Requested event tap stop due to permission loss");
         } else {
             // Timeout — most commonly triggered by sleep/wake. The tap is still valid;
             // re-enabling it reuses the existing WindowServer connection rather than

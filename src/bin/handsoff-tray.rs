@@ -63,10 +63,6 @@ fn handle_check_updates() {
     about = "macOS menu bar app to block unsolicited input"
 )]
 struct Args {
-    /// Run interactive setup to configure passphrase and timeouts
-    #[arg(long)]
-    setup: bool,
-
     /// Internal: set by `relaunch_self`/`relaunch_after_reset` on the child
     /// process. The parent still holds the single-instance flock when it
     /// spawns the child and only exits afterwards, so without a bypass the
@@ -79,47 +75,9 @@ struct Args {
     skip_instance_lock: bool,
 }
 
-/// Run interactive setup: capture passphrase keycodes, prompt for options
-fn run_setup() -> Result<()> {
-    let outcome = setup::run_interactive_setup(&mut |s| println!("{}", s))?;
-
-    // Create and save config
-    let (auto_unlock_backoff, auto_unlock_base) = match outcome.auto_unlock {
-        config::AutoUnlockConfig::Disabled => (false, 0),
-        config::AutoUnlockConfig::Backoff { base_interval_secs } => {
-            (true, base_interval_secs.get())
-        }
-    };
-    let config = Config::new(
-        &outcome.keycodes,
-        outcome.auto_lock,
-        auto_unlock_backoff,
-        auto_unlock_base,
-        outcome.lock_key,
-        outcome.talk_key,
-    )
-    .context("Failed to create configuration")?;
-
-    config.save().context("Failed to save configuration")?;
-
-    println!(
-        "\nConfiguration saved to: {}",
-        Config::config_path().display()
-    );
-    println!("Setup complete!");
-    println!("\nThe tray app will use this configuration at next startup.");
-
-    Ok(())
-}
-
 fn main() -> Result<()> {
     // Parse command-line arguments
     let args = Args::parse();
-
-    // Handle setup command
-    if args.setup {
-        return run_setup();
-    }
 
     // Initialize logger (BEFORE the single-instance guard: a duplicate
     // must be able to log why it is exiting).
@@ -798,10 +756,9 @@ fn run_session(
             }
         }
 
-        // Service the shared tap-lifecycle flags (issue #37 N3) — the same
-        // block the CLI main loop runs, so both binaries recover from a
-        // macOS tap timeout identically. Tray-specific UX (notifications)
-        // layers on the returned event.
+        // Service the shared tap-lifecycle flags (issue #37 N3) — recovers
+        // from a macOS tap timeout identically to the old CLI main loop.
+        // Tray-specific UX (notifications) layers on the returned event.
         {
             let mut core_borrow = core.borrow_mut();
             match core_borrow.service_tap_lifecycle() {
@@ -951,7 +908,7 @@ fn handle_regrant_permission(event_loop: &mut tao::event_loop::EventLoop<wizard:
 
 /// Handle lock from menu
 /// Note: This only handles locking, not unlocking. When locked, mouse clicks are blocked,
-/// so the menu is inaccessible. Users must type their passphrase to unlock (same as CLI).
+/// so the menu is inaccessible. Users must type their passphrase to unlock.
 fn handle_lock_toggle(core: Rc<RefCell<HandsOffCore>>) {
     let core = core.borrow();
 

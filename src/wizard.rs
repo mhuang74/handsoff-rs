@@ -1,15 +1,15 @@
 //! Setup Wizard: single native window guiding first-run configuration.
 //!
-//! ADR 0002: replaces the terminal `--setup` gauntlet for average users. The
-//! tray launches this wizard whenever the config is absent or fails strict
+//! The tray launches this wizard whenever the config is absent or fails strict
 //! validation (`setup::validate_config_strict`); a valid config never shows
-//! it (Preferences is a separate #27 concern).
+//! it (Preferences is a separate #27 concern). Since ADR 0004 removed the
+//! CLI and its terminal `--setup` flow, this wizard is the sole setup path.
 //!
 //! Steps, in order (spec #24):
 //! 1. Permission explanation + Grant button → opens System Settings pane.
 //! 2. Poll until TCC grants Accessibility (background check, status label).
-//! 3. Passphrase capture: SILENT physical-key capture via the same session
-//!    event tap the TUI uses (`setup::capture_passphrase_headless`) — raw
+//! 3. Passphrase capture: SILENT physical-key capture via the session
+//!    event tap (`setup::capture_passphrase_headless`) — raw
 //!    keycodes, ≥4 keys, Enter commit, Backspace delete, Escape restart,
 //!    reserved keys rejected. Double entry, silent compare. No cleartext
 //!    ever exists: the window shows progress dots only.

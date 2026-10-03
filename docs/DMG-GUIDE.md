@@ -42,8 +42,8 @@ build machine's architecture (`arm64` or `x86_64`).
 
 What the target does:
 
-1. `cargo build --release` — builds both binaries (`handsoff`,
-   `handsoff-tray`) from the same crate.
+1. `cargo build --release` — builds the tray binary (`handsoff-tray`)
+   from the same crate.
 2. `cargo bundle --release --bin handsoff-tray` — creates the `.app`
    bundle and renames it to `HandsOff.app`.
 3. `plutil` — inserts `LSUIElement` (menu bar only, no Dock icon).
@@ -51,10 +51,6 @@ What the target does:
    needed; satisfies nothing beyond local run, per ADR 0001).
 5. Stages `HandsOff.app` plus an `/Applications` symlink and runs
    `hdiutil create -format UDZO` to produce the compressed DMG.
-
-The CLI binary (`target/release/handsoff`) is built by the same step and
-is distributed separately (e.g. zipped or tarballed); it is not part of
-the DMG.
 
 ## Testing the DMG
 

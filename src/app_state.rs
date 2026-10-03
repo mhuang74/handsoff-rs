@@ -71,8 +71,6 @@ pub struct AppStateInner {
     pub should_reenable_event_tap: bool,
     /// Timestamp when event tap was last re-enabled (for debouncing)
     pub last_reenable_time: Option<Instant>,
-    /// Flag to signal that app should exit (CLI only - set by event tap callback on permission loss)
-    pub should_exit: bool,
     /// Whether the app is currently disabled (minimal CPU mode)
     pub is_disabled: bool,
     /// Lock hotkey keycode (macOS keycode, see DEFAULT_LOCK_KEYCODE)
@@ -100,7 +98,6 @@ impl AppState {
                 should_start_event_tap: false,
                 should_reenable_event_tap: false,
                 last_reenable_time: None,
-                should_exit: false,
                 is_disabled: false,
                 lock_keycode: DEFAULT_LOCK_KEYCODE,
                 talk_keycode: DEFAULT_TALK_KEYCODE,
@@ -526,19 +523,6 @@ impl AppState {
     /// Mark that event tap was just re-enabled (for debouncing)
     pub fn mark_reenable_completed(&self) {
         self.inner.lock().last_reenable_time = Some(Instant::now());
-    }
-
-    /// Request that the application exit (CLI only)
-    pub fn request_exit(&self) {
-        self.inner.lock().should_exit = true;
-    }
-
-    /// Check if app should exit and clear the flag
-    pub fn should_exit_and_clear(&self) -> bool {
-        let mut state = self.inner.lock();
-        let should_exit = state.should_exit;
-        state.should_exit = false;
-        should_exit
     }
 
     /// Check if the app is currently disabled

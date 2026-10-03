@@ -1,6 +1,6 @@
 [package]
 name = "handsoff"
-version = "0.8.5"
+version = "0.9.0"
 edition = "2021"
 rust-version = "1.80"
 authors = ["Michael S. Huang"]
@@ -26,7 +26,6 @@ notify-rust = "4"
 image = { version = "0.25", default-features = false, features = ["png"] }  # Lightweight PNG decoder
 
 # Configuration dependencies
-rpassword = "7.3"          # Non-echoing password input
 dirs = "5.0"               # Standard config directory paths
 toml = "0.8"               # TOML parsing
 serde = { version = "1.0", features = ["derive"] }
@@ -43,17 +42,13 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("cargo-cli
 [build-dependencies]
 
 [[bin]]
-name = "handsoff"
-path = "src/bin/handsoff.rs"
-
-[[bin]]
 name = "handsoff-tray"
 path = "src/bin/handsoff-tray.rs"
 
 [package.metadata.bundle]
 name = "HandsOff"
 identifier = "com.handsoff.inputlock"
-version = "0.8.0"
+version = "0.9.0"
 copyright = "Copyright © 2024 Michael S. Huang"
 category = "public.app-category.utilities"
 short_description = "Prevent accidental input during video calls"

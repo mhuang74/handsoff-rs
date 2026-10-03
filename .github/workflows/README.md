@@ -37,7 +37,7 @@ Reviews are grouped per PR; an in-progress review is cancelled when the PR is up
 
 ## Release Workflow
 
-The `release.yml` workflow automatically builds and releases macOS DMG disk images (containing the ad-hoc signed HandsOff.app) and CLI tarballs for HandsOff, for both Apple Silicon (arm64) and Intel (x86_64). The app ships unsigned (ad-hoc signed) per [docs/adr/0001-unsigned-notarization-free-distribution.md](../../docs/adr/0001-unsigned-notarization-free-distribution.md); first-run configuration is handled by the built-in Setup Wizard ([docs/adr/0002-in-app-setup-wizard-replaces-cli-setup.md](../../docs/adr/0002-in-app-setup-wizard-replaces-cli-setup.md)).
+The `release.yml` workflow automatically builds and releases macOS DMG disk images (containing the ad-hoc signed HandsOff.app) for HandsOff, for both Apple Silicon (arm64) and Intel (x86_64). The app ships unsigned (ad-hoc signed) per [docs/adr/0001-unsigned-notarization-free-distribution.md](../../docs/adr/0001-unsigned-notarization-free-distribution.md); first-run configuration is handled by the built-in Setup Wizard ([docs/adr/0002-in-app-setup-wizard-replaces-cli-setup.md](../../docs/adr/0002-in-app-setup-wizard-replaces-cli-setup.md)).
 
 ### Triggering a Release
 
@@ -69,12 +69,12 @@ Each build job:
 3. Fixes the Info.plist to add LSUIElement (menu bar app)
 4. Ad-hoc signs the app bundle (`codesign --deep --force --sign -`; no certificate needed)
 5. Packages the app bundle into a DMG with `hdiutil create -format UDZO` (staged with an `/Applications` symlink for drag-and-drop)
-6. Uploads the DMG and CLI tarball as workflow artifacts
+6. Uploads the DMG as a workflow artifact
 
 The release job:
-1. Downloads all four build artifacts (per-architecture DMGs and CLI tarballs)
+1. Downloads the two DMG build artifacts (per-architecture)
 2. Creates a GitHub Release with generated release notes
-3. Uploads all four artifacts to the release
+3. Uploads both artifacts to the release
 
 ### Signing
 
@@ -86,13 +86,11 @@ The workflow creates:
 1. **GitHub Release**: Automatically created with release notes, containing:
    - `HandsOff-v{VERSION}-arm64.dmg` (Apple Silicon DMG)
    - `HandsOff-v{VERSION}-x86_64.dmg` (Intel DMG)
-   - `handsoff-cli-v{VERSION}-arm64.tar.gz` (Apple Silicon CLI)
-   - `handsoff-cli-v{VERSION}-x86_64.tar.gz` (Intel CLI)
-2. **Workflow artifacts**: each build job uploads its DMG and CLI tarball (retained for 30 days); the release job uploads a combined `release-bundles` artifact containing all four files
+2. **Workflow artifacts**: each build job uploads its DMG (retained for 30 days); the release job uploads a combined `release-bundles` artifact containing both DMG files
 
 ### Architecture Support
 
-The workflow builds for both **Apple Silicon (arm64)** and **Intel (x86_64)** in parallel jobs, producing separate per-architecture DMGs and CLI tarballs. The x86_64 build cross-compiles from the arm64 macOS runner (both targets are Tier 1 for macOS).
+The workflow builds for both **Apple Silicon (arm64)** and **Intel (x86_64)** in parallel jobs, producing separate per-architecture DMGs. The x86_64 build cross-compiles from the arm64 macOS runner (both targets are Tier 1 for macOS).
 
 ### Customization
 

@@ -45,13 +45,13 @@ jobs:
 
     - name: Check binary
       run: |
-        ls -lh target/release/handsoff
-        file target/release/handsoff
-        lipo -info target/release/handsoff
+        ls -lh target/release/handsoff-tray
+        file target/release/handsoff-tray
+        lipo -info target/release/handsoff-tray
 
     - name: Upload binary artifact
       uses: actions/upload-artifact@v5
       with:
         name: handsoff-macos
-        path: target/release/handsoff
+        path: target/release/handsoff-tray
         retention-days: 7

@@ -1,5 +1,11 @@
 # Hotkey Configuration Bug Fixes - Summary
 
+> **Historical record** (pre-CLI-removal, see ADR 0004): this summary cites
+> the removed `handsoff` CLI binary (`src/bin/handsoff.rs`) and the
+> `HANDS_OFF_LOCK_HOTKEY` / `HANDS_OFF_TALK_HOTKEY` env-var overrides, which
+> no longer exist — the tray app ignores hotkey env vars by design. Retained
+> for design history.
+
 ## Overview
 
 Fixed 4 critical bugs related to user-configurable hotkeys that could cause crashes, silent failures, or confusing behavior.
@@ -189,8 +195,12 @@ Both are set to: KeyM
 This is likely because the config file was manually edited.
 
 Please run setup to reconfigure:
-~/Applications/HandsOff.app/Contents/MacOS/handsoff-tray --setup
+~/Applications/HandsOff.app/Contents/MacOS/handsoff-tray
 ```
+
+> The `--setup` flag shown in this transcript no longer exists (removed with
+> the CLI in ADR 0004); today the Setup Wizard opens on relaunch with an
+> invalid config.
 
 ### Invalid Hotkey (Config File)
 ```

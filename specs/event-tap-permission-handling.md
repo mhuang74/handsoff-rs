@@ -1,6 +1,9 @@
 # Event Tap Permission Handling - Design Specification
 
-**Status:** Draft
+**Status:** Historical — superseded by ADR 0004 (the `handsoff` CLI binary,
+its `should_exit` polling loop, and the associated `request_exit()` /
+`should_exit_and_clear()` hooks were all removed; the tray app never used
+the exit flag and relies solely on `should_stop_event_tap`).
 **Created:** 2025-11-06
 **Author:** Claude Code Investigation
 

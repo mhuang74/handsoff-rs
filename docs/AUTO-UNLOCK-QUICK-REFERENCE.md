@@ -8,7 +8,7 @@
 
 ```bash
 # Shortest useful base interval (testing) — first window after 60 s awake-time
-HANDS_OFF_AUTO_UNLOCK=60 cargo run -- --locked
+HANDS_OFF_AUTO_UNLOCK=60 cargo run --bin handsoff-tray
 
 # 5-minute base interval (development)
 HANDS_OFF_AUTO_UNLOCK=300 ./handsoff
@@ -95,22 +95,22 @@ Failed to parse HANDS_OFF_AUTO_UNLOCK: invalid digit found in string. Ignoring e
 echo $HANDS_OFF_AUTO_UNLOCK
 
 # Run with logging
-RUST_LOG=info HANDS_OFF_AUTO_UNLOCK=60 cargo run -- --locked
+RUST_LOG=info HANDS_OFF_AUTO_UNLOCK=60 cargo run --bin handsoff-tray
 
 # Run with debug logging
-RUST_LOG=debug HANDS_OFF_AUTO_UNLOCK=60 cargo run -- --locked
+RUST_LOG=debug HANDS_OFF_AUTO_UNLOCK=60 cargo run --bin handsoff-tray
 
 # Test boundary values
-HANDS_OFF_AUTO_UNLOCK=60 cargo run      # Minimum base interval
-HANDS_OFF_AUTO_UNLOCK=86400 cargo run   # Maximum
+HANDS_OFF_AUTO_UNLOCK=60 cargo run --bin handsoff-tray      # Minimum base interval
+HANDS_OFF_AUTO_UNLOCK=86400 cargo run --bin handsoff-tray   # Maximum
 
 # Test invalid values (should warn and fall back to config/default)
-HANDS_OFF_AUTO_UNLOCK=30 cargo run      # Below minimum
-HANDS_OFF_AUTO_UNLOCK=90000 cargo run   # Above maximum
-HANDS_OFF_AUTO_UNLOCK=abc cargo run     # Unparseable
+HANDS_OFF_AUTO_UNLOCK=30 cargo run --bin handsoff-tray      # Below minimum
+HANDS_OFF_AUTO_UNLOCK=90000 cargo run --bin handsoff-tray   # Above maximum
+HANDS_OFF_AUTO_UNLOCK=abc cargo run --bin handsoff-tray     # Unparseable
 
 # Explicitly disable
-HANDS_OFF_AUTO_UNLOCK=0 cargo run
+HANDS_OFF_AUTO_UNLOCK=0 cargo run --bin handsoff-tray
 
 # Run unit tests
 cargo test auto_unlock
@@ -223,7 +223,7 @@ if state.should_auto_unlock() {
 ### Quick Smoke Test
 ```bash
 # 1. Start locked with the minimum base interval
-HANDS_OFF_AUTO_UNLOCK=60 cargo run -- --locked
+HANDS_OFF_AUTO_UNLOCK=60 cargo run --bin handsoff-tray
 
 # 2. Wait ~60-70 s of awake time (10 s poll)
 # 3. Verify NO notification, menu bar icon flips to unlocked, input works

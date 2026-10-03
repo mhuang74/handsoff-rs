@@ -17,7 +17,7 @@ The auto-unlock backoff schedule is enabled by default. Setting `HANDS_OFF_AUTO_
 
 ```bash
 # First window opens after 60 s of awake time; input is released silently
-HANDS_OFF_AUTO_UNLOCK=60 cargo run -- --locked
+HANDS_OFF_AUTO_UNLOCK=60 cargo run --bin handsoff-tray
 ```
 
 Note the backoff rule: after a window fires, the next window doubles (120 s, 240 s, …). Re-locking does NOT reset the schedule — only a successful passphrase unlock does. For repeated quick testing, kill and restart the process between runs, or rely on SSH (1.2).
@@ -42,7 +42,7 @@ sudo systemsetup -setremotelogin on
 
 # From another computer (or phone with SSH client)
 ssh you@your-mac.local
-pkill handsoff  # Kill the app if locked out
+pkill handsoff-tray  # Kill the app if locked out
 ```
 
 **Pros**:
@@ -191,7 +191,7 @@ There is no dry-run or partial-blocking mode in the code — blocking is all-or-
 
 ```bash
 # Shortest auto-unlock base interval (60 s awake-time)
-HANDS_OFF_AUTO_UNLOCK=60 cargo run -- --locked
+HANDS_OFF_AUTO_UNLOCK=60 cargo run --bin handsoff-tray
 ```
 
 1. Lock via hotkey (Ctrl+Cmd+Shift+L)
@@ -213,7 +213,7 @@ HANDS_OFF_AUTO_UNLOCK=60 cargo run -- --locked
 If a window is accidentally left unlocked, auto-lock re-engages after idle time. Use the 20 s minimum instead of the 180 s default:
 
 ```bash
-HANDS_OFF_AUTO_LOCK=20 cargo run -- --locked
+HANDS_OFF_AUTO_LOCK=20 cargo run --bin handsoff-tray
 ```
 
 **Pros**:
@@ -256,7 +256,7 @@ fn main() {
         let elapsed = last_heartbeat.lock().unwrap().elapsed();
         if elapsed > Duration::from_secs(30) {
             eprintln!("HandsOff not responding, killing process");
-            Command::new("pkill").arg("handsoff").output().ok();
+            Command::new("pkill").arg("handsoff-tray").output().ok();
             break;
         }
     }
@@ -281,7 +281,7 @@ fn start_watchdog_heartbeat() {
 cargo run --bin watchdog
 
 # Terminal 2: Start HandsOff
-cargo run
+cargo run --bin handsoff-tray
 ```
 
 **Pros**:
@@ -304,7 +304,7 @@ cargo run
 
 ```bash
 # Always run with a safety window during development
-HANDS_OFF_AUTO_UNLOCK=60 cargo run -- --locked
+HANDS_OFF_AUTO_UNLOCK=60 cargo run --bin handsoff-tray
 ```
 
 ### Phase 2: Incremental Risk (Week 3)
@@ -313,7 +313,7 @@ HANDS_OFF_AUTO_UNLOCK=60 cargo run -- --locked
 3. **Test auto-unlock window firing** (wait out the 60 s awake-time)
 
 ```bash
-HANDS_OFF_AUTO_UNLOCK=60 HANDS_OFF_AUTO_LOCK=20 cargo run -- --locked
+HANDS_OFF_AUTO_UNLOCK=60 HANDS_OFF_AUTO_LOCK=20 cargo run --bin handsoff-tray
 ```
 
 ### Phase 3: Production Testing (Week 4)
@@ -562,7 +562,8 @@ fn integration_test_with_safety() {
     // Shortest auto-unlock base interval as the escape route
     std::env::set_var("HANDS_OFF_AUTO_UNLOCK", "60");
 
-    // Start app in background thread (starts locked via --locked semantics)
+    // Start app in background thread (starts locked when launched in locked
+    // mode — for the tray app, trigger Lock via hotkey or menu)
     let handle = std::thread::spawn(|| {
         // handsoff runtime start
     });
@@ -587,7 +588,7 @@ fn integration_test_with_safety() {
 ```bash
 # From another computer
 ssh you@your-mac.local
-pkill handsoff
+pkill handsoff-tray
 ```
 
 #### Option 3: Force Restart
