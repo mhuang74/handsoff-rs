@@ -10,6 +10,8 @@ use handsoff::constants::{
 use handsoff::utils::lock_file;
 use handsoff::{config, config_file::Config, preferences::menu_state, setup, wizard, HandsOffCore};
 use log::{error, info, warn};
+#[cfg(target_os = "macos")]
+use objc2_app_kit::NSAlertSecondButtonReturn;
 use std::cell::RefCell;
 use std::rc::Rc;
 use tao::event_loop::ControlFlow;
@@ -1201,19 +1203,46 @@ fn handle_reset(event_loop: &mut tao::event_loop::EventLoop<wizard::WizardEvent>
 }
 
 /// Double-confirmed Reset dialog. Returns true only on explicit confirm.
+///
+/// Native NSAlert (replaces the old osascript `display dialog` shell-out).
+/// "Cancel" is added FIRST, making it the default button: Return triggers
+/// Cancel, and AppKit auto-assigns Escape to the button titled "Cancel" —
+/// matching osascript's `default button "Cancel"` + Escape-to-cancel.
+/// `NSAlertStyle::Critical` badges the app icon with the caution icon,
+/// matching osascript's `with icon caution` (`Warning` shows no badge).
+/// The destructive action is confirmed only by an explicit click on
+/// "Reset" (`NSAlertSecondButtonReturn`); a mis-typed Enter/Escape cancels.
+/// NEVER compare `runModal()` against `NSModalResponseOK` — NSAlert buttons
+/// return 1000/1001, so the OK constant (1) never matches (issue #39).
+///
+/// All call sites are main-thread, so a missing marker is a bug — panic.
+#[cfg(target_os = "macos")]
 fn confirm_reset() -> bool {
-    use std::process::Command;
+    use objc2_app_kit::{NSAlert, NSAlertStyle, NSApplication};
+    use objc2_foundation::{MainThreadMarker, NSString};
 
-    let script = r#"display dialog "This wipes your HandsOff configuration — passphrase, hotkeys, and timeouts — and restarts setup from the beginning.\n\nYour current passphrase will STOP working." with title "HandsOff - Reset"\nbuttons {"Cancel", "Reset"} default button "Cancel" with icon caution"#;
-    let script = script.replace("\\n", "\n");
-    let out = Command::new("osascript").arg("-e").arg(&script).output();
-    match out {
-        Ok(o) => String::from_utf8_lossy(&o.stdout).contains("button returned:Reset"),
-        Err(_) => {
-            warn!("Reset confirmation dialog failed to show; treating as cancel");
-            false
-        }
+    let mtm = MainThreadMarker::new().expect("reset dialog must run on main thread");
+    let app = NSApplication::sharedApplication(mtm);
+    wizard::activate_app(&app);
+
+    let alert = unsafe { NSAlert::new(mtm) };
+    unsafe {
+        alert.setMessageText(&NSString::from_str("HandsOff - Reset"));
+        alert.setInformativeText(&NSString::from_str(
+            "This wipes your HandsOff configuration — passphrase, hotkeys, and timeouts — \
+             and restarts setup from the beginning.\n\n\
+             Your current passphrase will STOP working.",
+        ));
+        alert.addButtonWithTitle(&NSString::from_str("Cancel"));
+        alert.addButtonWithTitle(&NSString::from_str("Reset"));
+        alert.setAlertStyle(NSAlertStyle::Critical);
+        alert.runModal() == NSAlertSecondButtonReturn
     }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn confirm_reset() -> bool {
+    false
 }
 
 /// Relaunch the running binary (post-Reset, post-wizard) so startup runs the
@@ -1310,20 +1339,35 @@ fn acquire_single_instance_lock(skip_duplicate_alert: bool) -> Result<()> {
     Ok(())
 }
 
-/// Show native macOS alert dialog
+/// Show a native macOS alert dialog (NSAlert; replaces the old osascript
+/// `display dialog` shell-out). All call sites are main-thread, so a missing
+/// marker is a bug — panic. Fire-and-forget: the modal response (the single
+/// OK button) is discarded.
+///
+/// The app is activated before `runModal`: as an accessory (menu-bar) app the
+/// in-process alert does not front itself the way the separate osascript
+/// process did. `runModal` spins a nested modal run loop, so the tap and the
+/// tray session's menu channel keep getting serviced while the dialog is up.
+#[cfg(target_os = "macos")]
 fn show_alert(title: &str, message: &str) {
-    use std::process::Command;
+    use objc2_app_kit::{NSAlert, NSApplication};
+    use objc2_foundation::{MainThreadMarker, NSString};
 
-    // Escape quotes in message
-    let message = message.replace('"', "\\\"");
+    let mtm = MainThreadMarker::new().expect("alert must run on main thread");
+    let app = NSApplication::sharedApplication(mtm);
+    wizard::activate_app(&app);
 
-    let script = format!(
-        r#"display dialog "{}" with title "{}" buttons {{"OK"}} default button "OK""#,
-        message, title
-    );
-
-    let _ = Command::new("osascript").arg("-e").arg(&script).output();
+    let alert = unsafe { NSAlert::new(mtm) };
+    unsafe {
+        alert.setMessageText(&NSString::from_str(title));
+        alert.setInformativeText(&NSString::from_str(message));
+        alert.addButtonWithTitle(&NSString::from_str("OK"));
+        alert.runModal();
+    }
 }
+
+#[cfg(not(target_os = "macos"))]
+fn show_alert(_title: &str, _message: &str) {}
 
 /// Build tooltip text based on lock state, disabled state, and permission status
 fn build_tooltip(
