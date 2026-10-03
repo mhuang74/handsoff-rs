@@ -1377,140 +1377,139 @@ mod macos {
         window.makeKeyAndOrderFront(None);
         activate_app(&app);
 
-        use tao::platform::run_return::EventLoopExtRunReturn;
-
-        // Same poll primitive the wizard uses (see run_wizard_macos): fast
-        // lightweight AXIsProcessTrusted checks every 500 ms, then ONE
-        // authoritative full test-tap check when the lightweight flips true.
-        // Issue #34: no progress for STALE_GRANT_TIMEOUT → stale grant,
-        // surface the reset escape hatch (checkbox reads ON, TCC row pinned
-        // to an old CDHash; waiting longer can never succeed).
+        // Flow-runner engine (issue #40): the hand-copied run_return loop
+        // is deleted; the engine owns the ceremony and the spec owns the
+        // re-grant state machine. The permission poll (lightweight
+        // AXIsProcessTrusted every 500 ms, then ONE authoritative full
+        // test-tap check when the lightweight flips true) plus the
+        // issue #34 stale-grant watchdog now run as the engine's poller
+        // closure — the first poller-slot user. Sanctioned deviation (the
+        // old thread never exited on flow close; the token stops it within
+        // one 500 ms tick on every exit path).
+        //
+        // The stale-detection clock still starts when the user clicks
+        // Grant (SIGNALS.waiting_since, set in poll_step below), not at
+        // window open — reading the instructions can legitimately take
+        // longer than STALE_GRANT_TIMEOUT.
         let perm_granted = Arc::new(AtomicBool::new(false));
         let perm_stale = Arc::new(AtomicBool::new(false));
-        // SIGNALS is process-global and shared across flows: clear every
-        // per-flow signal so a previous flow's state can't leak into this
-        // one (issue #36 story 16).
-        SIGNALS.begin_flow();
-        std::thread::spawn({
+        let poller = {
             let perm_granted = perm_granted.clone();
             let perm_stale = perm_stale.clone();
-            move || loop {
-                if crate::input_blocking::check_accessibility_permissions_lightweight()
-                    && crate::input_blocking::check_accessibility_permissions()
-                {
-                    perm_granted.store(true, Ordering::SeqCst);
-                    return;
-                }
-                {
-                    // Clock starts when the user clicks Grant (set by the
-                    // event loop), not at window open — reading the
-                    // instructions can legitimately take longer than
-                    // STALE_GRANT_TIMEOUT. No click yet → no timing.
-                    let started = SIGNALS.waiting_since.lock();
-                    if let Some(t0) = *started {
-                        if t0.elapsed() >= STALE_GRANT_TIMEOUT {
-                            drop(started);
-                            perm_stale.store(true, Ordering::SeqCst);
+            Box::new(move |handle: &crate::window_flow::PollerHandle| {
+                while !handle.cancelled() {
+                    if crate::input_blocking::check_accessibility_permissions_lightweight()
+                        && crate::input_blocking::check_accessibility_permissions()
+                    {
+                        perm_granted.store(true, Ordering::SeqCst);
+                        return;
+                    }
+                    {
+                        // Clock starts when the user clicks Grant (set by
+                        // poll_step), not at window open — reading the
+                        // instructions can legitimately take longer than
+                        // STALE_GRANT_TIMEOUT. No click yet → no timing.
+                        let started = SIGNALS.waiting_since.lock();
+                        if let Some(t0) = *started {
+                            if t0.elapsed() >= STALE_GRANT_TIMEOUT {
+                                drop(started);
+                                perm_stale.store(true, Ordering::SeqCst);
+                            }
                         }
                     }
+                    std::thread::sleep(std::time::Duration::from_millis(500));
                 }
-                std::thread::sleep(std::time::Duration::from_millis(500));
-            }
-        });
+            }) as Box<dyn FnOnce(&crate::window_flow::PollerHandle) + Send>
+        };
 
-        let outcome_slot: Rc<RefCell<Option<Result<()>>>> =
-            std::rc::Rc::new(std::cell::RefCell::new(None));
-        let outcome = outcome_slot.clone();
-        let mut stale_shown = false;
+        // stale_shown: the escape hatch surfaces once (local flag, same as
+        // the migrated loop).
+        let stale_shown = std::cell::Cell::new(false);
+        let spec = crate::window_flow::FlowSpec {
+            first_step: crate::window_flow::StepId(0),
+            build_window: Box::new(move || Ok(crate::window_flow::FlowWindow { window, app })),
+            // Single step: the grant/wait/stale states all render in step 0
+            // (widget visibility + label text updated in poll_step, same as
+            // the migrated loop's in-place updates).
+            render_step: Box::new(|_| {}),
+            poll_step: Box::new(move |_| {
+                // Grant clicked → open the System Settings pane, wait for
+                // the poll.
+                if SIGNALS.grant_clicked.swap(false, Ordering::SeqCst) {
+                    open_accessibility_settings();
+                    // Issue #34: start the stale-detection clock (see poller).
+                    *SIGNALS.waiting_since.lock() = Some(std::time::Instant::now());
+                    let ns = NSString::from_str(
+                        "Waiting for Accessibility permission…\n\
+                         Tick the box for HandsOff in System Settings > Privacy & Security > Accessibility.",
+                    );
+                    unsafe {
+                        instr_label.setStringValue(&ns);
+                        status_label.setHidden(false);
+                        status_label.setStringValue(&NSString::from_str("Waiting for permission…"));
+                    }
+                    return crate::window_flow::StepPoll::Stay;
+                }
 
-        event_loop.run_return(move |event, _, control_flow| {
-            *control_flow = tao::event_loop::ControlFlow::WaitUntil(
-                std::time::Instant::now() + std::time::Duration::from_millis(100),
-            );
+                // Issue #34: reset clicked → confirm, tccutil reset, relaunch
+                // (never returns on confirm).
+                if SIGNALS.reset_clicked.swap(false, Ordering::SeqCst) {
+                    reset_permission_and_relaunch();
+                    return crate::window_flow::StepPoll::Stay;
+                }
 
-            let _ = &event; // raw NSWindow: tao events carry no useful signal
+                // Issue #34: wait exceeded STALE_GRANT_TIMEOUT with no
+                // progress → the grant is stale; surface the escape hatch
+                // once.
+                if perm_stale.load(Ordering::SeqCst) && !stale_shown.get() {
+                    stale_shown.set(true);
+                    reset_btn.setHidden(false);
+                    let ns = NSString::from_str(STALE_GRANT_TEXT);
+                    unsafe {
+                        instr_label.setStringValue(&ns);
+                        status_label.setStringValue(&NSString::from_str(
+                            "Permission appears granted but is stale (old copy of the app).",
+                        ));
+                    }
+                    return crate::window_flow::StepPoll::Stay;
+                }
 
-            // Single-dialog invariant (issue #36): menu clicks queued while
-            // this window owns the loop re-front it instead of stacking.
-            absorb_menu_clicks(&window, &app, &super::WINDOW_FLOW_MENU_IDS.lock());
+                // Poll resolves → done. The tray re-runs its startup
+                // permission check after this returns, so no further
+                // bookkeeping is needed.
+                if perm_granted.load(Ordering::SeqCst) {
+                    return crate::window_flow::StepPoll::Finish(
+                        crate::window_flow::FlowOutcome(Ok(())),
+                    );
+                }
 
-            // Close ends the flow in every phase (issue #36); the delegate's
-            // windowShouldClose: sets the flag (tao CloseRequested never
-            // fires for these raw NSWindows).
-            if SIGNALS.close_requested.load(Ordering::SeqCst) {
-                window.orderOut(None);
-                *outcome.borrow_mut() = Some(Err(anyhow!(
+                // Keep the waiting text fresh (same pattern as the wizard's
+                // SIGNALS.status guard — only fill when not already set).
+                {
+                    let mut status = SIGNALS.status.lock();
+                    if status.is_empty() {
+                        *status = "Waiting for Accessibility permission…".to_string();
+                        let ns = NSString::from_str(status.as_str());
+                        unsafe { status_label.setStringValue(&ns) };
+                    }
+                }
+                crate::window_flow::StepPoll::Stay
+            }),
+            poller: Some(poller),
+            // Close ends the flow in every phase (issue #36); the engine's
+            // close-poll handles it. Preserve the migrated loop's close
+            // message (the engine's generic message would lose the
+            // re-grant-specific wording).
+            close_outcome: Some(Box::new(|| {
+                Err(anyhow!(
                     "Permission window closed before the Accessibility grant completed"
-                )));
-                stop_run_loop(&app);
-                return;
-            }
-
-            // Grant clicked → open the System Settings pane, wait for the poll.
-            if SIGNALS.grant_clicked.swap(false, Ordering::SeqCst) {
-                open_accessibility_settings();
-                // Issue #34: start the stale-detection clock (see poll thread).
-                *SIGNALS.waiting_since.lock() = Some(std::time::Instant::now());
-                let ns = NSString::from_str(
-                    "Waiting for Accessibility permission…\n\
-                     Tick the box for HandsOff in System Settings > Privacy & Security > Accessibility.",
-                );
-                unsafe {
-                    instr_label.setStringValue(&ns);
-                    status_label.setHidden(false);
-                    status_label.setStringValue(&NSString::from_str("Waiting for permission…"));
-                }
-                return;
-            }
-
-            // Issue #34: reset clicked → confirm, tccutil reset, relaunch
-            // (never returns on confirm).
-            if SIGNALS.reset_clicked.swap(false, Ordering::SeqCst) {
-                reset_permission_and_relaunch();
-                return;
-            }
-
-            // Issue #34: wait exceeded STALE_GRANT_TIMEOUT with no progress
-            // → the grant is stale; surface the escape hatch once.
-            if perm_stale.load(Ordering::SeqCst) && !stale_shown {
-                stale_shown = true;
-                reset_btn.setHidden(false);
-                let ns = NSString::from_str(STALE_GRANT_TEXT);
-                unsafe {
-                    instr_label.setStringValue(&ns);
-                    status_label.setStringValue(&NSString::from_str(
-                        "Permission appears granted but is stale (old copy of the app).",
-                    ));
-                }
-                return;
-            }
-
-            // Poll resolves → done. The tray re-runs its startup permission
-            // check after this returns, so no further bookkeeping is needed.
-            if perm_granted.load(Ordering::SeqCst) {
-                window.orderOut(None);
-                *outcome.borrow_mut() = Some(Ok(()));
-                stop_run_loop(&app);
-                return;
-            }
-
-            // Keep the waiting text fresh (same pattern as the wizard's
-            // SIGNALS.status guard — only fill when not already set).
-            {
-                let mut status = SIGNALS.status.lock();
-                if status.is_empty() {
-                    *status = "Waiting for Accessibility permission…".to_string();
-                    let ns = NSString::from_str(status.as_str());
-                    unsafe { status_label.setStringValue(&ns) };
-                }
-            }
-        });
-
-        let result = outcome_slot
-            .borrow_mut()
-            .take()
-            .unwrap_or_else(|| Err(anyhow!("Permission re-grant event loop ended unexpectedly")));
-        result
+                ))
+            })),
+            // Anchor the WizardTarget NSView (close delegate + click
+            // routing); widgets are retained by the content stack.
+            keep_alive: vec![unsafe { Retained::cast::<NSView>(target) }],
+        };
+        crate::window_flow::run_flow(spec, event_loop)
     }
 
     /// Help window: a plain read-only NSWindow showing static styled
