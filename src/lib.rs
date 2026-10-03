@@ -10,6 +10,7 @@ pub mod input_blocking;
 pub mod preferences;
 pub mod setup;
 pub mod utils;
+pub mod window_flow;
 pub mod wizard;
 
 use anyhow::{Context, Result};
