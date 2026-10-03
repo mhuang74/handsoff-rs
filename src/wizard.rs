@@ -886,6 +886,10 @@ mod macos {
 
             let _ = &event; // raw NSWindow: tao events carry no useful signal
 
+            // Single-dialog invariant (issue #36): menu clicks queued while
+            // this window owns the loop re-front it instead of stacking.
+            absorb_menu_clicks(&window, &app, &super::WINDOW_FLOW_MENU_IDS.lock());
+
             // Closing the window ends the flow in EVERY phase (issue #36):
             // the delegate's windowShouldClose: sets this flag (tao
             // CloseRequested never fires for these raw NSWindows).
