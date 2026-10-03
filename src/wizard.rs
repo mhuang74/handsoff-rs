@@ -190,6 +190,41 @@ pub fn take_deferred_menu_events() -> Vec<tray_icon::menu::MenuId> {
     std::mem::take(&mut *DEFERRED_MENU_EVENTS.lock())
 }
 
+// ---------------------------------------------------------------------------
+// Flow-runner engine hooks (issue #40). `window_flow.rs` owns the per-flow
+// ceremony; these re-exports and the `macos` accessors below are the only
+// surface it consumes. SIGNALS stays process-global — exposed, not duplicated.
+// ---------------------------------------------------------------------------
+
+#[cfg(target_os = "macos")]
+pub(crate) use self::macos::{absorb_menu_clicks, stop_run_loop};
+
+/// Menu-item IDs that open window flows, as seen by the engine's per-tick
+/// drain.
+#[cfg(target_os = "macos")]
+pub(crate) fn window_flow_menu_ids(
+) -> parking_lot::MutexGuard<'static, Vec<tray_icon::menu::MenuId>> {
+    WINDOW_FLOW_MENU_IDS.lock()
+}
+
+/// Engine entry (issue #40): clear every per-flow signal — issue #36
+/// story 16 semantics verbatim, one authority.
+#[cfg(target_os = "macos")]
+pub(crate) fn begin_flow_signals() {
+    self::macos::begin_flow_signals()
+}
+
+/// Engine close-poll (issue #40): did the window delegate request the
+/// flow to end?
+#[cfg(target_os = "macos")]
+pub(crate) fn close_requested() -> bool {
+    self::macos::close_requested()
+}
+
+// begin_flow invariant test hooks, re-exported for window_flow::tests.
+#[cfg(all(target_os = "macos", test))]
+pub(crate) use self::macos::{set_all_signals_dirty, signals_snapshot};
+
 #[cfg(target_os = "macos")]
 mod macos {
     use super::{LoginItemResult, WizardOutcome};
@@ -332,6 +367,95 @@ mod macos {
     static SIGNALS: std::sync::LazyLock<Arc<WizardSignals>> =
         std::sync::LazyLock::new(WizardSignals::new);
 
+    // ---- window_flow.rs engine hooks (issue #40) ----
+    // The flow-runner engine (`src/window_flow.rs`) owns the per-flow
+    // ceremony and consumes exactly these pieces of the module state;
+    // everything else stays private to `macos`. Process-global SIGNALS
+    // stays process-global — these are accessors, not new instances.
+
+    /// Engine entry: clear every per-flow signal (issue #36 story 16
+    /// semantics verbatim; see `WizardSignals::begin_flow`).
+    pub(crate) fn begin_flow_signals() {
+        SIGNALS.begin_flow();
+    }
+
+    /// Engine close-poll: has the window delegate's `windowShouldClose:`
+    /// requested the flow to end?
+    pub(crate) fn close_requested() -> bool {
+        SIGNALS.close_requested.load(Ordering::SeqCst)
+    }
+
+    // ---- begin_flow invariant test hooks (spec PR 2 testing decisions;
+    // engine-side tests only — never called by production code) ----
+
+    /// Set every per-flow signal dirty (the test's precondition).
+    #[cfg(test)]
+    pub(crate) fn set_all_signals_dirty() {
+        SIGNALS.grant_clicked.store(true, Ordering::SeqCst);
+        SIGNALS.commit_clicked.store(true, Ordering::SeqCst);
+        SIGNALS.finish_clicked.store(true, Ordering::SeqCst);
+        SIGNALS.reset_clicked.store(true, Ordering::SeqCst);
+        SIGNALS.capture_clicked.store(true, Ordering::SeqCst);
+        SIGNALS.ok_clicked.store(true, Ordering::SeqCst);
+        SIGNALS.cancel_clicked.store(true, Ordering::SeqCst);
+        SIGNALS.close_requested.store(true, Ordering::SeqCst);
+        SIGNALS.step.store(255, Ordering::SeqCst);
+        *SIGNALS.status.lock() = "stale".to_string();
+        *SIGNALS.waiting_since.lock() = Some(std::time::Instant::now());
+    }
+
+    /// Snapshot of every per-flow signal as booleans, for the
+    /// begin_flow invariant test.
+    #[cfg(test)]
+    pub(crate) struct SignalsSnapshot {
+        pub grant_clicked: bool,
+        pub commit_clicked: bool,
+        pub finish_clicked: bool,
+        pub reset_clicked: bool,
+        pub capture_clicked: bool,
+        pub ok_clicked: bool,
+        pub cancel_clicked: bool,
+        pub close_requested: bool,
+        pub step_nondefault: bool,
+        pub status_set: bool,
+        pub waiting_since_set: bool,
+    }
+
+    #[cfg(test)]
+    impl SignalsSnapshot {
+        pub(crate) fn any_set(&self) -> bool {
+            self.grant_clicked
+                || self.commit_clicked
+                || self.finish_clicked
+                || self.reset_clicked
+                || self.capture_clicked
+                || self.ok_clicked
+                || self.cancel_clicked
+                || self.close_requested
+                || self.step_nondefault
+                || self.status_set
+                || self.waiting_since_set
+        }
+    }
+
+    /// Read every per-flow signal (the test's observation).
+    #[cfg(test)]
+    pub(crate) fn signals_snapshot() -> SignalsSnapshot {
+        SignalsSnapshot {
+            grant_clicked: SIGNALS.grant_clicked.load(Ordering::SeqCst),
+            commit_clicked: SIGNALS.commit_clicked.load(Ordering::SeqCst),
+            finish_clicked: SIGNALS.finish_clicked.load(Ordering::SeqCst),
+            reset_clicked: SIGNALS.reset_clicked.load(Ordering::SeqCst),
+            capture_clicked: SIGNALS.capture_clicked.load(Ordering::SeqCst),
+            ok_clicked: SIGNALS.ok_clicked.load(Ordering::SeqCst),
+            cancel_clicked: SIGNALS.cancel_clicked.load(Ordering::SeqCst),
+            close_requested: SIGNALS.close_requested.load(Ordering::SeqCst),
+            step_nondefault: SIGNALS.step.load(Ordering::SeqCst) != STEP_PERMISSION,
+            status_set: !SIGNALS.status.lock().is_empty(),
+            waiting_since_set: SIGNALS.waiting_since.lock().is_some(),
+        }
+    }
+
     declare_class!(
         struct WizardTarget;
 
@@ -406,7 +530,7 @@ mod macos {
     /// click — issue #36). Posting a dummy app-defined event forces an
     /// immediate wake: the technique tao's own `stop_app_on_panic` uses
     /// (see https://stackoverflow.com/questions/48041279).
-    fn stop_run_loop(app: &NSApplication) {
+    pub(crate) fn stop_run_loop(app: &NSApplication) {
         app.stop(None);
         let dummy = unsafe {
             NSEvent::otherEventWithType_location_modifierFlags_timestamp_windowNumber_context_subtype_data1_data2(
@@ -449,7 +573,7 @@ mod macos {
     ///   are DEFERRED to the tray's next session start (never swallowed —
     ///   issue requirement 2), so e.g. a Lock click during the dialog still
     ///   lands right after it closes.
-    fn absorb_menu_clicks(
+    pub(crate) fn absorb_menu_clicks(
         window: &NSWindow,
         app: &NSApplication,
         window_flow_ids: &[tray_icon::menu::MenuId],
