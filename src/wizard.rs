@@ -203,14 +203,14 @@ mod macos {
     use objc2::runtime::{AnyObject, NSObjectProtocol, ProtocolObject};
     use objc2::{declare_class, msg_send, msg_send_id, mutability, ClassType, DeclaredClass};
     use objc2_app_kit::{
-        NSAlert, NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSButton,
-        NSControlStateValueOn, NSEvent, NSEventModifierFlags, NSEventType, NSFont,
-        NSGridView, NSLayoutAttribute, NSModalResponseOK, NSScrollView, NSStackView,
-        NSStackViewGravity, NSTextAlignment, NSTextField, NSUserInterfaceLayoutOrientation,
-        NSView, NSWindow, NSWindowDelegate, NSWindowStyleMask,
+        NSAlert, NSApplication, NSApplicationActivationPolicy,
+        NSBackingStoreType, NSButton, NSControlStateValueOn, NSEvent, NSEventModifierFlags,
+        NSEventType, NSFont, NSModalResponseOK, NSGridView, NSLayoutAttribute, NSScrollView,
+        NSStackView, NSStackViewGravity, NSTextAlignment, NSTextField,
+        NSUserInterfaceLayoutOrientation, NSView, NSWindow, NSWindowDelegate, NSWindowStyleMask,
     };
     use objc2_foundation::{
-        NSArray, MainThreadMarker, NSEdgeInsets, NSPoint, NSRect, NSSize, NSString,
+        MainThreadMarker, NSArray, NSEdgeInsets, NSPoint, NSRect, NSSize, NSString,
     };
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -430,7 +430,7 @@ mod macos {
     /// (Info.plist.template), where the unrecognized selector would crash the
     /// first-run path. `activateIgnoringOtherApps` exists since 10.0; the
     /// binding is deprecated-but-safe in objc2-app-kit 0.2.
-    fn activate_app(app: &NSApplication) {
+    pub(crate) fn activate_app(app: &NSApplication) {
         #[allow(deprecated)]
         app.activateIgnoringOtherApps(true);
     }
@@ -2626,4 +2626,12 @@ pub fn run_help(
     _sections: &[HelpSection],
 ) -> Result<()> {
     anyhow::bail!("Help requires macOS")
+}
+
+/// Bring the app to the front before showing a modal dialog (see
+/// `self::macos::activate_app` for the deployment-target rationale).
+/// Shared with the tray's native alert helpers (issue #39).
+#[cfg(target_os = "macos")]
+pub fn activate_app(app: &objc2_app_kit::NSApplication) {
+    self::macos::activate_app(app);
 }
