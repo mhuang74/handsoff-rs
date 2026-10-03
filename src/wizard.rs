@@ -1992,14 +1992,12 @@ mod macos {
             msg_send_id![super(t), initWithFrame: frame]
         };
         // Close button must terminate the flow (issue #36): the delegate's
-        // windowShouldClose: sets close_requested, which the loop polls.
+        // windowShouldClose: sets close_requested, which the engine's
+        // close-poll polls.
         {
             let delegate = ProtocolObject::<dyn NSWindowDelegate>::from_retained(target.clone());
             window.setDelegate(Some(&delegate));
         }
-        // Clear shared per-flow signals so a previous flow's state can't
-        // leak into this one (issue #36 story 16).
-        SIGNALS.begin_flow();
 
         let make_label = |text: &str, width: f64, height: f64| -> Retained<NSTextField> {
             let l = unsafe { NSTextField::labelWithString(&NSString::from_str(text), mtm) };
@@ -2095,35 +2093,25 @@ mod macos {
         window.makeKeyAndOrderFront(None);
         activate_app(&app);
 
-        use tao::platform::run_return::EventLoopExtRunReturn;
-
-        let outcome_slot = std::rc::Rc::new(std::cell::RefCell::new(
-            None::<Result<super::PreferencesOutcome>>,
-        ));
-        let outcome = outcome_slot.clone();
-
-        event_loop.run_return(move |event, _, control_flow| {
-            *control_flow = tao::event_loop::ControlFlow::WaitUntil(
-                std::time::Instant::now() + std::time::Duration::from_millis(100),
-            );
-
-            let _ = &event; // raw NSWindow: tao events carry no useful signal
-
-            // Single-dialog invariant (issue #36): menu clicks queued while
-            // this window owns the loop re-front it instead of stacking.
-            absorb_menu_clicks(&window, &app, &super::WINDOW_FLOW_MENU_IDS.lock());
-
-            // Close ends the flow (issue #36); the delegate's
-            // windowShouldClose: sets the flag (tao CloseRequested never
-            // fires for these raw NSWindows).
-            if SIGNALS.close_requested.load(Ordering::SeqCst) {
-                window.orderOut(None);
-                *outcome.borrow_mut() = Some(Err(anyhow!("Preferences closed without saving")));
-                stop_run_loop(&app);
-                return;
-            }
-
-            if SIGNALS.grant_clicked.swap(false, Ordering::SeqCst) {
+        // Flow-runner engine (issue #40): the hand-copied run_return loop
+        // (cadence, menu drain, close-poll, exit path) is deleted; the
+        // engine owns the ceremony and the spec owns the form. One step:
+        // Save routes through the TAG_SAVE signal the PrefsTarget records;
+        // the poll reads the fields, validates pre-flight, and either
+        // finishes with the outcome or re-titles the window with the
+        // reason (window stays open — same as the migrated loop).
+        // The engine's build_window takes the window; the poll re-titles
+        // it on validation failure, so keep a Retained clone for the poll.
+        let window_for_poll = window.clone();
+        let spec = crate::window_flow::FlowSpec {
+            first_step: crate::window_flow::StepId(0),
+            build_window: Box::new(move || Ok(crate::window_flow::FlowWindow { window, app })),
+            // Single step: nothing to swap between phases.
+            render_step: Box::new(|_| {}),
+            poll_step: Box::new(move |_| {
+                if !SIGNALS.grant_clicked.swap(false, Ordering::SeqCst) {
+                    return crate::window_flow::StepPoll::Stay;
+                }
                 let parse_field = |f: &NSTextField| -> Option<u64> {
                     let s: String = unsafe { f.stringValue() }.to_string();
                     let s = s.trim().to_string();
@@ -2156,27 +2144,29 @@ mod macos {
                 // hotkey that fails A-Z validation fails the save and the
                 // window stays open (title shows the reason).
                 match validate_preflight(&edit) {
-                    Ok(()) => {
-                        // Window leak fix (issue #36): hide on every exit.
-                        window.orderOut(None);
-                        *outcome.borrow_mut() = Some(Ok(super::PreferencesOutcome { edit }));
-                        stop_run_loop(&app);
-                    }
+                    Ok(()) => crate::window_flow::StepPoll::Finish(
+                        crate::window_flow::FlowOutcome(Ok(super::PreferencesOutcome { edit })),
+                    ),
                     Err(e) => {
-                        window.setTitle(&NSString::from_str(&format!(
+                        window_for_poll.setTitle(&NSString::from_str(&format!(
                             "HandsOff Preferences — {}",
                             e
                         )));
+                        crate::window_flow::StepPoll::Stay
                     }
                 }
-            }
-        });
-
-        let result = outcome_slot
-            .borrow_mut()
-            .take()
-            .unwrap_or_else(|| Err(anyhow!("Preferences event loop ended unexpectedly")));
-        result
+            }),
+            poller: None,
+            // Closing the window discards the form: "Preferences closed
+            // without saving" (the migrated loop's close message).
+            close_outcome: Some(Box::new(|| {
+                Err(anyhow!("Preferences closed without saving"))
+            })),
+            // Anchor the PrefsTarget NSView so its delegate + click routing
+            // live as long as the flow (widgets are retained by the stack).
+            keep_alive: vec![unsafe { Retained::cast::<NSView>(target) }],
+        };
+        crate::window_flow::run_flow(spec, event_loop)
     }
 
     /// Pre-flight validation for the Preferences form: only what the form
