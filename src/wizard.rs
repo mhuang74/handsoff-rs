@@ -2249,15 +2249,13 @@ mod macos {
         };
         // Close must terminate the flow in EVERY phase (issue #36 wedge
         // fix): the delegate sets close_requested (and aborts an in-flight
-        // capture); the loop polls the flag in phase 0 and the terminal
-        // phases, capture_with_status observes the abort mid-capture.
+        // capture); the engine's close-poll polls the flag in the waiting
+        // and terminal phases, capture_with_status observes the abort
+        // mid-capture.
         {
             let delegate = ProtocolObject::<dyn NSWindowDelegate>::from_retained(target.clone());
             window.setDelegate(Some(&delegate));
         }
-        // Clear shared per-flow signals so a previous flow's state can't
-        // leak into this one (issue #36 story 16).
-        SIGNALS.begin_flow();
 
         let make_label = |text: &str, height: f64| -> Retained<NSTextField> {
             let l = unsafe { NSTextField::labelWithString(&NSString::from_str(text), mtm) };
@@ -2316,14 +2314,16 @@ mod macos {
         // phase: 0 = waiting for the VERIFY click (current Passphrase);
         // 1 = waiting for the capture click (new Passphrase, double entry);
         // 2 = success shown, waiting for OK; 3 = failure shown, waiting for OK.
-        let mut phase;
-        let mut failure_reason = String::new();
+        // Shared with poll_step/close_outcome below via Cells/RefCells.
+        let phase = std::cell::Cell::new(0u8);
+        let failure_reason = std::cell::RefCell::new(String::new());
         if !permission_ok {
-            phase = 3u8;
-            failure_reason = "Accessibility permission is required to capture the new \
+            let msg = "Accessibility permission is required to capture the new \
                  Passphrase.\nGrant it to HandsOff in System Settings > Privacy & Security > \
                  Accessibility, then try again.\nYour existing Passphrase is unchanged."
                 .to_string();
+            phase.set(3);
+            failure_reason.replace(msg.clone());
             show_terminal_state(
                 &instr_label,
                 &capture_btn,
@@ -2331,13 +2331,14 @@ mod macos {
                 &ok_btn,
                 &status_label,
                 &feedback_label,
-                &failure_reason,
+                &msg,
             );
         } else if stored_hash.is_none() {
-            phase = 3u8;
-            failure_reason = "No stored Passphrase hash found in the configuration — \
+            let msg = "No stored Passphrase hash found in the configuration — \
                  cannot verify the current Passphrase.\nYour existing Passphrase is unchanged."
                 .to_string();
+            phase.set(3);
+            failure_reason.replace(msg.clone());
             show_terminal_state(
                 &instr_label,
                 &capture_btn,
@@ -2345,10 +2346,10 @@ mod macos {
                 &ok_btn,
                 &status_label,
                 &feedback_label,
-                &failure_reason,
+                &msg,
             );
         } else {
-            phase = 0u8;
+            phase.set(0);
             unsafe {
                 instr_label.setStringValue(&NSString::from_str(&format!(
                     "To change your Passphrase, first type your CURRENT Passphrase to \
@@ -2391,281 +2392,301 @@ mod macos {
         window.makeKeyAndOrderFront(None);
         activate_app(&app);
 
-        use tao::platform::run_return::EventLoopExtRunReturn;
+        // Flow-runner engine (issue #40): the hand-copied run_return loop
+        // is deleted; the engine owns the ceremony and the spec owns the
+        // four-phase state machine declared above (shared Cell/RefCell
+        // state, main-thread only).
+        //
+        // Capture in flight is "Stay": the captures run the nested
+        // CFRunLoop pump INSIDE a poll_step call (one long tick — the
+        // pump yields 100 ms slices so AppKit keeps servicing); the
+        // engine's close-poll simply doesn't fire while the pump owns
+        // the thread, and capture_with_status observes the abort via
+        // windowShouldClose → close_requested + request_capture_abort.
+        //
+        // Single step (StepId(0)): the phase cell IS the state machine;
+        // render swaps happen inline in poll_step exactly as the migrated
+        // loop updated widgets in place.
+        let failure_reason_setter = failure_reason.clone();
+        let saved = std::cell::RefCell::new(None::<Config>);
+        // Captured CURRENT Passphrase from the verify phase (issue #37
+        // N6); reused by the phase-1 save so the re-key step proves
+        // knowledge of the existing Passphrase.
+        let current_keys: std::cell::RefCell<Vec<u32>> =
+            std::cell::RefCell::new(Vec::new());
 
-        let outcome_slot = std::rc::Rc::new(std::cell::RefCell::new(None::<Result<Config>>));
-        let outcome = outcome_slot.clone();
-        let mut saved: Option<Config> = None;
-        // Captured CURRENT Passphrase from the verify phase (issue #37 N6);
-        // reused by the phase-1 save so the re-key step proves knowledge of
-        // the existing Passphrase.
-        let mut current_keys: Vec<u32> = Vec::new();
-        // Retained clone for the post-loop hide (the closure owns the
-        // original `window` from here on).
-        let window_for_cleanup = window.clone();
+        macro_rules! show_terminal {
+            ($msg:expr) => {{
+                failure_reason_setter.replace($msg.to_string());
+                show_terminal_state(
+                    &instr_label,
+                    &capture_btn,
+                    &cancel_btn,
+                    &ok_btn,
+                    &status_label,
+                    &feedback_label,
+                    &$msg.to_string(),
+                );
+            }};
+        }
 
-        event_loop.run_return(move |event, _, control_flow| {
-            *control_flow = tao::event_loop::ControlFlow::WaitUntil(
-                std::time::Instant::now() + std::time::Duration::from_millis(100),
-            );
-
-            let _ = &event; // raw NSWindow: tao events carry no useful signal
-
-            // Single-dialog invariant (issue #36): menu clicks queued while
-            // this dialog owns the loop re-front it instead of stacking
-            // duplicate dialogs after the flow ends.
-            absorb_menu_clicks(&window, &app, &super::WINDOW_FLOW_MENU_IDS.lock());
-
-            let closed = SIGNALS.close_requested.load(Ordering::SeqCst);
-
-            if phase == 0 || phase == 1 {
-                // Phase-0/1 close/cancel: the 2026-10-02 wedge — previously
-                // only capture observed the abort, so closing here spun
-                // forever. Now every exit path terminates the flow.
-                if closed || SIGNALS.cancel_clicked.swap(false, Ordering::SeqCst) {
-                    window.orderOut(None);
-                    *outcome.borrow_mut() = Some(Err(anyhow!(
-                        "Change Passphrase cancelled — config unchanged"
-                    )));
-                    stop_run_loop(&app);
-                    return;
-                }
-
-                if SIGNALS.capture_clicked.swap(false, Ordering::SeqCst) {
-                    capture_btn.setHidden(true);
-                    cancel_btn.setHidden(true);
-                    status_label.setHidden(false);
-                    feedback_label.setHidden(false);
-
-                    // N6 phase 0: capture the CURRENT Passphrase once and
-                    // verify it against the stored hash. A failed verification
-                    // aborts the flow with a dialog — no state change.
-                    if phase == 0 {
-                        unsafe {
-                            instr_label.setStringValue(&NSString::from_str(
-                                "Verifying — type your CURRENT Passphrase, then press Enter.",
-                            ))
-                        };
-                        match capture_with_status(
-                            "Current Passphrase",
-                            &status_label,
-                            &feedback_label,
-                        ) {
-                            Ok(keys_captured) => {
-                                let verified = stored_hash.as_ref().is_some_and(|h| {
-                                    crate::auth::verify_keycodes(&keys_captured, h)
-                                });
-                                if !verified {
-                                    phase = 3;
-                                    failure_reason = "The Passphrase you typed does not \
-                                         match the current Passphrase.\nThe Passphrase was \
-                                         NOT changed — your existing Passphrase still works."
-                                        .to_string();
-                                    show_terminal_state(
-                                        &instr_label,
-                                        &capture_btn,
-                                        &cancel_btn,
-                                        &ok_btn,
-                                        &status_label,
-                                        &feedback_label,
-                                        &failure_reason,
-                                    );
-                                    return;
-                                }
-                                // Verified: move to the new-Passphrase phase.
-                                current_keys = keys_captured;
-                                phase = 1;
-                                capture_btn.setHidden(false);
-                                unsafe {
-                                    capture_btn
-                                        .setTitle(&NSString::from_str("Capture New Passphrase"));
-                                }
-                                cancel_btn.setHidden(false);
-                                status_label.setHidden(true);
-                                feedback_label.setHidden(true);
-                                unsafe {
-                                    instr_label.setStringValue(&NSString::from_str(&format!(
-                                        "Current Passphrase verified. Now choose a NEW \
-                                         Passphrase: a sequence of physical keys. Nothing \
-                                         you type is ever shown — dots mark progress only. \
-                                         You will type it twice to confirm.\n\n{}\n\n\
-                                         TIP: pick something SHORT — 4–6 keys you can \
-                                         type with one hand — and WRITE IT DOWN somewhere \
-                                         safe. If you ever get locked out and forget it, \
-                                         rebooting your Mac is the only way back in.\n\n\
-                                         Click “Capture New Passphrase” when ready.",
-                                        setup::capture_rules_text(
-                                            crate::constants::DEFAULT_LOCK_KEYCODE,
-                                            crate::constants::DEFAULT_TALK_KEYCODE,
-                                        ),
-                                    )))
-                                };
-                                return;
-                            }
-                            Err(e) => {
-                                if SIGNALS.close_requested.load(Ordering::SeqCst) {
-                                    window.orderOut(None);
-                                    *outcome.borrow_mut() = Some(Err(anyhow!(
-                                        "Change Passphrase cancelled — config unchanged"
-                                    )));
-                                    stop_run_loop(&app);
-                                    return;
-                                }
-                                phase = 3;
-                                failure_reason = format!(
-                                    "Capture failed: {e}\nThe Passphrase was NOT changed — \
-                                     your existing Passphrase still works."
-                                );
-                                show_terminal_state(
-                                    &instr_label,
-                                    &capture_btn,
-                                    &cancel_btn,
-                                    &ok_btn,
-                                    &status_label,
-                                    &feedback_label,
-                                    &failure_reason,
-                                );
-                                return;
-                            }
-                        }
+        let phase_for_close = phase.clone();
+        let failure_for_close = failure_reason.clone();
+        let saved_for_close = saved.clone();
+        let spec = crate::window_flow::FlowSpec {
+            first_step: crate::window_flow::StepId(0),
+            build_window: Box::new(move || Ok(crate::window_flow::FlowWindow { window, app })),
+            render_step: Box::new(|_| {}),
+            poll_step: Box::new(move |_| {
+                let p = phase.get();
+                if p == 0 || p == 1 {
+                    // Phase-0/1 close/cancel: the 2026-10-02 wedge —
+                    // previously only capture observed the abort, so
+                    // closing here spun forever. Now every exit path
+                    // terminates the flow (close via the engine's
+                    // close-poll, cancel here).
+                    if SIGNALS.cancel_clicked.swap(false, Ordering::SeqCst) {
+                        phase.set(3);
+                        failure_reason.replace(
+                            "Change Passphrase cancelled — config unchanged".to_string(),
+                        );
+                        return crate::window_flow::StepPoll::Finish(
+                            crate::window_flow::FlowOutcome(Err(anyhow!(
+                                "Change Passphrase cancelled — config unchanged"
+                            ))),
+                        );
                     }
 
-                    // Phase 1: double capture of the NEW Passphrase.
-                    unsafe {
-                        instr_label.setStringValue(&NSString::from_str(
-                            "Capturing — type your new Passphrase, then press Enter.",
-                        ))
-                    };
+                    if SIGNALS.capture_clicked.swap(false, Ordering::SeqCst) {
+                        capture_btn.setHidden(true);
+                        cancel_btn.setHidden(true);
+                        status_label.setHidden(false);
+                        feedback_label.setHidden(false);
 
-                    // Double capture on the main thread (same contract as the
-                    // wizard): the nested CFRunLoop pump keeps AppKit
-                    // servicing; closing the window mid-capture aborts the
-                    // tap via windowShouldClose:. Every error path routes to
-                    // the in-dialog terminal state (or clean cancel when the
-                    // window was closed) — issue #36.
-                    macro_rules! capture_entry {
-                        ($label:expr) => {
-                            match capture_with_status($label, &status_label, &feedback_label) {
-                                Ok(k) => k,
+                        // N6 phase 0: capture the CURRENT Passphrase once
+                        // and verify it against the stored hash. A failed
+                        // verification aborts the flow with a dialog — no
+                        // state change.
+                        if p == 0 {
+                            unsafe {
+                                instr_label.setStringValue(&NSString::from_str(
+                                    "Verifying — type your CURRENT Passphrase, then press Enter.",
+                                ))
+                            };
+                            match capture_with_status(
+                                "Current Passphrase",
+                                &status_label,
+                                &feedback_label,
+                            ) {
+                                Ok(keys_captured) => {
+                                    let verified = stored_hash.as_ref().is_some_and(|h| {
+                                        crate::auth::verify_keycodes(&keys_captured, h)
+                                    });
+                                    if !verified {
+                                        let msg = "The Passphrase you typed does not \
+                                             match the current Passphrase.\nThe Passphrase was \
+                                             NOT changed — your existing Passphrase still works."
+                                            .to_string();
+                                        show_terminal!(msg);
+                                        phase.set(3);
+                                        return crate::window_flow::StepPoll::Stay;
+                                    }
+                                    // Verified: move to the new-Passphrase
+                                    // phase.
+                                    current_keys.replace(keys_captured);
+                                    phase.set(1);
+                                    capture_btn.setHidden(false);
+                                    unsafe {
+                                        capture_btn.setTitle(&NSString::from_str(
+                                            "Capture New Passphrase",
+                                        ));
+                                    }
+                                    cancel_btn.setHidden(false);
+                                    status_label.setHidden(true);
+                                    feedback_label.setHidden(true);
+                                    unsafe {
+                                        instr_label.setStringValue(&NSString::from_str(&format!(
+                                            "Current Passphrase verified. Now choose a NEW \
+                                             Passphrase: a sequence of physical keys. Nothing \
+                                             you type is ever shown — dots mark progress only. \
+                                             You will type it twice to confirm.\n\n{}\n\n\
+                                             TIP: pick something SHORT — 4–6 keys you can \
+                                             type with one hand — and WRITE IT DOWN somewhere \
+                                             safe. If you ever get locked out and forget it, \
+                                             rebooting your Mac is the only way back in.\n\n\
+                                             Click “Capture New Passphrase” when ready.",
+                                            setup::capture_rules_text(
+                                                crate::constants::DEFAULT_LOCK_KEYCODE,
+                                                crate::constants::DEFAULT_TALK_KEYCODE,
+                                            ),
+                                        )))
+                                    };
+                                    return crate::window_flow::StepPoll::Stay;
+                                }
                                 Err(e) => {
                                     if SIGNALS.close_requested.load(Ordering::SeqCst) {
-                                        window.orderOut(None);
-                                        *outcome.borrow_mut() = Some(Err(anyhow!(
-                                            "Change Passphrase cancelled — config unchanged"
-                                        )));
-                                        stop_run_loop(&app);
-                                        return;
+                                        return crate::window_flow::StepPoll::Finish(
+                                            crate::window_flow::FlowOutcome(Err(anyhow!(
+                                                "Change Passphrase cancelled — config unchanged"
+                                            ))),
+                                        );
                                     }
-                                    phase = 3;
-                                    failure_reason = format!(
+                                    let msg = format!(
                                         "Capture failed: {e}\nThe Passphrase was NOT changed — \
                                          your existing Passphrase still works."
                                     );
-                                    show_terminal_state(
-                                        &instr_label,
-                                        &capture_btn,
-                                        &cancel_btn,
-                                        &ok_btn,
-                                        &status_label,
-                                        &feedback_label,
-                                        &failure_reason,
-                                    );
-                                    return;
+                                    show_terminal!(msg);
+                                    phase.set(3);
+                                    return crate::window_flow::StepPoll::Stay;
                                 }
                             }
+                        }
+
+                        // Phase 1: double capture of the NEW Passphrase.
+                        unsafe {
+                            instr_label.setStringValue(&NSString::from_str(
+                                "Capturing — type your new Passphrase, then press Enter.",
+                            ))
                         };
+
+                        // Double capture on the main thread (same contract
+                        // as the wizard): the nested CFRunLoop pump keeps
+                        // AppKit servicing; closing the window mid-capture
+                        // aborts the tap via windowShouldClose:. Every
+                        // error path routes to the in-dialog terminal state
+                        // (or clean cancel when the window was closed) —
+                        // issue #36.
+                        macro_rules! capture_entry {
+                            ($label:expr) => {
+                                match capture_with_status(
+                                    $label,
+                                    &status_label,
+                                    &feedback_label,
+                                ) {
+                                    Ok(k) => Ok(k),
+                                    Err(e) => {
+                                        if SIGNALS.close_requested.load(Ordering::SeqCst) {
+                                            return crate::window_flow::StepPoll::Finish(
+                                                crate::window_flow::FlowOutcome(Err(anyhow!(
+                                                    "Change Passphrase cancelled — config unchanged"
+                                                ))),
+                                            );
+                                        }
+                                        let msg = format!(
+                                            "Capture failed: {e}\nThe Passphrase was NOT changed — \
+                                             your existing Passphrase still works."
+                                        );
+                                        show_terminal!(msg);
+                                        phase.set(3);
+                                        Err(())
+                                    }
+                                }
+                            };
+                        }
+
+                        let first = match capture_entry!("Entry 1 of 2") {
+                            Ok(k) => k,
+                            Err(()) => return crate::window_flow::StepPoll::Stay,
+                        };
+                        unsafe {
+                            feedback_label.setStringValue(&NSString::from_str(
+                                "First entry accepted — re-enter the same Passphrase to confirm.",
+                            ))
+                        };
+                        let second = match capture_entry!("Entry 2 of 2") {
+                            Ok(k) => k,
+                            Err(()) => return crate::window_flow::StepPoll::Stay,
+                        };
+
+                        if first != second {
+                            let msg = "Entries did not match — the Passphrase was NOT \
+                                 changed. Your existing Passphrase still works."
+                                .to_string();
+                            show_terminal!(msg);
+                            phase.set(3);
+                            return crate::window_flow::StepPoll::Stay;
+                        }
+
+                        // Save through the verified seam (issue #37 N6):
+                        // the current Passphrase was already captured and
+                        // verified against the stored hash in phase 0 —
+                        // the save path re-checks it, so no state change
+                        // can bypass authentication even if the flow
+                        // ordering changed.
+                        match crate::preferences::change_passphrase_verified_to_path(
+                            &crate::config_file::Config::config_path(),
+                            &current_keys.borrow(),
+                            &first,
+                        ) {
+                            Ok(cfg) => {
+                                saved.replace(Some(cfg));
+                                phase.set(2);
+                                let msg =
+                                    "Passphrase changed — use the new Passphrase to unlock."
+                                        .to_string();
+                                show_terminal!(msg);
+                            }
+                            Err(e) => {
+                                let msg = format!(
+                                    "Could not save the new Passphrase: {e}\nYour existing \
+                                     Passphrase still works."
+                                );
+                                show_terminal!(msg);
+                                phase.set(3);
+                            }
+                        }
                     }
-
-                    let first = capture_entry!("Entry 1 of 2");
-                    unsafe {
-                        feedback_label.setStringValue(&NSString::from_str(
-                            "First entry accepted — re-enter the same Passphrase to confirm.",
-                        ))
-                    };
-                    let second = capture_entry!("Entry 2 of 2");
-
-                    if first != second {
-                        phase = 3;
-                        failure_reason = "Entries did not match — the Passphrase was NOT \
-                             changed. Your existing Passphrase still works."
-                            .to_string();
-                        show_terminal_state(
-                            &instr_label,
-                            &capture_btn,
-                            &cancel_btn,
-                            &ok_btn,
-                            &status_label,
-                            &feedback_label,
-                            &failure_reason,
+                    crate::window_flow::StepPoll::Stay
+                } else {
+                    // Terminal phases: OK (or the window close button)
+                    // dismisses. Close routes through the engine's
+                    // close-poll + this spec's close_outcome (below); OK
+                    // finishes here.
+                    if SIGNALS.ok_clicked.swap(false, Ordering::SeqCst) {
+                        if phase.get() == 2 {
+                            let cfg = saved
+                                .borrow_mut()
+                                .take()
+                                .expect("success state holds the saved config");
+                            return crate::window_flow::StepPoll::Finish(
+                                crate::window_flow::FlowOutcome(Ok(cfg)),
+                            );
+                        }
+                        let reason = failure_reason.borrow().clone();
+                        return crate::window_flow::StepPoll::Finish(
+                            crate::window_flow::FlowOutcome(Err(anyhow!("{}", reason))),
                         );
-                        return;
                     }
-
-                    // Save through the verified seam (issue #37 N6): the
-                    // current Passphrase was already captured and verified
-                    // against the stored hash in phase 0 — the save path
-                    // re-checks it, so no state change can bypass
-                    // authentication even if the flow ordering changed.
-                    match crate::preferences::change_passphrase_verified_to_path(
-                        &crate::config_file::Config::config_path(),
-                        &current_keys,
-                        &first,
-                    ) {
-                        Ok(cfg) => {
-                            saved = Some(cfg);
-                            phase = 2;
-                            show_terminal_state(
-                                &instr_label,
-                                &capture_btn,
-                                &cancel_btn,
-                                &ok_btn,
-                                &status_label,
-                                &feedback_label,
-                                "Passphrase changed — use the new Passphrase to unlock.",
-                            );
-                        }
-                        Err(e) => {
-                            phase = 3;
-                            failure_reason = format!(
-                                "Could not save the new Passphrase: {e}\nYour existing \
-                                 Passphrase still works."
-                            );
-                            show_terminal_state(
-                                &instr_label,
-                                &capture_btn,
-                                &cancel_btn,
-                                &ok_btn,
-                                &status_label,
-                                &feedback_label,
-                                &failure_reason,
-                            );
-                        }
-                    }
+                    crate::window_flow::StepPoll::Stay
                 }
-            } else {
-                // Terminal phases: OK (or the window close button) dismisses.
-                if SIGNALS.ok_clicked.swap(false, Ordering::SeqCst) || closed {
-                    window.orderOut(None);
-                    *outcome.borrow_mut() = Some(if phase == 2 {
-                        Ok(saved.take().expect("success state holds the saved config"))
-                    } else {
-                        Err(anyhow!("{}", failure_reason))
-                    });
-                    stop_run_loop(&app);
+            }),
+            poller: None,
+            // Phase-dependent close semantics (the migrated loop's `closed`
+            // check): a close during the waiting phases (0/1) cancels the
+            // flow; a close in a terminal phase (2/3) dismisses with that
+            // phase's outcome — exactly the migrated loop's `|| closed`
+            // handling. Preserves "Change Passphrase cancelled — config
+            // unchanged" verbatim.
+            close_outcome: Some(Box::new(move || {
+                if phase_for_close.get() == 2 {
+                    let cfg = saved_for_close
+                        .borrow_mut()
+                        .take()
+                        .expect("success state holds the saved config");
+                    Ok(cfg)
+                } else if phase_for_close.get() == 3 {
+                    Err(anyhow!("{}", failure_for_close.borrow()))
+                } else {
+                    Err(anyhow!("Change Passphrase cancelled — config unchanged"))
                 }
-            }
-        });
-
-        // Belt and braces for the window-leak fix: no exit path may leave
-        // the window visible. (Retained clone: the loop closure owns the
-        // original.)
-        window_for_cleanup.orderOut(None);
-
-        let result = outcome_slot
-            .borrow_mut()
-            .take()
-            .unwrap_or_else(|| Err(anyhow!("Change Passphrase event loop ended unexpectedly")));
-        result
+            })),
+            // Anchor the WizardTarget NSView; the engine holds it until the
+            // flow ends (replaces the migrated loop's post-loop
+            // window_for_cleanup orderOut — the engine's finish path
+            // orderOuts on every exit, then run_flow returns).
+            keep_alive: vec![unsafe { Retained::cast::<NSView>(target) }],
+        };
+        crate::window_flow::run_flow(spec, event_loop)
     }
 }
 
