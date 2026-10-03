@@ -20,7 +20,12 @@
 //! For every flow and every phase of every step:
 //!
 //! - [ ] `close_requested` checked → flow exits, window `orderOut`,
-//!   outcome written.
+//!   outcome written. The outcome is the spec's [`FlowSpec::close_outcome`]
+//!   resolved for the step the close landed in (each flow owns its close
+//!   semantic — Help closes `Ok(())`, the others carry their own
+//!   cancellation message, Change Passphrase's depends on the phase);
+//!   the generic "Window closed before the flow completed" applies only
+//!   when a spec supplies no resolver.
 //! - [ ] Menu clicks drained every tick; window-flow clicks re-front the
 //!   dialog; immediate clicks deferred.
 //! - [ ] Poller token set on every exit path (no poll thread outlives its
@@ -45,7 +50,7 @@
 
 use anyhow::{anyhow, Result};
 use objc2::rc::Retained;
-use objc2_app_kit::{NSApplication, NSWindow};
+use objc2_app_kit::{NSApplication, NSView, NSWindow};
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -175,6 +180,29 @@ pub struct FlowSpec<T> {
     /// folded in. `None` for flows without one (Help). Runs on its own
     /// thread; must stop within one tick of [`PollerHandle::cancelled`].
     pub poller: Option<Box<dyn FnOnce(&PollerHandle) + Send>>,
+    /// Outcome used when `close_requested` fires (engine close-poll).
+    /// Each flow owns its close semantics — the loops being migrated write
+    /// their own close messages ("Permission window closed before the
+    /// Accessibility grant completed", "Change Passphrase cancelled —
+    /// config unchanged"), and Help closes `Ok(())`. `None` falls back to
+    /// the generic `Window closed before the flow completed` error.
+    ///
+    /// The closure captures whatever shared flow state the decision needs
+    /// (e.g. the Change Passphrase phase cell, shared with `poll_step`
+    /// via `Rc<RefCell<..>>`), exactly like the loop bodies being migrated.
+    pub close_outcome: Option<Box<dyn FnOnce() -> Result<T> + 'static>>,
+    /// Extra state the flow's AppKit objects anchor to beyond the spec
+    /// itself (widgets, the window delegate target, …). The engine holds
+    /// it until `run_flow` returns, mirroring today's loops where the
+    /// `run_return` closure keeps every widget alive until the flow ends.
+    ///
+    /// `Vec<Retained<NSView>>` is the concrete shape every migrated flow
+    /// needs (the window's target object is an NSView subclass; widget
+    /// liveness is anchored transitively by the content view retaining
+    /// them — the widgets ARE retained by their superviews, but keeping a
+    /// handle here documents the contract and lets `close_outcome` reach
+    /// the content view). Cheap: a few `Retained` clones per flow.
+    pub keep_alive: Vec<Retained<NSView>>,
 }
 
 /// Outcome slot the engine writes exactly once before stopping the loop.
@@ -255,10 +283,15 @@ pub fn run_flow<T>(
     (spec.render_step)(first_step);
 
     let mut poll_step = spec.poll_step;
+    let mut close_outcome = spec.close_outcome;
     let outcome_slot: OutcomeSlot<T> = Rc::new(RefCell::new(None));
     {
         let outcome_slot = outcome_slot.clone();
         let current_step = current_step.clone();
+        // Anchor for the flow's AppKit objects: the loop closure holds it
+        // until the flow ends (same lifetime as today's run_return closures,
+        // which keep every widget alive until the flow finishes).
+        let _keep_alive = spec.keep_alive;
 
         use tao::platform::run_return::EventLoopExtRunReturn;
         event_loop.run_return(move |event, _, control_flow| {
@@ -274,14 +307,20 @@ pub fn run_flow<T>(
                 &crate::wizard::window_flow_menu_ids(),
             );
 
-            // 3. Close-poll in EVERY phase of every step.
+            // 3. Close-poll in EVERY phase of every step. The spec's
+            // close_outcome resolves the outcome (flows own their close
+            // semantics); the generic message is the no-resolver fallback.
             if crate::wizard::close_requested() {
+                let outcome = match close_outcome.take() {
+                    Some(f) => f(),
+                    None => Err(anyhow!("Window closed before the flow completed")),
+                };
                 finish_flow(
                     &window,
                     &app,
                     &outcome_slot,
                     poller.as_ref(),
-                    Err(anyhow!("Window closed before the flow completed")),
+                    outcome,
                 );
                 return;
             }
