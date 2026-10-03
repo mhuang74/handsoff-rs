@@ -1739,43 +1739,35 @@ mod macos {
         window.makeKeyAndOrderFront(None);
         activate_app(&app);
 
-        use tao::platform::run_return::EventLoopExtRunReturn;
-
-        // SIGNALS is process-global and shared across flows: clear every
-        // per-flow signal so a previous flow's state can't leak into this
-        // one (issue #36 story 16).
-        SIGNALS.begin_flow();
-
-        let outcome_slot: Rc<RefCell<Option<Result<()>>>> =
-            std::rc::Rc::new(std::cell::RefCell::new(None));
-        let outcome = outcome_slot.clone();
-
-        event_loop.run_return(move |event, _, control_flow| {
-            *control_flow = tao::event_loop::ControlFlow::WaitUntil(
-                std::time::Instant::now() + std::time::Duration::from_millis(100),
-            );
-
-            let _ = &event; // raw NSWindow: tao events carry no useful signal
-
-            // Single-dialog invariant (issue #36): menu clicks queued while
-            // this window owns the loop re-front it instead of stacking.
-            absorb_menu_clicks(&window, &app, &super::WINDOW_FLOW_MENU_IDS.lock());
-
-            // Close ends the flow; the delegate's windowShouldClose: sets
-            // the flag (tao CloseRequested never fires for these raw
-            // NSWindows). This is the only signal the Help window consumes.
-            if SIGNALS.close_requested.load(Ordering::SeqCst) {
-                window.orderOut(None);
-                *outcome.borrow_mut() = Some(Ok(()));
-                stop_run_loop(&app);
-            }
-        });
-
-        let result = outcome_slot
-            .borrow_mut()
-            .take()
-            .unwrap_or_else(|| Ok(()));
-        result
+        // Flow-runner engine (issue #40): Help is the simplest flow — one
+        // step, no poller, and its only exit path is the window close. The
+        // engine owns the ceremony (begin_flow on entry, 100 ms cadence,
+        // menu-drain, close-poll with orderOut + outcome write); the spec
+        // supplies the static window and Help's close semantic (`Ok(())` —
+        // closing Help is normal dismissal, not an error).
+        let spec = crate::window_flow::FlowSpec {
+            first_step: crate::window_flow::StepId(0),
+            build_window: Box::new(move || {
+                Ok(crate::window_flow::FlowWindow {
+                    window,
+                    app,
+                })
+            }),
+            // Single step: nothing to render beyond the initial build.
+            render_step: Box::new(|_| {}),
+            // One step, no input: it never advances and never finishes on
+            // its own — only the engine's close-poll ends the flow.
+            poll_step: Box::new(|_| crate::window_flow::StepPoll::Stay),
+            poller: None,
+            // Closing Help is its normal exit: `Ok(())` (the migrated loop
+            // wrote `Ok(())` and took the slot's `unwrap_or_else(Ok)`).
+            close_outcome: Some(Box::new(|| Ok(()))),
+            // Anchor the window's target object (a WizardTarget NSView) so
+            // the close delegate lives as long as the flow (the widgets are
+            // retained transitively by the scroll view's document view).
+            keep_alive: vec![unsafe { Retained::cast::<NSView>(target) }],
+        };
+        crate::window_flow::run_flow(spec, event_loop)
     }
 
     /// Run one headless capture pass on the main thread, mirroring progress
