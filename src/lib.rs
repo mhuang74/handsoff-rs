@@ -17,16 +17,15 @@ use anyhow::{Context, Result};
 use app_state::AppState;
 use constants::{
     AUTO_LOCK_CHECK_INTERVAL_SECS, AUTO_UNLOCK_CEILING_SECONDS, AUTO_UNLOCK_CHECK_INTERVAL_SECS,
-    BUFFER_RESET_CHECK_INTERVAL_MS, CALLBACK_TELEMETRY_INTERVAL_SECS, CFRUNLOOP_POLL_INTERVAL_MS,
+    BUFFER_RESET_CHECK_INTERVAL_MS, CALLBACK_TELEMETRY_INTERVAL_SECS,
     PERMISSION_CHECK_INTERVAL_SECS,
 };
 use core_graphics::sys::CGEventTapRef;
 use input_blocking::event_tap;
 use input_blocking::hotkeys::HotkeyManager;
 use log::{error, info, warn};
-use std::sync::mpsc::{self, Sender};
 use std::sync::Arc;
-use std::thread::{self, JoinHandle};
+use std::thread::{self};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Return current wall-clock time as a human-readable string for correlation with external logs.
@@ -71,8 +70,6 @@ pub struct HandsOffCore {
     lock_key: global_hotkey::hotkey::Code,
     /// Talk hotkey key code (default: Code::KeyT)
     talk_key: global_hotkey::hotkey::Code,
-    /// CFRunLoop thread handle and shutdown channel
-    cfrunloop_thread: Option<(JoinHandle<()>, Sender<()>)>,
     /// State pointer passed to event tap (for cleanup)
     event_tap_state_ptr: Option<*mut std::ffi::c_void>,
 }
@@ -90,7 +87,6 @@ impl HandsOffCore {
             hotkey_manager: None,
             lock_key: global_hotkey::hotkey::Code::KeyL,
             talk_key: global_hotkey::hotkey::Code::KeyT,
-            cfrunloop_thread: None,
             event_tap_state_ptr: None,
         }
     }
@@ -294,74 +290,8 @@ impl HandsOffCore {
         self.state.reset_all();
     }
 
-    /// Start CFRunLoop in a background thread
-    /// Required for event tap to receive events
-    fn start_cfrunloop_thread(&mut self) {
-        if self.cfrunloop_thread.is_some() {
-            warn!("CFRunLoop thread already running");
-            return;
-        }
-
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
-
-        let handle = thread::spawn(move || {
-            info!("CFRunLoop thread started");
-            use core_foundation::runloop::{kCFRunLoopDefaultMode, CFRunLoop, CFRunLoopRunResult};
-
-            loop {
-                // Run the loop for 0.5 seconds, then check for shutdown
-                let result = unsafe {
-                    CFRunLoop::run_in_mode(
-                        kCFRunLoopDefaultMode,
-                        Duration::from_millis(CFRUNLOOP_POLL_INTERVAL_MS),
-                        false,
-                    )
-                };
-
-                // Check if shutdown requested
-                if shutdown_rx.try_recv().is_ok() {
-                    info!("CFRunLoop thread received shutdown signal");
-                    break;
-                }
-
-                // Log result for debugging (will be removed later if too verbose)
-                if result != CFRunLoopRunResult::TimedOut {
-                    log::trace!("CFRunLoop run_in_mode returned: {:?}", result);
-                }
-            }
-
-            info!("CFRunLoop thread stopped");
-        });
-
-        self.cfrunloop_thread = Some((handle, shutdown_tx));
-        info!("CFRunLoop thread spawned successfully");
-    }
-
-    /// Stop CFRunLoop background thread
-    fn stop_cfrunloop_thread(&mut self) {
-        if let Some((handle, shutdown_tx)) = self.cfrunloop_thread.take() {
-            info!("Stopping CFRunLoop thread");
-
-            // Send shutdown signal
-            if let Err(e) = shutdown_tx.send(()) {
-                warn!("Failed to send shutdown signal to CFRunLoop thread: {}", e);
-            }
-
-            // Wait for thread to finish (with timeout)
-            match handle.join() {
-                Ok(()) => info!("CFRunLoop thread stopped successfully"),
-                Err(e) => warn!("CFRunLoop thread panicked: {:?}", e),
-            }
-        } else {
-            warn!("CFRunLoop thread not running, nothing to stop");
-        }
-    }
-
     /// Start the event tap for input blocking
     pub fn start_event_tap(&mut self) -> Result<()> {
-        // Start CFRunLoop thread first (required for event tap)
-        self.start_cfrunloop_thread();
-
         info!("[tap-lifecycle] Starting event tap at {}", wall_clock_now());
         let (tap, state_ptr) = event_tap::create_event_tap(self.state.clone())
             .context("Failed to create event tap")?;
@@ -395,9 +325,6 @@ impl HandsOffCore {
                 info!("Event tap state pointer freed");
             }
         }
-
-        // Stop CFRunLoop thread (no longer needed without event tap)
-        self.stop_cfrunloop_thread();
     }
 
     /// Restart the event tap after permissions are restored

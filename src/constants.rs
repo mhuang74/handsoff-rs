@@ -53,11 +53,6 @@ pub const BUFFER_RESET_DEFAULT_SECONDS: u64 = 3;
 // POLLING & THREAD INTERVALS
 // ============================================================================
 
-/// CFRunLoop polling interval for event processing.
-/// Unit: milliseconds
-/// Recommended range: 100-1000 (lower = more responsive, higher = less CPU)
-pub const CFRUNLOOP_POLL_INTERVAL_MS: u64 = 500;
-
 /// Buffer reset thread check interval.
 /// Unit: milliseconds
 /// Recommended range: 100-500 (must be < BUFFER_RESET_DEFAULT_SECONDS * 1000)
@@ -85,7 +80,8 @@ pub const POLL_INTERVAL_DISABLED_SECS: u64 = 5;
 
 /// Tray app polling interval when app is enabled (active mode).
 /// Unit: milliseconds
-/// Recommended range: 100-1000 (same as CFRUNLOOP_POLL_INTERVAL_MS)
+/// Recommended range: 100-1000 (lower = more responsive, higher = less
+/// CPU)
 pub const POLL_INTERVAL_ENABLED_MS: u64 = 500;
 
 /// Tooltip rebuild cadence while a countdown is visible.
