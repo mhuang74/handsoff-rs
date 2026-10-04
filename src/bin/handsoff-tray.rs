@@ -241,10 +241,6 @@ fn main() -> Result<()> {
     core.start_background_threads()
         .context("Failed to start background threads")?;
 
-    // NOTE: CFRunLoop thread is now managed by HandsOffCore
-    // It starts when event tap is created and stops when event tap is destroyed
-    // This eliminates the zombie CFRunLoop connection that caused WindowServer issues
-
     // Wrap core in Rc<RefCell> for event loop (single-threaded)
     let core = Rc::new(RefCell::new(core));
 
