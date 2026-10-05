@@ -295,30 +295,6 @@ fn test_auto_unlock_does_not_fire_when_disabled() {
 }
 
 #[test]
-fn test_reset_resets_everything() {
-    let state = AppState::new();
-    enable_backoff(&state, 3600);
-    state.set_locked(true);
-    {
-        let mut inner = state.lock();
-        let u = inner.auto_unlock.as_mut().unwrap();
-        u.stretch_start = std::time::Instant::now() - Duration::from_secs(90000);
-        u.window_index = 5; // capped 24h interval
-        inner.last_input_time = std::time::Instant::now() - Duration::from_secs(90000);
-    }
-
-    state.reset_all();
-
-    assert!(!state.is_locked());
-    assert_eq!(state.get_auto_unlock_interval_secs(), Some(3600));
-
-    // Next stretch starts fresh at base
-    state.set_locked(true);
-    assert_eq!(state.get_auto_unlock_interval_secs(), Some(3600));
-    assert!(!state.should_auto_unlock());
-}
-
-#[test]
 fn test_inner_auto_unlock_state_shape() {
     // AppStateInner must carry the schedule in one struct (§2.7)
     let state = AppState::new();

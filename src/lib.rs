@@ -50,14 +50,27 @@ type CFRunLoopSourceRef = *mut std::ffi::c_void;
 pub enum TapLifecycleEvent {
     /// No lifecycle flag was set.
     Idle,
-    /// The tap was stopped due to permission loss (the tray keeps running
-    /// and shows status).
-    TapStopped,
+    /// The tap was stopped due to permission loss. `tap_was_running` says
+    /// whether the tap was actually enforcing when the stop was serviced:
+    /// `true` = runtime revocation of a live tap (the tray notifies and
+    /// quits); `false` = permissions missing with no tap ever started
+    /// (startup-missing / re-grant-degraded — the tray keeps running
+    /// tapless for the wizard/re-grant flow).
+    TapStopped { tap_was_running: bool },
     /// The tap was restarted (permissions restored).
     Restarted,
     /// The tap restart was attempted but failed (permissions still missing
     /// or tap creation failed).
     RestartFailed(anyhow::Error),
+}
+
+/// Pure stop-arm decision: map the captured `tap_was_running` fact to the
+/// lifecycle event. Kept as a bare-bool function so the linchpin
+/// revocation-vs-startup-missing decision is unit-testable on CI, which
+/// cannot construct a live tap (`CGEventTapCreate` returns `None` without
+/// the Accessibility grant).
+fn stopped_event(tap_was_running: bool) -> TapLifecycleEvent {
+    TapLifecycleEvent::TapStopped { tap_was_running }
 }
 
 /// Core HandsOff functionality shared by the Tray App binary
@@ -284,12 +297,6 @@ impl HandsOffCore {
         Ok(())
     }
 
-    /// Resets app state to unlocked with all timers cleared — the tray Reset
-    /// action; not a passphrase authentication event.
-    pub fn reset(&self) {
-        self.state.reset_all();
-    }
-
     /// Start the event tap for input blocking
     pub fn start_event_tap(&mut self) -> Result<()> {
         info!("[tap-lifecycle] Starting event tap at {}", wall_clock_now());
@@ -386,65 +393,6 @@ impl HandsOffCore {
         }
     }
 
-    /// Disable HandsOff (stops event tap and hotkeys for minimal CPU usage)
-    ///
-    /// Issue #37 N2: clearing `is_locked` here guarantees a Lock flag can
-    /// never outlive the tap that enforces it. A deferred Disable click (or
-    /// any disable path) previously left `is_locked=true` with no tap behind
-    /// it — a locked stretch the state machine believed was in progress and
-    /// that Reenable would later clear WITHOUT authentication.
-    pub fn disable(&mut self) -> Result<()> {
-        info!("Disabling HandsOff - entering minimal CPU mode");
-
-        // Set disabled flag first (background threads will become inactive)
-        self.state.set_disabled(true);
-
-        // A stopped tap enforces nothing: the Lock flag must go with it.
-        // Clear ONLY the lock state — do NOT restart the backoff schedule
-        // (issue #37: §2.3 says only a successful Passphrase unlock resets
-        // it; disable() previously reset it via reset_all(), shifting any
-        // remaining auto-unlock windows earlier than the §2.1 timeline).
-        self.state.clear_lock_state();
-
-        // Stop event tap
-        self.stop_event_tap();
-
-        // Unregister hotkeys
-        if let Some(ref mut manager) = self.hotkey_manager {
-            manager
-                .unregister_all()
-                .context("Failed to unregister hotkeys")?;
-        }
-
-        // Clear input buffer for clean state
-        self.state.clear_buffer();
-
-        info!("HandsOff disabled successfully");
-        Ok(())
-    }
-
-    /// Enable HandsOff (restarts event tap and hotkeys)
-    pub fn enable(&mut self) -> Result<()> {
-        info!("Enabling HandsOff - resuming normal operation");
-
-        // Reset last_input_time for fresh auto-lock countdown
-        // Note: if don't do this first, auto-lock may kick in right after set_disabled(false)
-        self.state.update_input_time();
-
-        // Restart event tap (checks permissions internally)
-        self.restart_event_tap()
-            .context("Failed to restart event tap")?;
-
-        // Re-register hotkeys
-        self.start_hotkeys()?;
-
-        // Clear disabled flag first
-        self.state.set_disabled(false);
-
-        info!("HandsOff enabled successfully");
-        Ok(())
-    }
-
     /// Service the tap-lifecycle flags — the ONE block both binary main
     /// loops must run each poll (issue #37 N3).
     ///
@@ -459,12 +407,17 @@ impl HandsOffCore {
     /// caller can layer its own UX (the tray notifies on restart
     /// success/failure).
     pub fn service_tap_lifecycle(&mut self) -> TapLifecycleEvent {
-        // Permission loss: stop the tap.
+        // Permission loss: stop the tap. `tap_was_running` distinguishes a
+        // runtime revocation (tap was live and enforcing → the tray notifies
+        // and quits) from the startup-missing path (no tap ever started →
+        // the tray keeps running for the wizard/re-grant flow and must NOT
+        // quit). Captured BEFORE `stop_event_tap` consumes the field.
         if self.state.should_stop_event_tap_and_clear() {
+            let tap_was_running = self.event_tap.is_some();
             warn!("Stopping input blocking due to permission loss");
             self.stop_event_tap();
             info!("Input blocking stopped - normal input restored");
-            return TapLifecycleEvent::TapStopped;
+            return stopped_event(tap_was_running);
         }
 
         // Re-enable the existing tap (post sleep/wake timeout recovery).
@@ -549,11 +502,6 @@ impl HandsOffCore {
         thread::spawn(move || loop {
             thread::sleep(Duration::from_millis(BUFFER_RESET_CHECK_INTERVAL_MS));
 
-            // Skip processing when disabled
-            if state.is_disabled() {
-                continue;
-            }
-
             if state.should_reset_buffer()
                 && state.buffer_len() > 0 {
                     info!("Resetting input buffer after timeout");
@@ -569,11 +517,6 @@ impl HandsOffCore {
             let mut check_count = 0u32;
             loop {
                 thread::sleep(Duration::from_secs(AUTO_LOCK_CHECK_INTERVAL_SECS));
-
-                // Skip processing when disabled
-                if state.is_disabled() {
-                    continue;
-                }
 
                 check_count += 1;
 
@@ -611,11 +554,6 @@ impl HandsOffCore {
             let receiver = GlobalHotKeyEvent::receiver();
             loop {
                 if let Ok(event) = receiver.recv() {
-                    // Skip processing when disabled
-                    if state.is_disabled() {
-                        continue;
-                    }
-
                     let event_id = event.id;
 
                     // Check if it's the lock hotkey
@@ -652,11 +590,6 @@ impl HandsOffCore {
 
                 loop {
                     thread::sleep(Duration::from_secs(AUTO_UNLOCK_CHECK_INTERVAL_SECS));
-
-                    // Skip processing when disabled
-                    if state.is_disabled() {
-                        continue;
-                    }
 
                     if state.should_auto_unlock() {
                         warn!("Auto-unlock window opened - releasing input (unauthenticated)");
@@ -705,7 +638,7 @@ impl HandsOffCore {
                     {
                         let _ = notify_rust::Notification::new()
                             .summary("HandsOff - Permissions Missing")
-                            .body("Accessibility permissions are missing.\nInput blocking stopped to restore normal keyboard and mouse.\n\nUse Reenable menu to restart after granting permissions.")
+                            .body("Accessibility permissions are missing.\nInput blocking is not active.\n\nInput blocking resumes automatically once permissions are granted.")
                             .timeout(notify_rust::Timeout::Milliseconds(10000))
                             .show();
                     }
@@ -718,11 +651,6 @@ impl HandsOffCore {
 
                 loop {
                     thread::sleep(Duration::from_secs(PERMISSION_CHECK_INTERVAL_SECS));
-
-                    // Skip permission checking when disabled (no event tap running)
-                    if state.is_disabled() {
-                        continue;
-                    }
 
                     check_counter += 1;
 
@@ -757,15 +685,9 @@ impl HandsOffCore {
                         // Signal to stop event tap (main thread will handle the actual stop)
                         state.request_stop_event_tap();
 
-                        // Show notification
-                        #[cfg(target_os = "macos")]
-                        {
-                            let _ = notify_rust::Notification::new()
-                                .summary("HandsOff - Permissions Revoked")
-                                .body("Accessibility permissions were revoked.\nInput blocking stopped - your keyboard and mouse work normally now.\n\nRestore permissions and use Reenable menu to restart.")
-                                .timeout(notify_rust::Timeout::Milliseconds(10000))
-                                .show();
-                        }
+                        // The tray's quit notification (TapStopped with a live
+                        // tap → notify + exit) is the ONLY notification for
+                        // this event — it carries the why-and-how-to-fix copy.
 
                         warn!("Event tap stop requested - main thread will handle cleanup");
                     }
@@ -825,7 +747,7 @@ mod tests {
         core.state.request_stop_event_tap();
 
         match core.service_tap_lifecycle() {
-            TapLifecycleEvent::TapStopped => {} // expected
+            TapLifecycleEvent::TapStopped { .. } => {} // expected
             other => panic!("stop flag must yield TapStopped, got {other:?}"),
         }
         // Flag consumed: a second pass must be idle.
@@ -846,7 +768,7 @@ mod tests {
 
         let event = core.service_tap_lifecycle();
         assert!(
-            !matches!(event, TapLifecycleEvent::TapStopped),
+            !matches!(event, TapLifecycleEvent::TapStopped { .. }),
             "re-enable must never report TapStopped"
         );
         // Flag consumed: second pass must be idle.
@@ -890,7 +812,57 @@ mod tests {
 
         assert!(matches!(
             core.service_tap_lifecycle(),
-            TapLifecycleEvent::TapStopped
+            TapLifecycleEvent::TapStopped { .. }
+        ));
+    }
+
+    #[test]
+    fn test_stopped_event_false_is_startup_missing_no_quit() {
+        // The linchpin guard (quit-on-revocation spec): a stop serviced while
+        // NO tap was held is the startup-missing path — the tray must keep
+        // running tapless, never quit.
+        match stopped_event(false) {
+            TapLifecycleEvent::TapStopped {
+                tap_was_running: false,
+            } => {}
+            other => panic!("stopped_event(false) must be TapStopped{{false}}, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_stopped_event_true_is_runtime_revocation_quit() {
+        // A stop serviced while a live tap was held is a runtime revocation —
+        // the tray notifies and quits.
+        match stopped_event(true) {
+            TapLifecycleEvent::TapStopped {
+                tap_was_running: true,
+            } => {}
+            other => panic!("stopped_event(true) must be TapStopped{{true}}, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_service_tap_lifecycle_no_tap_reports_not_running_and_clears_flag() {
+        // End-to-end flag consumption on CI (no Accessibility grant: the tap
+        // can never be `Some` here). With `should_stop_event_tap` set and no
+        // tap held, the stop must report `tap_was_running: false` (the
+        // startup-missing payload — no quit) and clear the flag.
+        let mut core = HandsOffCore::new(crate::utils::hash_keycodes(&[0, 12, 15, 37]));
+        assert!(core.event_tap.is_none(), "CI never holds a live tap");
+        core.state.request_stop_event_tap();
+
+        match core.service_tap_lifecycle() {
+            TapLifecycleEvent::TapStopped {
+                tap_was_running: false,
+            } => {} // expected: startup-missing, no quit
+            other => panic!(
+                "stop without a live tap must report tap_was_running=false, got {other:?}"
+            ),
+        }
+        // Flag consumed: a second pass must be idle.
+        assert!(matches!(
+            core.service_tap_lifecycle(),
+            TapLifecycleEvent::Idle
         ));
     }
 }

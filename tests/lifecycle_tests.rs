@@ -6,9 +6,8 @@
 //!    path-taking API (`save_to_path` / `load_from_path`) so tests never
 //!    touch the real user config.
 //! 2. Menu-state gating — which actions are available when
-//!    locked/disabled/no-permissions (`preferences::menu_state`).
+//!    locked/no-permissions (`preferences::menu_state`).
 
-use handsoff::app_state::AppState;
 use handsoff::config::AutoUnlockConfig;
 use handsoff::config_file::Config;
 use handsoff::preferences::{
@@ -56,10 +55,8 @@ fn seeded_config() -> Config {
 
 #[test]
 fn test_menu_state_normal_unlocked() {
-    let m = menu_state(false, false, true);
+    let m = menu_state(false, true);
     assert!(m.lock_enabled);
-    assert!(m.disable_enabled);
-    assert!(m.reenable_enabled, "Reenable must be unguarded");
     assert!(m.preferences_enabled);
     assert!(m.change_passphrase_enabled);
     assert!(m.reset_enabled);
@@ -67,72 +64,35 @@ fn test_menu_state_normal_unlocked() {
 
 #[test]
 fn test_menu_state_locked() {
-    let m = menu_state(true, false, true);
+    let m = menu_state(true, true);
     // Menu is unreachable while locked (mouse blocked) — gating covers races.
     assert!(!m.lock_enabled);
-    assert!(!m.disable_enabled);
-    assert!(
-        m.reenable_enabled,
-        "Reenable must be unguarded while locked"
-    );
     // N5: a dead-tap-while-locked window must not allow re-keying or wiping.
     assert!(!m.change_passphrase_enabled);
     assert!(!m.reset_enabled);
 }
 
 #[test]
-fn test_menu_state_disabled() {
-    let m = menu_state(false, true, true);
-    assert!(!m.lock_enabled);
-    assert!(!m.disable_enabled);
-    assert!(
-        m.reenable_enabled,
-        "Reenable must be unguarded while disabled"
-    );
-}
-
-#[test]
 fn test_menu_state_no_permissions() {
-    let m = menu_state(false, false, false);
+    let m = menu_state(false, false);
     assert!(!m.lock_enabled, "Lock needs permissions");
-    assert!(!m.disable_enabled, "Disable needs permissions");
-    // Config-level actions and the escape hatch never need permissions.
-    assert!(m.reenable_enabled);
+    // Config-level actions never need permissions.
     assert!(m.preferences_enabled);
     assert!(m.change_passphrase_enabled);
     assert!(m.reset_enabled);
 }
 
-/// Table-driven matrix over (locked × disabled × permissions) × action
+/// Table-driven matrix over (locked × permissions) × action
 /// (issue #37 N2/N5: the gating authority must be exhaustive and consistent).
 #[test]
 fn test_menu_state_gating_matrix() {
-    // (is_locked, is_disabled, has_permissions)
-    for &(locked, disabled, perms) in &[
-        (false, false, true),
-        (false, false, false),
-        (true, false, true),
-        (true, false, false),
-        (false, true, true),
-        (false, true, false),
-    ] {
-        let m = menu_state(locked, disabled, perms);
-        let label = format!("locked={locked} disabled={disabled} perms={perms}");
+    // (is_locked, has_permissions)
+    for &(locked, perms) in &[(false, true), (false, false), (true, true), (true, false)] {
+        let m = menu_state(locked, perms);
+        let label = format!("locked={locked} perms={perms}");
 
-        // Lock: requires permissions; never while locked or disabled.
-        assert_eq!(
-            m.lock_enabled,
-            perms && !locked && !disabled,
-            "lock: {label}"
-        );
-        // Disable: requires permissions; never while locked or disabled.
-        assert_eq!(
-            m.disable_enabled,
-            perms && !locked && !disabled,
-            "disable: {label}"
-        );
-        // Reenable: unguarded escape hatch, ALWAYS available.
-        assert!(m.reenable_enabled, "reenable: {label}");
+        // Lock: requires permissions; never while locked.
+        assert_eq!(m.lock_enabled, perms && !locked, "lock: {label}");
         // Preferences: always available.
         assert!(m.preferences_enabled, "preferences: {label}");
         // Change Passphrase / Reset: refused while locked (N5); otherwise
@@ -490,62 +450,6 @@ fn test_legacy_backoff_config_preferences_falls_back_to_default_base() {
     );
 
     let _ = std::fs::remove_file(&path);
-}
-
-// ---------------------------------------------------------------------------
-// N2: a deferred Disable-then-Lock sequence cannot end in locked-without-tap.
-// The gate refuses Disable while locked (menu_state), and clear_lock_state
-// guarantees the Lock flag never outlives a stopped tap.
-// ---------------------------------------------------------------------------
-
-#[test]
-fn test_disable_clears_lock_state_without_tap() {
-    let state = AppState::new();
-    state.set_locked(true);
-    assert!(state.is_locked());
-
-    // What disable() does to STATE before stopping the tap.
-    state.clear_lock_state();
-
-    assert!(
-        !state.is_locked(),
-        "Disable must never leave is_locked=true — a stopped tap enforces nothing"
-    );
-}
-
-#[test]
-fn test_deferred_disable_then_lock_sequence_gate() {
-    // Deferred dispatch (issue #36) re-validates each click against
-    // menu_state. Sequence from N2: Disable click queued, then Lock click
-    // queued, then state resolves. After the Disable executes,
-    // clear_lock_state runs — the subsequent Lock click is then evaluated
-    // against the CURRENT state, where the gate must now deny a second
-    // Disable (already disabled) and allow Lock only if unlocked.
-    //
-    // The dangerous combination — locked WITHOUT tap — is impossible if
-    // both properties hold:
-    //   (a) the gate denies Disable while locked, so Lock can't run after a
-    //       refused Disable;
-    //   (b) when Disable DOES run, clear_lock_state clears is_locked, so
-    //       Lock-after-Disable re-locks only with the tap restarting later
-    //       under explicit permission checks (lock() refuses without perms).
-    let locked_state = AppState::new();
-    locked_state.set_locked(true);
-
-    // (a): gate refuses Disable while locked.
-    assert!(
-        !menu_state(true, false, true).disable_enabled,
-        "Disable must be gated off while locked (no locked-without-tap via deferred dispatch)"
-    );
-
-    // (b): when Disable runs (unlocked), the Lock flag cannot survive it.
-    let unlocked_state = AppState::new();
-    unlocked_state.set_locked(true);
-    unlocked_state.clear_lock_state();
-    assert!(
-        !unlocked_state.is_locked(),
-        "disable path must clear the Lock flag"
-    );
 }
 
 // ---------------------------------------------------------------------------

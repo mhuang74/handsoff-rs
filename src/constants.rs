@@ -73,16 +73,19 @@ pub const AUTO_UNLOCK_CHECK_INTERVAL_SECS: u64 = 10;
 /// Recommended range: 10-60 (infrequent check, permission rarely changes)
 pub const PERMISSION_CHECK_INTERVAL_SECS: u64 = 15;
 
-/// Tray app polling interval when app is disabled (low-power mode).
-/// Unit: seconds
-/// Recommended range: 1-10 (minimal activity when disabled)
-pub const POLL_INTERVAL_DISABLED_SECS: u64 = 5;
-
 /// Tray app polling interval when app is enabled (active mode).
 /// Unit: milliseconds
 /// Recommended range: 100-1000 (lower = more responsive, higher = less
 /// CPU)
 pub const POLL_INTERVAL_ENABLED_MS: u64 = 500;
+
+/// Delay between the pre-quit notification and `std::process::exit`.
+///
+/// `notify-rust` posts to `usernoted` asynchronously: `.show()` returning
+/// does NOT mean the notification is on screen, and an immediate exit can
+/// drop it. This gap exists exactly so the user sees the quit explanation.
+/// If 1 s proves insufficient on slow machines, bump it; do not remove it.
+pub const NOTIFICATION_EXIT_DELAY_MS: u64 = 1000;
 
 /// Tooltip rebuild cadence while a countdown is visible.
 /// Unit: milliseconds
