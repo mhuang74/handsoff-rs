@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.10.0] - 2026-10-05
+
+## 📦 Uncategorized
+
+- Remove Disable/Reenable menu items; quit immediately on permission loss
+   - PR: #47
+
+
+
 ## [0.9.1] - 2026-10-05
 
 ## 📦 Uncategorized
