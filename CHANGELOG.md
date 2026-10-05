@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.9.1] - 2026-10-05
+
+## 📦 Uncategorized
+
+- fix: delete dead CFRunLoop busy-spin thread; v0.9.1
+   - PR: #46
+
+
+
 ## [0.9.0] - 2026-10-03
 
 ## 📦 Uncategorized
