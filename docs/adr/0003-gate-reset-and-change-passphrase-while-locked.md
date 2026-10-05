@@ -1,7 +1,7 @@
 # ADR 0003: Gate Reset and Change Passphrase while Locked; single gating authority
 
 Date: 2026-10-02
-Status: Accepted
+Status: Accepted (partially superseded by [ADR 0005](0005-remove-disable-reenable-menu-items.md): the Disable/Reenable items and the unguarded-Reenable rationale are gone; the single-gating-authority rule and the N5 refusal rules below still apply)
 Supersedes: none
 Related: issue #37 (findings N2, N5, N6), ADR 0002, CONTEXT.md glossary
 

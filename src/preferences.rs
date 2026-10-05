@@ -7,8 +7,7 @@
 //! verifiable as a `config.toml` round-trip (spec #24 testing decisions).
 //!
 //! Terminology (CONTEXT.md): Reset wipes the config and restarts the Setup
-//! Wizard; Reenable (the old "Reset") restarts input capture without changing
-//! any configuration; Preferences edits settings without re-entering the
+//! Wizard; Preferences edits settings without re-entering the
 //! Passphrase; Change Passphrase rotates the passphrase while preserving all
 //! other fields.
 
@@ -29,11 +28,7 @@ use std::path::PathBuf;
 ///
 /// Rules:
 /// - **Lock**: needs permissions; never while locked (menu is unreachable
-///   when locked anyway — mouse clicks are blocked — this covers races) or
-///   disabled.
-/// - **Disable**: needs permissions; not while locked or already disabled.
-/// - **Reenable** (old Reset): ALWAYS enabled — the deliberate anti-lockout
-///   escape hatch (CONTEXT.md: unguarded, by design).
+///   when locked anyway — mouse clicks are blocked — this covers races).
 /// - **Preferences**: opens a config-editing window; never needs input
 ///   blocking or permissions.
 /// - **Change Passphrase / Reset**: REFUSED while locked (issue #37 N5) —
@@ -45,9 +40,6 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MenuState {
     pub lock_enabled: bool,
-    pub disable_enabled: bool,
-    /// Always true: unguarded escape hatch.
-    pub reenable_enabled: bool,
     /// Always true: opens the Preferences window.
     pub preferences_enabled: bool,
     /// False while locked (N5: dead-tap windows must not allow re-keying).
@@ -56,11 +48,9 @@ pub struct MenuState {
     pub reset_enabled: bool,
 }
 
-pub fn menu_state(is_locked: bool, is_disabled: bool, has_permissions: bool) -> MenuState {
+pub fn menu_state(is_locked: bool, has_permissions: bool) -> MenuState {
     MenuState {
-        lock_enabled: has_permissions && !is_locked && !is_disabled,
-        disable_enabled: has_permissions && !is_locked && !is_disabled,
-        reenable_enabled: true,
+        lock_enabled: has_permissions && !is_locked,
         preferences_enabled: true,
         change_passphrase_enabled: !is_locked,
         reset_enabled: !is_locked,

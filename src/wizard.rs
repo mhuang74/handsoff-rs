@@ -570,7 +570,7 @@ mod macos {
     ///   Re-grant) are CONSUMED: the live dialog comes to front (the visible
     ///   "a dialog is open" response, story 4) and the click is never queued
     ///   into a later flow.
-    /// - Immediate-action clicks (Lock, Disable, Reenable, Check Updates)
+    /// - Immediate-action clicks (Lock, Check Updates)
     ///   are DEFERRED to the tray's next session start (never swallowed —
     ///   issue requirement 2), so e.g. a Lock click during the dialog still
     ///   lands right after it closes.

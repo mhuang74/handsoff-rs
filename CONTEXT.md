@@ -16,14 +16,9 @@ _Avoid_: password, PIN, key
 The in-app, first-run window that grants Accessibility permission and captures the Passphrase. The sole setup path (ADR 0004 removed the terminal `--setup` flow with the CLI binary).
 _Avoid_: installer, setup CLI, terminal setup
 
-**Disable**:
-Manual suspension of protection from the tray menu. Input is not blocked and the Passphrase is not required.
-_Avoid_: pause, turn off
-
-**Reenable**:
-Tray action (renamed from "Reset") that ends a stuck Lock and restarts input capture without changing any configuration.
-_Avoid_: reset
+**Permission loss**:
+Revoked Accessibility permissions (or a failed event-tap restart) quit the app immediately after one final notification explaining why and how to fix it. Recovery: re-grant the permission in System Settings and relaunch.
 
 **Reset**:
 Double-confirmed tray action that wipes the configuration and restarts the Setup Wizard. The recovery path for a forgotten Passphrase.
-_Avoid_: reenable (that means something else now)
+_Avoid_: reenable

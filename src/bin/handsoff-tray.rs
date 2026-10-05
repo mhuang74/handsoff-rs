@@ -4,7 +4,7 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use handsoff::constants::{
-    NOTIFICATION_ERROR_TIMEOUT_MS, NOTIFICATION_TIMEOUT_MS, POLL_INTERVAL_DISABLED_SECS,
+    NOTIFICATION_ERROR_TIMEOUT_MS, NOTIFICATION_TIMEOUT_MS, NOTIFICATION_EXIT_DELAY_MS,
     POLL_INTERVAL_ENABLED_MS, TOOLTIP_UPDATE_INTERVAL_MS,
 };
 use handsoff::utils::lock_file;
@@ -251,8 +251,6 @@ fn main() -> Result<()> {
     // Note: When locked, mouse clicks are blocked, so menu is inaccessible
     // Lock menu item only works when unlocked; unlock requires typing passphrase
     let lock_item = MenuItem::new("Lock Input", true, None);
-    let disable_item = MenuItem::new("Disable", true, None);
-    let reenable_item = MenuItem::new("Reenable", true, None);
     let separator = PredefinedMenuItem::separator();
     let preferences_item = MenuItem::new("Preferences…", true, None);
     let change_passphrase_item = MenuItem::new("Change Passphrase…", true, None);
@@ -264,10 +262,6 @@ fn main() -> Result<()> {
     let menu = Menu::new();
     menu.append(&lock_item)
         .context("Failed to add lock menu item")?;
-    menu.append(&disable_item)
-        .context("Failed to add disable menu item")?;
-    menu.append(&reenable_item)
-        .context("Failed to add reenable menu item")?;
     menu.append(&separator).context("Failed to add separator")?;
     menu.append(&preferences_item)
         .context("Failed to add preferences menu item")?;
@@ -303,8 +297,6 @@ fn main() -> Result<()> {
 
     // Clone IDs for event handling
     let lock_id = lock_item.id().clone();
-    let disable_id = disable_item.id().clone();
-    let reenable_id = reenable_item.id().clone();
     let preferences_id = preferences_item.id().clone();
     let change_passphrase_id = change_passphrase_item.id().clone();
     let reset_id = reset_item.id().clone();
@@ -327,7 +319,6 @@ fn main() -> Result<()> {
     // Track state for tooltip updates and permission state. Mutable because
     // the values are threaded through `TrackedState` across tray sessions.
     let was_locked = false;
-    let was_disabled = false;
     let last_tooltip = String::new();
     let last_tooltip_update = std::time::Instant::now();
     let has_permissions = permissions; // Re-verified after any re-grant flow (issue #29)
@@ -341,7 +332,6 @@ fn main() -> Result<()> {
     // flows via app.stop and fall back through to here).
     let tracked: &mut TrackedState = &mut (
         was_locked,
-        was_disabled,
         last_tooltip,
         last_tooltip_update,
         has_permissions,
@@ -352,8 +342,6 @@ fn main() -> Result<()> {
             core.clone(),
             (
                 lock_id.clone(),
-                disable_id.clone(),
-                reenable_id.clone(),
                 preferences_id.clone(),
                 change_passphrase_id.clone(),
                 reset_id.clone(),
@@ -364,8 +352,6 @@ fn main() -> Result<()> {
             ),
             (
                 lock_item.clone(),
-                disable_item.clone(),
-                reenable_item.clone(),
                 preferences_item.clone(),
                 change_passphrase_item.clone(),
                 reset_item.clone(),
@@ -389,7 +375,6 @@ fn main() -> Result<()> {
                     let core_borrow = core.borrow();
                     let flags = menu_state(
                         core_borrow.is_locked(),
-                        core_borrow.state.is_disabled(),
                         core_borrow.has_accessibility_permissions(),
                     );
                     if !flags.change_passphrase_enabled {
@@ -412,7 +397,6 @@ fn main() -> Result<()> {
                     let core_borrow = core.borrow();
                     let flags = menu_state(
                         core_borrow.is_locked(),
-                        core_borrow.state.is_disabled(),
                         core_borrow.has_accessibility_permissions(),
                     );
                     if !flags.reset_enabled {
@@ -436,7 +420,7 @@ fn main() -> Result<()> {
 /// Tracker state that must survive across tray sessions (icon/tooltip caches,
 /// tooltip rebuild cadence timestamp, and permission logging dedup).
 #[allow(clippy::type_complexity)]
-type TrackedState = (bool, bool, String, std::time::Instant, bool);
+type TrackedState = (bool, String, std::time::Instant, bool);
 
 /// Which menu item requested the session end, if any.
 #[allow(clippy::enum_variant_names)]
@@ -508,12 +492,8 @@ fn run_session(
         tray_icon::menu::MenuId,
         tray_icon::menu::MenuId,
         tray_icon::menu::MenuId,
-        tray_icon::menu::MenuId,
-        tray_icon::menu::MenuId,
     ),
     items: (
-        tray_icon::menu::MenuItem,
-        tray_icon::menu::MenuItem,
         tray_icon::menu::MenuItem,
         tray_icon::menu::MenuItem,
         tray_icon::menu::MenuItem,
@@ -529,8 +509,6 @@ fn run_session(
 ) -> SessionAction {
     let (
         lock_id,
-        disable_id,
-        reenable_id,
         preferences_id,
         change_passphrase_id,
         reset_id,
@@ -541,8 +519,6 @@ fn run_session(
     ) = ids;
     let (
         lock_item,
-        disable_item,
-        reenable_item,
         preferences_item,
         change_passphrase_item,
         reset_item,
@@ -551,7 +527,7 @@ fn run_session(
         _help_item,
         _quit_item,
     ) = items;
-    let (was_locked, was_disabled, last_tooltip, last_tooltip_update, has_permissions) = tracked;
+    let (was_locked, last_tooltip, last_tooltip_update, has_permissions) = tracked;
 
     // Dispatch menu clicks deferred while a dialog owned the loop (issue
     // #36): dialogs consume window-flow clicks themselves (re-fronting the
@@ -560,24 +536,18 @@ fn run_session(
     //
     // Issue #37 N2: every deferred click is re-validated against the CURRENT
     // menu state before executing — the state may have changed since the
-    // click was queued (e.g. a Disable-then-Lock sequence must not end in
-    // locked-without-tap). Stale clicks are dropped with a log line; the
+    // click was queued. Stale clicks are dropped with a log line; the
     // same gate the live-click path uses decides, so the paths cannot drift.
     for id in wizard::take_deferred_menu_events() {
         let core_borrow = core.borrow();
         let flags = menu_state(
             core_borrow.is_locked(),
-            core_borrow.state.is_disabled(),
             core_borrow.has_accessibility_permissions(),
         );
         drop(core_borrow);
 
         let allowed = if id == lock_id {
             flags.lock_enabled
-        } else if id == disable_id {
-            flags.disable_enabled
-        } else if id == reenable_id {
-            flags.reenable_enabled
         } else if id == check_updates_id {
             true // fire-and-forget; no protection state involved
         } else if id == quit_id {
@@ -597,12 +567,6 @@ fn run_session(
         info!("Dispatching menu click deferred during a dialog: {:?}", id);
         if id == lock_id {
             handle_lock_toggle(core.clone());
-        } else if id == disable_id {
-            info!("Disable menu item clicked");
-            handle_disable(core.clone());
-        } else if id == reenable_id {
-            info!("Reenable menu item clicked, resetting app state");
-            handle_reenable(core.clone());
         } else if id == check_updates_id {
             info!("Check for Updates menu item clicked");
             handle_check_updates();
@@ -621,17 +585,7 @@ fn run_session(
 
     let pending_in_callback = pending_action.clone();
     event_loop.run_return(move |_event, _, control_flow| {
-        // Adjust polling interval based on disabled state
-        // When disabled: minimal WindowServer interaction
-        // When enabled: responsive UI updates
-        let poll_interval = {
-            let core_borrow = core.borrow();
-            if core_borrow.state.is_disabled() {
-                std::time::Duration::from_secs(POLL_INTERVAL_DISABLED_SECS)
-            } else {
-                std::time::Duration::from_millis(POLL_INTERVAL_ENABLED_MS)
-            }
-        };
+        let poll_interval = std::time::Duration::from_millis(POLL_INTERVAL_ENABLED_MS);
 
         *control_flow = ControlFlow::WaitUntil(
             std::time::Instant::now() + poll_interval
@@ -643,21 +597,14 @@ fn run_session(
         if let Ok(event) = MenuEvent::receiver().try_recv() {
             let event_id = event.id;
 
-            if event_id == lock_id || event_id == disable_id || event_id == reenable_id {
+            if event_id == lock_id {
                 let allowed = {
                     let core_borrow = core.borrow();
                     let flags = menu_state(
                         core_borrow.is_locked(),
-                        core_borrow.state.is_disabled(),
                         core_borrow.has_accessibility_permissions(),
                     );
-                    if event_id == lock_id {
-                        flags.lock_enabled
-                    } else if event_id == disable_id {
-                        flags.disable_enabled
-                    } else {
-                        flags.reenable_enabled
-                    }
+                    flags.lock_enabled
                 };
                 if !allowed {
                     warn!(
@@ -670,12 +617,6 @@ fn run_session(
 
             if event_id == lock_id {
                 handle_lock_toggle(core.clone());
-            } else if event_id == disable_id {
-                info!("Disable menu item clicked");
-                handle_disable(core.clone());
-            } else if event_id == reenable_id {
-                info!("Reenable menu item clicked, resetting app state");
-                handle_reenable(core.clone());
             } else if event_id == preferences_id {
                 info!("Preferences menu item clicked");
                 *pending_in_callback.borrow_mut() = Some(SessionAction::Preferences);
@@ -760,8 +701,37 @@ fn run_session(
         {
             let mut core_borrow = core.borrow_mut();
             match core_borrow.service_tap_lifecycle() {
-            handsoff::TapLifecycleEvent::TapStopped => {
-                info!("Tray: Input blocking stopped - normal input restored");
+            handsoff::TapLifecycleEvent::TapStopped { tap_was_running: false } => {
+                // Startup-missing / re-grant-degraded: no tap was ever
+                // started. The tray keeps running tapless for the
+                // wizard/re-grant flow; NO PERMISSIONS tooltip covers UX.
+                // NEVER quit here — the app must stay alive to receive the
+                // grant and auto-restart the tap.
+                info!("Tray: Input blocking stopped - no tap was running (permissions missing)");
+            }
+            handsoff::TapLifecycleEvent::TapStopped { tap_was_running: true } => {
+                // Runtime revocation of a live tap: notify, then quit
+                // immediately (user decision 2026-10-05 — no grace period).
+                // The notification is the user's answer to "why did it
+                // quit"; the fixed delivery gap below exists because
+                // notify-rust posts to usernoted asynchronously and an
+                // instant exit can drop it.
+                error!("Tray: Accessibility permissions revoked while tap was running - quitting");
+                #[cfg(target_os = "macos")]
+                {
+                    let _ = notify_rust::Notification::new()
+                        .summary("HandsOff - Permissions Revoked")
+                        .body("Accessibility permissions were revoked.\nInput blocking was stopped - your keyboard and mouse work normally now.\n\nHandsOff is quitting. To restore input blocking: re-grant Accessibility permission (System Settings > Privacy & Security > Accessibility) and relaunch HandsOff.")
+                        .timeout(notify_rust::Timeout::Milliseconds(NOTIFICATION_ERROR_TIMEOUT_MS))
+                        .show();
+                    std::thread::sleep(std::time::Duration::from_millis(
+                        NOTIFICATION_EXIT_DELAY_MS,
+                    ));
+                    // Same mechanism as the Quit menu item: deliberately
+                    // skips destructors (dropping the tao event loop's
+                    // CFRunLoop observers panics).
+                    std::process::exit(0);
+                }
             }
             handsoff::TapLifecycleEvent::Restarted => {
                 #[cfg(target_os = "macos")]
@@ -774,16 +744,26 @@ fn run_session(
                 }
             }
             handsoff::TapLifecycleEvent::RestartFailed(e) => {
+                // Permissions ARE present here (the failure is tap
+                // creation); the app would otherwise sit tapless forever
+                // with no user-visible path forward. Quit unconditionally —
+                // do NOT add a permission re-check gate (that would cancel
+                // the quit on the only case this arm exists for).
+                error!("Tray: Failed to restart input blocking - quitting: {}", e);
                 #[cfg(target_os = "macos")]
                 {
                     let _ = notify_rust::Notification::new()
                         .summary("HandsOff - Restart Failed")
                         .body(&format!(
-                            "Failed to restart input blocking: {}\n\nUse Reenable menu to try again.",
+                            "Failed to restart input blocking: {}\n\nHandsOff is quitting. Please relaunch to restore input blocking.",
                             e
                         ))
                         .timeout(notify_rust::Timeout::Milliseconds(NOTIFICATION_ERROR_TIMEOUT_MS))
                         .show();
+                    std::thread::sleep(std::time::Duration::from_millis(
+                        NOTIFICATION_EXIT_DELAY_MS,
+                    ));
+                    std::process::exit(0);
                 }
             }
             handsoff::TapLifecycleEvent::Idle => {}
@@ -793,16 +773,13 @@ fn run_session(
         // Periodically check permissions and update menu state
         let core_borrow = core.borrow();
         let is_locked = core_borrow.is_locked();
-        let is_disabled = core_borrow.state.is_disabled();
         let current_permissions = core_borrow.has_accessibility_permissions();
 
         // Update menu enabled state via the pure helper (unit-tested)
-        let menu_flags = menu_state(is_locked, is_disabled, current_permissions);
+        let menu_flags = menu_state(is_locked, current_permissions);
         lock_item.set_enabled(menu_flags.lock_enabled);
-        disable_item.set_enabled(menu_flags.disable_enabled);
-        // Reenable and the config-level actions are always enabled by design;
-        // set_enabled anyway so a future rule change flows through one place.
-        reenable_item.set_enabled(menu_flags.reenable_enabled);
+        // Config-level actions are always enabled by design; set_enabled
+        // anyway so a future rule change flows through one place.
         preferences_item.set_enabled(menu_flags.preferences_enabled);
         change_passphrase_item.set_enabled(menu_flags.change_passphrase_enabled);
         reset_item.set_enabled(menu_flags.reset_enabled);
@@ -818,15 +795,12 @@ fn run_session(
             *has_permissions = current_permissions;
         }
 
-        // Update icon when lock state or disabled state changes
-        let state_transition = is_locked != *was_locked || is_disabled != *was_disabled;
+        // Update icon when lock state changes
+        let state_transition = is_locked != *was_locked;
         if state_transition {
             *was_locked = is_locked;
-            *was_disabled = is_disabled;
 
-            let icon = if is_disabled {
-                create_icon_disabled()
-            } else if is_locked {
+            let icon = if is_locked {
                 create_icon_locked()
             } else {
                 create_icon_unlocked()
@@ -835,11 +809,11 @@ fn run_session(
                 error!("Failed to update tray icon: {}", e);
             }
 
-            // Show notification on state change (but not for disabled, handled elsewhere).
+            // Show notification on state change.
             // V10: unlock is silent — no notification when input is restored.
             #[cfg(target_os = "macos")]
             {
-                if !is_disabled && is_locked {
+                if is_locked {
                     let _ = notify_rust::Notification::new()
                         .summary("HandsOff")
                         .body("Input locked - Type passphrase to unlock")
@@ -855,7 +829,7 @@ fn run_session(
             .elapsed()
             >= std::time::Duration::from_millis(TOOLTIP_UPDATE_INTERVAL_MS);
         if state_transition || permission_changed || cadence_elapsed {
-            let tooltip = build_tooltip(&core_borrow, is_locked, is_disabled, current_permissions);
+            let tooltip = build_tooltip(&core_borrow, is_locked, current_permissions);
             if tooltip != *last_tooltip {
                 if let Err(e) = tray.set_tooltip(Some(&tooltip)) {
                     error!("Failed to update tray tooltip: {}", e);
@@ -923,96 +897,6 @@ fn handle_lock_toggle(core: Rc<RefCell<HandsOffCore>>) {
     } else {
         info!("Input locked via menu");
     }
-}
-
-/// Handle disable from menu
-/// Disables HandsOff by stopping event tap and hotkeys for minimal CPU usage
-fn handle_disable(core: Rc<RefCell<HandsOffCore>>) {
-    let mut core = core.borrow_mut();
-
-    if let Err(e) = core.disable() {
-        error!("Error disabling: {}", e);
-        show_alert("HandsOff - Error", &format!("Failed to disable: {}", e));
-    } else {
-        info!("HandsOff disabled - low system resources mode (input blocking paused)");
-        #[cfg(target_os = "macos")]
-        {
-            let _ = notify_rust::Notification::new()
-                .summary("HandsOff")
-                .body("Disabled - Low system resources mode\nInput blocking paused. Use Reenable to re-enable")
-                .timeout(notify_rust::Timeout::Milliseconds(NOTIFICATION_TIMEOUT_MS))
-                .show();
-        }
-    }
-}
-
-/// Handle Reenable from menu (the old "Reset" — renamed in #27 so Reset can
-/// mean the destructive config wipe).
-///
-/// Unguarded by design (CONTEXT.md): ends a stuck Lock and restarts input
-/// capture without changing any configuration. If disabled, re-enables the
-/// app. Otherwise, restarts the event tap if permissions are available.
-fn handle_reenable(core: Rc<RefCell<HandsOffCore>>) {
-    let mut core = core.borrow_mut();
-
-    // Check if disabled - if so, enable instead of just restarting
-    let is_disabled = core.state.is_disabled();
-
-    // Unlock if currently locked (user-initiated recovery — S-2: no plaintext
-    // verification under keycode passphrases; the operator is past the guard)
-    if core.is_locked() {
-        core.reset();
-        info!("App state reset: unlocked successfully");
-    }
-
-    // If disabled, re-enable (which also restarts event tap and hotkeys)
-    // Otherwise, just restart event tap
-    if is_disabled {
-        match core.enable() {
-            Ok(()) => {
-                info!("HandsOff re-enabled successfully during reenable");
-                #[cfg(target_os = "macos")]
-                {
-                    let _ = notify_rust::Notification::new()
-                        .summary("HandsOff")
-                        .body("Reenabled - Ready to use")
-                        .timeout(notify_rust::Timeout::Milliseconds(NOTIFICATION_TIMEOUT_MS))
-                        .show();
-                }
-            }
-            Err(e) => {
-                warn!("Could not re-enable during reenable: {}", e);
-                show_alert(
-                    "HandsOff - Reenable Partial Success",
-                    &format!("Timers cleared but could not re-enable:\n{}\n\nPlease check accessibility permissions.", e)
-                );
-            }
-        }
-    } else {
-        // Attempt to restart event tap (will check permissions internally)
-        match core.restart_event_tap() {
-            Ok(()) => {
-                info!("Input blocking restarted successfully during reenable");
-                #[cfg(target_os = "macos")]
-                {
-                    let _ = notify_rust::Notification::new()
-                        .summary("HandsOff")
-                        .body("Reenabled - Input blocking restarted\nReady to use")
-                        .timeout(notify_rust::Timeout::Milliseconds(NOTIFICATION_TIMEOUT_MS))
-                        .show();
-                }
-            }
-            Err(e) => {
-                warn!("Could not restart input blocking during reenable: {}", e);
-                show_alert(
-                    "HandsOff - Reenable Partial Success",
-                    &format!("Timers cleared but input blocking could not be restarted:\n{}\n\nPlease check accessibility permissions.", e)
-                );
-            }
-        }
-    }
-
-    info!("Finished handling reenable");
 }
 
 /// Handle Help from menu: build the help text from the current core state
@@ -1365,11 +1249,10 @@ fn show_alert(title: &str, message: &str) {
 #[cfg(not(target_os = "macos"))]
 fn show_alert(_title: &str, _message: &str) {}
 
-/// Build tooltip text based on lock state, disabled state, and permission status
+/// Build tooltip text based on lock state and permission status
 fn build_tooltip(
     core: &HandsOffCore,
     is_locked: bool,
-    is_disabled: bool,
     has_permissions: bool,
 ) -> String {
     let mut tooltip = String::new();
@@ -1379,7 +1262,7 @@ fn build_tooltip(
     tooltip.push_str("A macOS utility to block unsolicited input\n\n");
 
     // Current status
-    push_status(&mut tooltip, core, is_locked, is_disabled, has_permissions);
+    push_status(&mut tooltip, core, is_locked, has_permissions);
 
     // Configured hotkeys (user asked for these on hover; the Help
     // window itself stays static and never shows concrete keys).
@@ -1400,24 +1283,19 @@ fn build_tooltip(
     tooltip
 }
 
-/// Append the contextual status block (DISABLED / NO PERMISSIONS / LOCKED /
+/// Append the contextual status block (NO PERMISSIONS / LOCKED /
 /// Unlocked, incl. countdowns) shown in the tray tooltip.
 fn push_status(
     text: &mut String,
     core: &HandsOffCore,
     is_locked: bool,
-    is_disabled: bool,
     has_permissions: bool,
 ) {
-    if is_disabled {
-        text.push_str("STATUS: DISABLED\n");
-        text.push_str("Low system resources mode - all features paused\n");
-        text.push_str("Use Reenable menu to re-enable HandsOff\n\n");
-    } else if !has_permissions {
+    if !has_permissions {
         text.push_str("STATUS: NO PERMISSIONS\n");
         text.push_str("Restore Accessibility Permissions in:\n");
         text.push_str("System Settings > Privacy & Security\n");
-        text.push_str("Then use Reenable menu to restart\n\n");
+        text.push_str("Input blocking resumes automatically once granted\n\n");
     } else if is_locked {
         // Show lock duration
         if let Some(elapsed) = core.get_lock_elapsed_secs() {
@@ -1477,9 +1355,7 @@ icon to see it — it depends on your setup).
 Unlock: type your passphrase. While locked, mouse clicks
 are blocked — even the menu can't be clicked — so there
 are only TWO ways back in: your passphrase on the
-keyboard, or rebooting your Mac. (The Reenable menu item
-can't help — it only turns HandsOff back on after
-Disable, and the menu can't be clicked while locked.)
+keyboard, or rebooting your Mac.
 
 Made a typo? Press Escape to start over."
                 .to_string(),
@@ -1517,15 +1393,6 @@ call apps."
             table: vec![
                 ("Lock Input".to_string(), "Locks your Mac right away.".to_string()),
                 (
-                    "Disable".to_string(),
-                    "Pauses blocking to save\nbattery. Use Reenable to\nturn HandsOff back on."
-                        .to_string(),
-                ),
-                (
-                    "Reenable".to_string(),
-                    "Turns HandsOff back on after\nDisable. Does NOT help with\na stuck lock.".to_string(),
-                ),
-                (
                     "Preferences…".to_string(),
                     "Change hotkeys and timers.\nNo passphrase needed here.".to_string(),
                 ),
@@ -1558,9 +1425,7 @@ try \"Fix Accessibility Permission…\".
 
 Locked and nothing clicks? That's HandsOff working.
 Your only ways back in: type your passphrase, or reboot
-your Mac. Reenable can't help — it only turns HandsOff
-back on after Disable, and the menu is unreachable while
-locked.
+your Mac.
 
 Forgot your passphrase? Once unlocked, use \"Reset…\" to
 start fresh."
@@ -1606,12 +1471,6 @@ fn create_icon_unlocked() -> tray_icon::Icon {
 /// Create locked icon (red circle)
 fn create_icon_locked() -> tray_icon::Icon {
     let png_data = include_bytes!("../../assets/tray_locked.png");
-    load_png_icon(png_data)
-}
-
-/// Create disabled icon
-fn create_icon_disabled() -> tray_icon::Icon {
-    let png_data = include_bytes!("../../assets/tray_disabled.png");
     load_png_icon(png_data)
 }
 

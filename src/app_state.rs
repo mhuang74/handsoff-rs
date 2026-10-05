@@ -71,8 +71,6 @@ pub struct AppStateInner {
     pub should_reenable_event_tap: bool,
     /// Timestamp when event tap was last re-enabled (for debouncing)
     pub last_reenable_time: Option<Instant>,
-    /// Whether the app is currently disabled (minimal CPU mode)
-    pub is_disabled: bool,
     /// Lock hotkey keycode (macOS keycode, see DEFAULT_LOCK_KEYCODE)
     pub lock_keycode: i64,
     /// Talk hotkey keycode (macOS keycode, see DEFAULT_TALK_KEYCODE)
@@ -98,7 +96,6 @@ impl AppState {
                 should_start_event_tap: false,
                 should_reenable_event_tap: false,
                 last_reenable_time: None,
-                is_disabled: false,
                 lock_keycode: DEFAULT_LOCK_KEYCODE,
                 talk_keycode: DEFAULT_TALK_KEYCODE,
             })),
@@ -243,41 +240,6 @@ impl AppState {
             unlock.window_index = 0;
             unlock.stretch_start = Instant::now();
         }
-    }
-
-    /// User-initiated Reenable (the old "Reset"): clears locked state and restarts the schedule
-    /// from base. This is an intentional recovery action by the operator
-    /// (menu access = past the guard), not a passphrase authentication event
-    /// — logged as such.
-    pub fn reset_all(&self) {
-        let mut state = self.inner.lock();
-
-        log::info!("Reenable: state cleared, backoff schedule restarted from base");
-
-        state.last_input_time = Instant::now();
-        state.is_locked = false;
-        state.lock_start_time = None;
-        state.input_buffer.clear();
-        state.last_key_time = None;
-
-        if let Some(unlock) = &mut state.auto_unlock {
-            unlock.window_index = 0;
-            unlock.stretch_start = Instant::now();
-        }
-    }
-
-    /// Clear the locked state WITHOUT touching the backoff schedule.
-    ///
-    /// Used by `HandsOffCore::disable` (issue #37 N2): a disabled tap
-    /// enforces nothing, so `is_locked` must go — but §2.3 says only a
-    /// successful Passphrase unlock resets the schedule, so `window_index`
-    /// and `stretch_start` are left untouched (unlike `reset_all`).
-    pub fn clear_lock_state(&self) {
-        let mut state = self.inner.lock();
-        state.is_locked = false;
-        state.lock_start_time = None;
-        state.input_buffer.clear();
-        state.last_key_time = None;
     }
 
     /// Trigger auto-unlock (a backoff window fired). Unlocks without
@@ -525,16 +487,6 @@ impl AppState {
         self.inner.lock().last_reenable_time = Some(Instant::now());
     }
 
-    /// Check if the app is currently disabled
-    pub fn is_disabled(&self) -> bool {
-        self.inner.lock().is_disabled
-    }
-
-    /// Set the disabled state
-    pub fn set_disabled(&self, disabled: bool) {
-        self.inner.lock().is_disabled = disabled;
-    }
-
     /// Set the lock hotkey keycode (macOS keycode)
     pub fn set_lock_keycode(&self, keycode: i64) {
         self.inner.lock().lock_keycode = keycode;
@@ -682,43 +634,6 @@ mod tests {
     }
 
     #[test]
-    fn test_reset_restarts_schedule_from_base() {
-        // Reset is a user-intended recovery action (menu access = past the
-        // guard): it clears locked state and restarts the schedule from base,
-        // without logging a passphrase authentication event.
-        let state = AppState::new();
-        enable_backoff(&state, AUTO_UNLOCK_BASE_SECONDS);
-        state.append_to_buffer(0);
-        state.set_locked(true);
-        {
-            let mut inner = state.lock();
-            let u = inner.auto_unlock.as_mut().unwrap();
-            u.stretch_start = Instant::now() - Duration::from_secs(40000);
-            u.window_index = 3; // 28800s interval, long past
-            inner.last_input_time = Instant::now() - Duration::from_secs(40000);
-        }
-        assert!(state.should_auto_unlock());
-
-        state.reset_all();
-
-        assert!(!state.is_locked());
-        assert_eq!(
-            state.get_auto_unlock_interval_secs(),
-            Some(AUTO_UNLOCK_BASE_SECONDS)
-        );
-        assert_eq!(state.buffer_len(), 0, "Buffer should be cleared");
-        assert_eq!(state.get_auto_unlock_remaining_secs(), None); // unlocked
-
-        // Re-lock: first window again at base.
-        state.set_locked(true);
-        assert_eq!(
-            state.get_auto_unlock_interval_secs(),
-            Some(AUTO_UNLOCK_BASE_SECONDS)
-        );
-        assert!(!state.should_auto_unlock());
-    }
-
-    #[test]
     fn test_trigger_auto_unlock_clears_state_and_advances_counter() {
         let state = AppState::new();
         enable_backoff(&state, AUTO_UNLOCK_BASE_SECONDS);
@@ -780,35 +695,5 @@ mod tests {
         assert!(state.get_lock_elapsed_secs().is_some());
         state.set_locked(false);
         assert!(state.get_lock_elapsed_secs().is_none());
-    }
-
-    #[test]
-    fn test_clear_lock_state_preserves_backoff_schedule() {
-        // Issue #37 N2: disable() clears the Lock flag but must NOT restart
-        // the backoff schedule (§2.3 — only a passphrase unlock resets it).
-        let state = AppState::new();
-        state.set_auto_unlock_config(crate::config::AutoUnlockConfig::Backoff {
-            base_interval_secs: std::num::NonZeroU64::new(3600).unwrap(),
-        });
-        state.set_locked(true);
-        // Simulate two windows already fired (window_index advanced by
-        // trigger_auto_unlock).
-        {
-            let mut inner = state.lock();
-            inner.auto_unlock.as_mut().unwrap().window_index = 2;
-        }
-
-        state.clear_lock_state();
-
-        assert!(!state.is_locked());
-        assert_eq!(state.buffer_len(), 0);
-        {
-            let inner = state.lock();
-            let unlock = inner.auto_unlock.as_ref().unwrap();
-            assert_eq!(
-                unlock.window_index, 2,
-                "clear_lock_state must NOT reset the backoff counter (§2.3)"
-            );
-        }
     }
 }
